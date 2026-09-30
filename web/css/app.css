@@ -93,9 +93,10 @@ textarea { resize: vertical; }
   display: flex; flex-direction: column; min-height: 0; transition: margin-left .2s ease;
 }
 body.sidebar-hidden .sidebar { margin-left: calc(-1 * var(--sidebar-w)); }
-.tabs { display: flex; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.tabs { display: flex; border-bottom: 1px solid var(--border); flex: 0 0 auto; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tabs button {
-  flex: 1; font: inherit; font-size: 12.5px; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 1px; cursor: pointer; color: var(--muted); white-space: nowrap;
+  flex: 1 1 auto; font: inherit; font-size: 12.5px; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 7px; cursor: pointer; color: var(--muted); white-space: nowrap;
 }
 .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab { display: none; padding: 12px 14px; overflow: auto; flex: 1; }
