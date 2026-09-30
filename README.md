@@ -39,7 +39,7 @@ go run . -data ./data
 | Geschwindigkeitsmodell | Schalter im Routen-Tab: Fahrzeit aus der Strassenführung statt nur aus dem Limit. Kurvenradien aus der Geometrie (v = √(3 m/s² · R)), Steigung aus dem Höhenprofil, Wartezeiten an Kreuzungen und Kreiseln mit Streuung. Ergebnis als typische Zeit mit Band P15–P85 |
 | Glätten / Vereinfachen | Strassen per Catmull-Rom-Spline glätten (Abschnittseigenschaften bleiben) oder per Douglas-Peucker auf 1 m vereinfachen |
 | Höhenprofil | Pro Strasse vom swisstopo-Profildienst laden: Gelände, Steigungen, Brücken über und Tunnel unter dem Gelände als Diagramm; fliesst ins Geschwindigkeitsmodell ein |
-| Bild / PDF | Export-Dialog: aktuelle Ansicht oder ganzer Entwurf, A4/A3, Hoch- oder Querformat, 96/150/300 dpi. Die Karte wird dafür offscreen neu gezeichnet (Kacheln werden vorgeladen), mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution; PNG oder einseitiges PDF, beides ohne Bibliothek |
+| Bild / PDF | Export-Dialog: aktuelle Ansicht oder ganzer Entwurf, A4/A3, Hoch- oder Querformat, 96/150/300 dpi. Die Karte wird dafür offscreen neu gezeichnet (Kacheln werden vorgeladen), mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution; PNG oder PDF, beides ohne Bibliothek. Option **Bericht anhängen**: weitere PDF-Seiten mit Massnahmenliste (Strassen mit Typ, Länge, Tempo, Brücken/Tunnel; Punkte; Flächen), Routenvergleich, Kommentaren samt Antworten und Link zum Entwurf |
 | Abschnitte | Jeder Abschnitt zwischen zwei Punkten hat seine eigene Führung: **Ebenerdig, Brücke oder Tunnel** |
 | Kreuzungen / Punkte | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop, Fussgängerstreifen, Bushaltestelle) |
 | Flächen | Polygone als Tempo-30-Zone, Begegnungszone (20), Fussgängerzone, Parkplatz oder sonstige Fläche; Eckpunkte ziehen, einfügen, löschen. Zonen mit Tempolimit deckeln im Routen-Rechner alle Strassen darin, Fussgängerzonen sperren sie |
@@ -51,7 +51,9 @@ go run . -data ./data
 | Bearbeiten | Punkte ziehen, Zwischenpunkte einfügen, Punkte per Rechtsklick löschen, Eigenschaften in der Seitenleiste, Tooltip beim Überfahren |
 | Speichern | Entwürfe liegen auf dem Server; der Browser merkt sich die eigenen (mit Bearbeitungs-Token). Arbeitskopie wird lokal automatisch gesichert |
 | Historie | Rückgängig/Wiederholen in der Sitzung; jedes Speichern legt eine Version an (Standard: 30), die wiederhergestellt werden kann |
-| Teilen | **Ansichtslink** `/d/<id>` (Empfänger können eine eigene Kopie weiterbearbeiten), **Bearbeitungslink** `/d/<id>#edit=<token>` für gemeinsames Bearbeiten, E-Mail-Versand, JSON-Import/-Export, GeoJSON-Export |
+| Teilen | **Ansichtslink** `/d/<id>` (Empfänger können eine eigene Kopie weiterbearbeiten), **Präsentationslink** `/d/<id>?present=1` (nur Karte, Legende und Routenvergleich, ohne Werkzeuge, für Sitzungen und Beamer), **Bearbeitungslink** `/d/<id>#edit=<token>` für gemeinsames Bearbeiten, E-Mail-Versand, JSON-Import/-Export, GeoJSON-Export |
+| Gemeinsam bearbeiten | Speichern schickt den zuletzt geladenen Serverstand mit; hat inzwischen jemand anderes gespeichert, antwortet der Server mit 409 und die App fragt: eigene Fassung speichern oder Serverstand übernehmen (die eigene bleibt per Rückgängig erreichbar). Offene Seiten erhalten Änderungen und neue Kommentare live über Server-Sent Events: ohne eigene Änderungen wird der neue Stand direkt übernommen, sonst erscheint ein Hinweis |
+| Touch / Mobil | Aktionsleiste „Strasse fertig / Letzter Punkt / Abbrechen“ über der Karte während des Zeichnens; langes Drücken wirkt wie Rechtsklick (Strasse beenden, Punkt löschen); auf schmalen Bildschirmen wird die Seitenleiste zum Bottom-Sheet, das eingeklappt startet und per Tipp auf einen Tab aufgeht |
 
 ### Tastenkürzel
 
@@ -94,9 +96,10 @@ speichert nur einen Hash davon).
 
 | Methode | Pfad | Zweck |
 |---|---|---|
-| `POST` | `/api/drafts` | Entwurf anlegen: `{doc, label?}` → `{id, editToken, doc}` |
-| `GET` | `/api/drafts/{id}` | Aktueller Stand |
-| `PUT` | `/api/drafts/{id}` | Speichern: `{doc, label?}` (legt eine Version an) |
+| `POST` | `/api/drafts` | Entwurf anlegen: `{doc, label?}` → `{id, editToken, doc, updatedAt}` |
+| `GET` | `/api/drafts/{id}` | Aktueller Stand: `{doc, updatedAt, versionCount, …}` |
+| `PUT` | `/api/drafts/{id}` | Speichern: `{doc, label?, baseUpdatedAt?}` (legt eine Version an). Mit `baseUpdatedAt` (der `updatedAt` des geladenen Stands) antwortet der Server **409** samt aktuellem `doc`, wenn inzwischen jemand anderes gespeichert hat; ohne das Feld wird überschrieben. Header `X-Client-Id` (optional) wird an das Live-Ereignis gehängt |
+| `GET` | `/api/drafts/{id}/events` | Server-Sent Events: `updated {updatedAt, clientId, versionCount}` und `comment {id, clientId}`; Keepalive alle 25 s |
 | `DELETE` | `/api/drafts/{id}` | Entwurf löschen |
 | `POST` | `/api/drafts/{id}/auth` | Token prüfen (204/403) |
 | `POST` | `/api/drafts/{id}/fork` | Kopie mit eigenem Token: `{name?}` |
@@ -206,7 +209,7 @@ optional (null = Standard je Strassentyp), `osmId` verweist auf den
 
 ```sh
 make test            # go vet + go test + Frontend-Unit-Tests (node --test)
-make test-browser    # Browser-Tests; braucht Go und Playwright mit Chromium
+make test-browser    # Browser-Tests (basics, osm-editing, ux); braucht Go und Playwright mit Chromium
 make run             # Server lokal
 make docker          # Image bauen
 ```

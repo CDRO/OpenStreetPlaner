@@ -44,7 +44,7 @@ async function waitFor(url, tries = 50) {
   try {
     const base = `http://127.0.0.1:${port}/`;
     await waitFor(base + 'healthz');
-    for (const file of ['basics.test.cjs', 'osm-editing.test.cjs']) {
+    for (const file of ['basics.test.cjs', 'osm-editing.test.cjs', 'ux.test.cjs']) {
       const r = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: 'inherit', env: { ...process.env, BASE_URL: base } });
       if (r.status !== 0) failed = true;
     }

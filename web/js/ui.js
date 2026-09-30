@@ -152,12 +152,16 @@ export class UI {
   wireStatic() {
     const { actions } = this.ctx;
     document.querySelectorAll('.tabs button').forEach((btn) => {
-      btn.addEventListener('click', () => this.showTab(btn.dataset.tab));
+      btn.addEventListener('click', () => this.showTab(btn.dataset.tab, { reveal: true }));
     });
     this.$('sidebar-toggle').addEventListener('click', () => {
       document.body.classList.toggle('sidebar-hidden');
       setTimeout(() => this.ctx.map.invalidateSize(), 250);
     });
+    // Aktionsleiste über der Karte während des Zeichnens (v. a. für Touch ohne Enter/Esc/Backspace)
+    this.$('da-finish').addEventListener('click', () => this.ctx.tools.finish());
+    this.$('da-undo-point').addEventListener('click', () => this.ctx.tools.popVertex());
+    this.$('da-cancel').addEventListener('click', () => this.ctx.tools.cancel());
     this.$('draft-name').addEventListener('change', (e) => actions.rename(e.target.value));
     this.$('btn-undo').addEventListener('click', () => actions.undo());
     this.$('btn-redo').addEventListener('click', () => actions.redo());
@@ -177,9 +181,14 @@ export class UI {
     this.wireSearch();
   }
 
-  showTab(name) {
+  showTab(name, { reveal = false } = {}) {
     document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('active', s.id === `tab-${name}`));
+    if (reveal && document.body.classList.contains('sidebar-hidden')) {
+      // Auf schmalen Bildschirmen ist die Leiste ein Bottom-Sheet: Tipp auf einen Tab klappt sie auf.
+      document.body.classList.remove('sidebar-hidden');
+      setTimeout(() => this.ctx.map.invalidateSize(), 250);
+    }
     if (name === 'history') this.refreshHistory();
     if (name === 'route') {
       this.refreshRoute();
@@ -283,6 +292,114 @@ export class UI {
     this.refreshHistory();
     this.refreshRoute();
     this.refreshComments();
+    this.refreshDrawActions();
+    this.refreshPresent();
+  }
+
+  /** Aktionsleiste „Fertig / Letzter Punkt / Abbrechen“ während einer laufenden Zeichnung. */
+  refreshDrawActions() {
+    const { tools } = this.ctx;
+    const bar = this.$('draw-actions');
+    if (!bar) return;
+    const draft = tools.draft;
+    bar.hidden = !draft && !tools.routeDraft && !tools.commentDraft;
+    if (bar.hidden) return;
+    const polyline = draft && (tools.tool === 'road' || tools.tool === 'zone');
+    const n = polyline ? draft.vertices.length : 0;
+    const min = tools.tool === 'zone' ? 3 : (draft && draft.extend ? 1 : 2);
+    this.$('da-finish').hidden = !polyline;
+    this.$('da-finish').disabled = n < min;
+    this.$('da-finish').textContent = tools.tool === 'zone' ? 'Fläche schliessen' : 'Strasse fertig';
+    this.$('da-undo-point').hidden = !polyline;
+    this.$('da-undo-point').disabled = n === 0;
+  }
+
+  // --- Präsentationsmodus ------------------------------------------------------------
+
+  refreshPresent() {
+    const { store, actions, settings } = this.ctx;
+    const panel = this.$('present-panel');
+    if (!panel) return;
+    if (!actions.isPresent()) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const doc = store.doc;
+    const visible = doc.features.filter((f) => {
+      const l = doc.layers.find((x) => x.id === f.layerId);
+      return !l || l.visible !== false;
+    });
+    const roadKinds = new Set(visible.filter((f) => f.type === 'road').map((f) => f.kind));
+    const zoneKinds = new Set(visible.filter((f) => f.type === 'zone').map((f) => f.kind));
+    const counts = { road: 0, junction: 0, roundabout: 0, zone: 0 };
+    visible.forEach((f) => { counts[f.type] = (counts[f.type] || 0) + 1; });
+    const legend = [];
+    ROAD_KINDS.filter((k) => roadKinds.has(k.id)).forEach((k) => legend.push(`<li><span class="swatch ground"></span> ${esc(k.label)}${k.speed ? ` · ${k.speed} km/h` : ''}</li>`));
+    if (visible.some((f) => f.type === 'road' && f.segments.some((sg) => sg.level === 'bridge'))) legend.push('<li><span class="swatch bridge"></span> Brücke</li>');
+    if (visible.some((f) => f.type === 'road' && f.segments.some((sg) => sg.level === 'tunnel'))) legend.push('<li><span class="swatch tunnel"></span> Tunnel</li>');
+    if (visible.some((f) => f.status === 'remove')) legend.push('<li><span class="swatch remove"></span> Rückbau</li>');
+    ZONE_KINDS.filter((k) => zoneKinds.has(k.id)).forEach((k) => legend.push(`<li><span class="swatch zone" style="${k.color ? `background:${k.color}33;border-color:${k.color}` : ''}"></span> ${esc(k.label)}</li>`));
+    const layers = doc.layers.map((l) => `<li><span class="dot" style="background:${esc(l.color)}"></span>${esc(l.name)}${l.visible === false ? ' <span class="muted">(ausgeblendet)</span>' : ''}</li>`).join('');
+    const routes = actions.routes();
+    let route = '';
+    if (doc.route && routes) {
+      const cur = routes.current && !routes.current.error ? routes.current : null;
+      const neu = routes.proposed && !routes.proposed.error ? routes.proposed : null;
+      const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+      const geometry = settings.speedModel === 'geometry';
+      const band = (r) => (geometry && r && r.sd > 0 ? `<div class="muted small">${formatDuration(r.p15)} – ${formatDuration(r.p85)}</div>` : '');
+      route = `
+        <h3>Route: heute vs. neu</h3>
+        <table class="route-table">
+          <thead><tr><th></th><th><span class="dot" style="background:#1b6ac9"></span>Heute</th><th><span class="dot" style="background:#2a9d3f"></span>Neu</th></tr></thead>
+          <tbody>
+            <tr><td>Distanz</td><td>${cur ? fmtKm(cur.dist) : '–'}</td><td>${neu ? fmtKm(neu.dist) : '–'}</td></tr>
+            <tr><td>Fahrzeit</td><td>${cur ? formatDuration(cur.time) + band(cur) : '–'}</td><td>${neu ? formatDuration(neu.time) + band(neu) : '–'}</td></tr>
+          </tbody>
+        </table>`;
+    }
+    const stats = [counts.road && `${counts.road} Strasse${counts.road > 1 ? 'n' : ''}`, counts.junction && `${counts.junction} Punkt${counts.junction > 1 ? 'e' : ''}`, counts.roundabout && `${counts.roundabout} Kreisel`, counts.zone && `${counts.zone} Fläche${counts.zone > 1 ? 'n' : ''}`].filter(Boolean).join(' · ');
+    panel.innerHTML = `
+      <h2>${esc(doc.name)}</h2>
+      <p class="muted small">${esc(stats || 'Noch keine Elemente')}</p>
+      ${legend.length ? `<ul class="legend">${legend.join('')}</ul>` : ''}
+      ${doc.layers.length > 1 ? `<details><summary>Ebenen (${doc.layers.length})</summary><ul class="legend">${layers}</ul></details>` : ''}
+      ${route}
+      <div class="btn-row">
+        <button type="button" id="present-edit" class="btn small">Zum Editor</button>
+        <button type="button" id="present-export" class="btn small">PNG / PDF</button>
+      </div>`;
+    this.$('present-edit').onclick = () => actions.exitPresent();
+    this.$('present-export').onclick = () => this.openExport();
+  }
+
+  /** Speicherkonflikt: jemand anderes hat inzwischen gespeichert. Liefert 'overwrite' | 'reload' | 'cancel'. */
+  openConflict({ updatedAt, versionCount }) {
+    return new Promise((resolve) => {
+      this.openModal(`
+        <h2>Entwurf wurde inzwischen geändert</h2>
+        <p>Jemand anderes hat diesen Entwurf ${updatedAt ? `am ${esc(fmtDate(updatedAt))} ` : ''}gespeichert${versionCount ? ` (Version ${versionCount})` : ''}. Welche Fassung soll gelten?</p>
+        <div class="btn-row">
+          <button type="button" id="conflict-overwrite" class="btn primary">Meine Fassung speichern</button>
+          <button type="button" id="conflict-reload" class="btn">Serverstand übernehmen</button>
+          <button type="button" id="conflict-cancel" class="btn" data-close>Abbrechen</button>
+        </div>
+        <p class="muted small">„Meine Fassung speichern“ überschreibt die fremde Änderung; sie bleibt im Verlauf als eigene Version erhalten. „Serverstand übernehmen“ ersetzt deine Fassung, die du mit Rückgängig zurückholen kannst.</p>`);
+      let done = false;
+      const finish = (choice) => {
+        if (done) return;
+        done = true;
+        this.closeModal();
+        resolve(choice);
+      };
+      this.$('conflict-overwrite').onclick = () => finish('overwrite');
+      this.$('conflict-reload').onclick = () => finish('reload');
+      this.$('conflict-cancel').onclick = () => finish('cancel');
+      this.$('modal').addEventListener('click', (e) => {
+        if (e.target === this.$('modal')) finish('cancel');
+      }, { once: true });
+    });
   }
 
   refreshHeader() {
@@ -695,13 +812,16 @@ export class UI {
     this.$('modal').hidden = true;
   }
 
-  openShare({ viewUrl, editUrl, doc }) {
+  openShare({ viewUrl, editUrl, presentUrl = null, doc }) {
     const subject = encodeURIComponent(`Planungsvorschlag: ${doc.name}`);
     const body = encodeURIComponent(`Hallo\n\nHier ist mein Planungsvorschlag „${doc.name}“, erstellt mit dem Stadtplaner:\n\n${viewUrl}\n\nDer Link öffnet den Entwurf direkt im Browser.\n`);
     this.openModal(`
       <h2>Entwurf teilen</h2>
       <p>Der <strong>Ansichtslink</strong> zeigt den Vorschlag; wer ihn öffnet, kann eine eigene Kopie weiterbearbeiten, dein Original bleibt unverändert.</p>
       <div class="link-row"><input type="text" id="share-url" readonly value="${esc(viewUrl)}"><button type="button" class="btn primary" data-copy="share-url">Kopieren</button></div>
+      ${presentUrl ? `
+      <p><strong>Präsentationslink</strong> – nur Karte, Legende und Routenvergleich, ohne Werkzeuge. Für Sitzungen, Beamer und Leute, die nur schauen sollen.</p>
+      <div class="link-row"><input type="text" id="share-present-url" readonly value="${esc(presentUrl)}"><button type="button" class="btn" data-copy="share-present-url">Kopieren</button></div>` : ''}
       ${editUrl ? `
       <p><strong>Bearbeitungslink</strong> – nur an Personen geben, die den Entwurf direkt mitbearbeiten sollen. Wer ihn hat, kann alles ändern und löschen.</p>
       <div class="link-row"><input type="text" id="share-edit-url" readonly value="${esc(editUrl)}"><button type="button" class="btn" data-copy="share-edit-url">Kopieren</button></div>` : ''}
@@ -745,6 +865,7 @@ export class UI {
         <label class="field">Ausrichtung<select id="export-orientation"><option value="landscape">Querformat</option><option value="portrait">Hochformat</option></select></label>
         <label class="field">Auflösung<select id="export-dpi">${DPI.map((d) => `<option value="${d}" ${d === 150 ? 'selected' : ''}>${d} dpi${d === 96 ? ' (Bildschirm)' : d === 300 ? ' (Druck)' : ''}</option>`).join('')}</select></label>
       </div>
+      <label class="check"><input type="checkbox" id="export-report"> Bericht anhängen (nur PDF): Massnahmenliste, Routenvergleich, Kommentare und Link auf weiteren Seiten</label>
       <p class="muted small" id="export-status"></p>
       <div class="btn-row">
         <button type="button" id="export-png" class="btn primary">PNG herunterladen</button>
@@ -756,6 +877,7 @@ export class UI {
       paper: this.$('export-paper').value,
       orientation: this.$('export-orientation').value,
       dpi: Number(this.$('export-dpi').value),
+      report: this.$('export-report').checked,
     });
     const run = async (format) => {
       const status = this.$('export-status');

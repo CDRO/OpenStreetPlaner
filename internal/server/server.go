@@ -25,6 +25,7 @@ const (
 	maxBodyBytes       = 8 << 20
 	editTokenHeader    = "X-Edit-Token"
 	commentTokenHeader = "X-Comment-Token"
+	clientIDHeader     = "X-Client-Id"
 )
 
 type Server struct {
@@ -39,6 +40,7 @@ type Server struct {
 	push    *push.Sender
 	pushKey string
 	pushWG  sync.WaitGroup
+	broker  *broker
 }
 
 // RateLimit konfiguriert die Drosselung schreibender API-Aufrufe pro Client.
@@ -62,7 +64,7 @@ func New(st *store.Store, osmClient *osm.Client, webFS fs.FS, logger *log.Logger
 	if logger == nil {
 		logger = log.Default()
 	}
-	s := &Server{store: st, osm: osmClient, index: index, sw: sw, logger: logger, mux: http.NewServeMux()}
+	s := &Server{store: st, osm: osmClient, index: index, sw: sw, logger: logger, mux: http.NewServeMux(), broker: newBroker()}
 	s.static = http.StripPrefix("/static/", http.FileServerFS(sub))
 	s.routes()
 	return s, nil
@@ -106,6 +108,7 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/drafts/{id}", s.deleteDraft)
 	m.HandleFunc("POST /api/drafts/{id}/auth", s.authDraft)
 	m.HandleFunc("POST /api/drafts/{id}/fork", s.forkDraft)
+	m.HandleFunc("GET /api/drafts/{id}/events", s.events)
 	m.HandleFunc("GET /api/drafts/{id}/versions", s.listVersions)
 	m.HandleFunc("GET /api/drafts/{id}/versions/{n}", s.getVersion)
 	m.HandleFunc("GET /api/drafts/{id}/comments", s.listComments)
@@ -158,6 +161,14 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Flush reicht an den darunterliegenden Writer durch, damit SSE-Streams
+// durch die Logging-Hülle nicht blockiert werden.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
@@ -189,7 +200,7 @@ func writeError(w http.ResponseWriter, err error) {
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, model.ErrInvalid), errors.Is(err, osm.ErrBadRequest), errors.Is(err, store.ErrBadComment):
 		status, msg = http.StatusBadRequest, err.Error()
-	case errors.Is(err, store.ErrCommentLimit):
+	case errors.Is(err, store.ErrCommentLimit), errors.Is(err, store.ErrConflict):
 		status, msg = http.StatusConflict, err.Error()
 	case errors.As(err, &maxErr):
 		status, msg = http.StatusRequestEntityTooLarge, "Entwurf ist zu gross"
@@ -205,9 +216,10 @@ func writeError(w http.ResponseWriter, err error) {
 }
 
 type draftBody struct {
-	Doc   *model.Document `json:"doc"`
-	Label string          `json:"label"`
-	Name  string          `json:"name"`
+	Doc           *model.Document `json:"doc"`
+	Label         string          `json:"label"`
+	Name          string          `json:"name"`
+	BaseUpdatedAt string          `json:"baseUpdatedAt"` // Stand beim Laden; leer = ohne Konfliktprüfung
 }
 
 func readDraftBody(w http.ResponseWriter, r *http.Request, needDoc bool) (*draftBody, error) {
@@ -264,7 +276,13 @@ func (s *Server) createDraft(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "editToken": token, "doc": body.Doc, "updatedAt": body.Doc.UpdatedAt})
+	// updatedAt aus den Metadaten: der Client schickt ihn beim Speichern als
+	// baseUpdatedAt zurück, deshalb muss er bitgenau dem Serverstand entsprechen.
+	updatedAt := any(body.Doc.UpdatedAt)
+	if _, cm, gerr := s.store.Get(id); gerr == nil {
+		updatedAt = cm.UpdatedAt
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "editToken": token, "doc": body.Doc, "updatedAt": updatedAt})
 }
 
 func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
@@ -298,11 +316,30 @@ func (s *Server) saveDraft(w http.ResponseWriter, r *http.Request) {
 	if label == "" {
 		label = "Gespeichert"
 	}
-	meta, err := s.store.Save(id, r.Header.Get(editTokenHeader), body.Doc, label)
+	var expect *time.Time
+	if body.BaseUpdatedAt != "" {
+		t, err := time.Parse(time.RFC3339Nano, body.BaseUpdatedAt)
+		if err != nil {
+			writeError(w, errors.Join(model.ErrInvalid, errors.New("baseUpdatedAt ist kein Zeitstempel")))
+			return
+		}
+		expect = &t
+	}
+	meta, err := s.store.SaveIfUnchanged(id, r.Header.Get(editTokenHeader), body.Doc, label, expect)
+	if errors.Is(err, store.ErrConflict) {
+		current, cm, gerr := s.store.Get(id)
+		if gerr != nil {
+			writeError(w, gerr)
+			return
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "doc": current, "updatedAt": cm.UpdatedAt, "versionCount": len(cm.Versions)})
+		return
+	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	s.broker.publish(id, "updated", map[string]any{"updatedAt": meta.UpdatedAt, "clientId": r.Header.Get(clientIDHeader), "versionCount": len(meta.Versions)})
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "updatedAt": meta.UpdatedAt, "versionCount": len(meta.Versions), "doc": body.Doc})
 }
 
@@ -352,12 +389,12 @@ func (s *Server) forkDraft(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	doc, _, err := s.store.Get(newID)
+	doc, cm, err := s.store.Get(newID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": newID, "editToken": token, "doc": doc})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": newID, "editToken": token, "doc": doc, "updatedAt": cm.UpdatedAt})
 }
 
 func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
@@ -438,6 +475,7 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.notifyComment(id, c, parent, in.ClientID)
+	s.broker.publish(id, "comment", map[string]any{"id": c.ID, "clientId": in.ClientID})
 	writeJSON(w, http.StatusCreated, map[string]any{"comment": c, "commentToken": token})
 }
 

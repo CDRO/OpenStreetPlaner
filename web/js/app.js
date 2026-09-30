@@ -4,7 +4,7 @@ import { SlippyMap } from './map.js';
 import { drawScene } from './draw.js';
 import { Store } from './store.js';
 import { LocalState } from './local.js';
-import { api } from './api.js';
+import { api, setClientId } from './api.js';
 import {
   cloneDocument, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON,
 } from './model.js';
@@ -15,7 +15,7 @@ import { UI } from './ui.js';
 import { computeRoutes } from './routing.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
 import { nodesKey } from './model.js';
-import { exportPdf, exportPng } from './export.js';
+import { exportPdf, exportPng, exportReport } from './export.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
 const POLL_INTERVAL_MS = 45000;
@@ -34,20 +34,27 @@ function download(filename, data, type = 'application/json') {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-const safeFilename = (name) => (name || 'entwurf').replace(/[^\wäöüÄÖÜ.-]+/g, '_').slice(0, 60);
+// Chromium verwirft Download-Namen mit Nicht-ASCII-Zeichen (dann heisst die Datei „download“), deshalb Umlaute umschreiben.
+const TRANSLIT = { ä: 'ae', ö: 'oe', ü: 'ue', Ä: 'Ae', Ö: 'Oe', Ü: 'Ue', ß: 'ss', é: 'e', è: 'e', ê: 'e', à: 'a', â: 'a', ç: 'c' };
+const safeFilename = (name) => (name || 'entwurf')
+  .replace(/[äöüÄÖÜßéèêàâç]/g, (c) => TRANSLIT[c])
+  .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'entwurf';
 
 function parseLocation() {
   const m = /^\/d\/([0-9a-z]{6,32})\/?$/.exec(location.pathname);
   const id = m ? m[1] : null;
   const t = /(?:^#|&)edit=([0-9a-f]{16,128})/.exec(location.hash);
   const c = /(?:^#|&)comment=([0-9a-z]{6,32})/.exec(location.hash);
-  return { id, token: t ? t[1] : null, comment: c ? c[1] : null };
+  const present = !!id && new URLSearchParams(location.search).get('present') === '1';
+  return { id, token: t ? t[1] : null, comment: c ? c[1] : null, present };
 }
 
 async function main() {
   const local = new LocalState();
   const settings = local.loadSettings();
   const loc = parseLocation();
+  setClientId(local.clientId());
   const state = {
     id: null,
     token: null,
@@ -70,6 +77,9 @@ async function main() {
     pendingComment: loc.comment,
     push: { serverEnabled: false, publicKey: '', subscribed: false, role: null },
     clientId: local.clientId(),
+    present: loc.present, // Präsentationsmodus: nur Karte, Legende und Routenvergleich
+    events: null, // EventSource für Live-Änderungen
+    remoteUpdate: null, // Serverstand, der neuer ist als unserer
     tileSources: [{ id: 'osm', label: 'OpenStreetMap', attribution: '© OpenStreetMap-Mitwirkende', maxZoom: 19, minZoom: 0, overlay: false }],
   };
 
@@ -90,9 +100,9 @@ async function main() {
         } catch {
           loadError = 'Der Bearbeitungs-Link ist ungültig; der Entwurf wird nur angezeigt.';
         }
-        history.replaceState(null, '', `/d/${loc.id}`);
+        history.replaceState(null, '', `/d/${loc.id}${loc.present ? '?present=1' : ''}`);
       } else if (loc.comment) {
-        history.replaceState(null, '', `/d/${loc.id}`);
+        history.replaceState(null, '', `/d/${loc.id}${loc.present ? '?present=1' : ''}`);
       }
       state.token = local.tokenFor(loc.id);
       state.savedKey = contentKey(doc);
@@ -127,7 +137,7 @@ async function main() {
   });
   const osm = new OsmRoadCache((b) => api.roads(b));
 
-  const canEdit = () => !state.id || !!state.token;
+  const canEdit = () => !state.present && (!state.id || !!state.token);
 
   const getSnapIndex = () => {
     if (state.snapDirty || !state.snapIndex) {
@@ -160,9 +170,16 @@ async function main() {
       ui.refreshProperties();
       if (sel) ui.showTab('draw'); // Eigenschaften liegen im Zeichnen-Tab
     },
-    onToolChange: () => ui && ui.refreshTools(),
+    onToolChange: () => {
+      if (!ui) return;
+      ui.refreshTools();
+      ui.refreshDrawActions();
+    },
     onStatus: (text) => ui && ui.setStatus(text),
-    onSceneChange: () => map.requestRender(),
+    onSceneChange: () => {
+      map.requestRender();
+      if (ui) ui.refreshDrawActions();
+    },
     onHoverChange: (h) => ui && ui.setTooltip(h ? { text: hoverText(h), point: h.point } : null),
     onCommentPlace: (latlng) => {
       if (!ui) return;
@@ -224,7 +241,10 @@ async function main() {
         }
       }
       map.requestRender();
-      if (ui) ui.refreshRoute();
+      if (ui) {
+        ui.refreshRoute();
+        ui.refreshPresent();
+      }
     }, 120);
   }
 
@@ -370,10 +390,29 @@ async function main() {
       ui.refreshComments();
       map.requestRender();
     },
-    async runExport({ format, mode, paper, orientation, dpi }) {
-      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '' };
-      const blob = format === 'pdf' ? await exportPdf(map, store.doc, opts) : await exportPng(map, store.doc, opts);
-      download(`${safeFilename(store.doc.name)}.${format}`, blob);
+    async runExport({ format, mode, paper, orientation, dpi, report = false }) {
+      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments };
+      let blob;
+      if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
+      else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
+      else blob = await exportPng(map, store.doc, opts);
+      download(`${safeFilename(store.doc.name)}${report ? '-bericht' : ''}.${format}`, blob);
+    },
+    isPresent: () => state.present,
+    exitPresent() {
+      if (!state.id) return;
+      location.href = `/d/${state.id}`;
+    },
+    remoteUpdate: () => state.remoteUpdate,
+    async reloadFromServer() {
+      if (!state.id) return;
+      try {
+        const res = await api.getDraft(state.id);
+        applyServerDoc(res);
+        ui.toast('Aktueller Stand vom Server geladen.', 'ok');
+      } catch (e) {
+        ui.toast(`Laden fehlgeschlagen: ${e.message}`, 'error', 6000);
+      }
     },
     tileSources: () => state.tileSources,
     updateSettings(patch) {
@@ -499,15 +538,32 @@ async function main() {
       history.replaceState(null, '', '/');
       ui.toast('Neuer Entwurf angelegt.');
     },
-    async saveDraft(label) {
+    async saveDraft(label, { force = false } = {}) {
       store.doc.view = currentView();
       try {
         if (state.id && state.token) {
           if (label === undefined) {
             label = prompt('Kurze Beschreibung dieser Version (optional):', '') ?? '';
           }
-          const res = await api.saveDraft(state.id, state.token, store.doc, label || 'Gespeichert');
+          let res;
+          try {
+            res = await api.saveDraft(state.id, state.token, store.doc, label || 'Gespeichert', force ? null : state.serverUpdatedAt);
+          } catch (e) {
+            if (e.status !== 409 || !e.data || !e.data.doc) throw e;
+            // Jemand anderes hat inzwischen gespeichert: überschreiben oder Serverstand übernehmen?
+            const choice = await ui.openConflict({ updatedAt: e.data.updatedAt, versionCount: e.data.versionCount });
+            if (choice === 'overwrite') return actions.saveDraft(label || 'Gespeichert', { force: true });
+            if (choice === 'reload') {
+              applyServerDoc(e.data);
+              ui.toast('Serverstand übernommen; deine Fassung liegt im Verlauf unter „Rückgängig“.', 'info', 6000);
+            }
+            return undefined;
+          }
           state.serverUpdatedAt = res.updatedAt;
+          if (state.remoteUpdate) {
+            state.remoteUpdate = null;
+            ui.showBanner(null);
+          }
         } else if (state.id && !state.token) {
           return actions.makeOwnCopy();
         } else {
@@ -534,6 +590,7 @@ async function main() {
         const copy = deserialize(JSON.stringify(res.doc));
         bind(res.id, res.editToken);
         loadDocument(copy, { keepView: true });
+        state.serverUpdatedAt = res.updatedAt || null;
         state.savedKey = contentKey(copy);
         local.rememberDraft({ id: res.id, name: copy.name, token: res.editToken });
         history.replaceState(null, '', `/d/${res.id}`);
@@ -555,6 +612,7 @@ async function main() {
         const res = await api.createDraft(copy, 'Kopie angelegt');
         bind(res.id, res.editToken);
         loadDocument(deserialize(JSON.stringify(res.doc)), { keepView: true });
+        state.serverUpdatedAt = res.updatedAt || null;
         state.savedKey = contentKey(store.doc);
         local.rememberDraft({ id: res.id, name: copy.name, token: res.editToken, updatedAt: res.updatedAt });
         history.replaceState(null, '', `/d/${res.id}`);
@@ -641,12 +699,13 @@ async function main() {
     },
     async share() {
       if (!state.id || actions.isDirty()) {
-        if (!canEdit()) return ui.openShare({ viewUrl: `${location.origin}/d/${state.id}`, editUrl: null, doc: store.doc });
+        if (!canEdit()) return ui.openShare({ viewUrl: `${location.origin}/d/${state.id}`, presentUrl: `${location.origin}/d/${state.id}?present=1`, editUrl: null, doc: store.doc });
         await actions.saveDraft(state.id ? 'Vor dem Teilen gespeichert' : undefined);
         if (!state.id) return;
       }
       ui.openShare({
         viewUrl: `${location.origin}/d/${state.id}`,
+        presentUrl: `${location.origin}/d/${state.id}?present=1`,
         editUrl: state.token ? `${location.origin}/d/${state.id}#edit=${state.token}` : null,
         doc: store.doc,
       });
@@ -822,10 +881,83 @@ async function main() {
     ui.refreshTools();
   }
 
+  // --- Live-Änderungen (Server-Sent Events) ---------------------------------------
+  function applyServerDoc(res) {
+    const d = deserialize(JSON.stringify(res.doc));
+    const label = 'Serverstand übernehmen';
+    tools.cancel();
+    tools.setSelection(null);
+    if (store.doc.features.length || store.doc.name !== d.name) {
+      store.commit(label, (cur) => {
+        cur.name = d.name;
+        cur.layers = d.layers;
+        cur.features = d.features;
+        cur.route = d.route;
+      });
+    } else {
+      store.load(d);
+      map.requestRender();
+    }
+    if (!getLayer(store.doc, state.activeLayerId)) state.activeLayerId = store.doc.layers[0].id;
+    state.serverUpdatedAt = res.updatedAt;
+    state.savedKey = contentKey(store.doc);
+    if (state.remoteUpdate) {
+      state.remoteUpdate = null;
+      ui.showBanner(null);
+    }
+    saveWorking();
+    ui.refreshAll();
+  }
+
+  function connectEvents() {
+    if (state.events) {
+      state.events.close();
+      state.events = null;
+    }
+    if (!state.id || typeof EventSource === 'undefined') return;
+    const es = new EventSource(`/api/drafts/${encodeURIComponent(state.id)}/events`);
+    state.events = es;
+    es.addEventListener('updated', async (e) => {
+      let data = {};
+      try {
+        data = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      if (data.clientId && data.clientId === state.clientId) return; // eigene Speicherung
+      if (state.serverUpdatedAt && data.updatedAt === state.serverUpdatedAt) return;
+      if (!actions.isDirty()) {
+        try {
+          const res = await api.getDraft(state.id);
+          applyServerDoc(res);
+          ui.toast('Der Entwurf wurde von jemand anderem gespeichert – Ansicht aktualisiert.', 'info', 5000);
+        } catch {
+          // beim nächsten Speichern meldet der Server den Konflikt
+        }
+      } else {
+        state.remoteUpdate = { updatedAt: data.updatedAt, versionCount: data.versionCount };
+        ui.showBanner('Jemand anderes hat diesen Entwurf inzwischen gespeichert. Beim Speichern wirst du gefragt, welcher Stand gilt.', 'Serverstand laden', () => actions.reloadFromServer());
+      }
+    });
+    es.addEventListener('comment', (e) => {
+      let data = {};
+      try {
+        data = JSON.parse(e.data);
+      } catch {
+        data = {};
+      }
+      loadComments({ quiet: !!data.clientId && data.clientId === state.clientId });
+    });
+    es.onerror = () => {
+      // Der Browser verbindet selbst neu; Kommentare werden ohnehin periodisch nachgeladen.
+    };
+  }
+
   function bind(id, token) {
     state.id = id;
     state.token = token;
     state.serverUpdatedAt = null;
+    state.remoteUpdate = null;
     state.comments = [];
     state.activeCommentId = null;
     state.knownCommentIds = null;
@@ -833,6 +965,7 @@ async function main() {
     tools.commentDraft = null;
     if (id) loadComments({ quiet: true });
     refreshPushState();
+    connectEvents();
   }
 
   function currentView() {
@@ -873,6 +1006,7 @@ async function main() {
   // --- Reaktionen auf Änderungen ------------------------------------------------
   let autosaveTimer = null;
   const scheduleAutosave = () => {
+    if (state.present) return;
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(saveWorking, 400);
   };
@@ -945,11 +1079,20 @@ async function main() {
     if (tool && !e.altKey) tools.setTool(tool.id);
   });
 
-  window.addEventListener('beforeunload', saveWorking);
+  window.addEventListener('beforeunload', () => {
+    if (!state.present) saveWorking();
+  });
 
   // --- Start ----------------------------------------------------------------------
-  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes, comments: () => state.comments, pollComments: () => loadComments() };
+  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes, comments: () => state.comments, pollComments: () => loadComments(), state };
+  if (state.present) {
+    document.body.classList.add('present', 'sidebar-hidden');
+    tools.setTool('select');
+  } else if (window.matchMedia && window.matchMedia('(max-width: 860px)').matches) {
+    document.body.classList.add('sidebar-hidden'); // Bottom-Sheet startet eingeklappt, die Tabs bleiben als Griff sichtbar
+  }
   ui.refreshAll();
+  connectEvents();
   if (store.doc.route) {
     ensureRouteNetwork();
     recomputeRoutes();
@@ -970,7 +1113,21 @@ async function main() {
   ensureOsm();
   updateOsmStatus();
   if (loadError) ui.toast(loadError, 'error', 8000);
-  if (openedFromLink && !canEdit()) {
+  if (state.present) {
+    if (store.doc.features.length && !store.doc.route) {
+      // Präsentation: den ganzen Vorschlag zeigen, nicht die zuletzt gespeicherte Ansicht
+      const lats = [];
+      const lngs = [];
+      for (const f of store.doc.features) {
+        const pts = f.type === 'road' || f.type === 'zone' ? f.nodes : [f.at || f.center];
+        for (const p of pts) {
+          lats.push(p[0]);
+          lngs.push(p[1]);
+        }
+      }
+      map.fitBounds({ south: Math.min(...lats), west: Math.min(...lngs), north: Math.max(...lats), east: Math.max(...lngs) }, { padding: 80, maxZoom: 17 });
+    }
+  } else if (openedFromLink && !canEdit()) {
     ui.showBanner('Nur Ansicht: Dieser Entwurf wurde mit dir geteilt. Lege eine eigene Kopie an, um ihn zu bearbeiten.', 'Eigene Kopie anlegen', () => actions.makeOwnCopy());
   } else if (openedFromLink) {
     ui.showTab('drafts');

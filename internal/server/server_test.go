@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"stadtplaner/internal/osm"
 	"stadtplaner/internal/push"
@@ -473,5 +474,80 @@ func TestRepliesAndPushNotifications(t *testing.T) {
 	subs, _ = srv.store.PushSubs(id)
 	if len(subs) != 1 || subs[0].ClientID != "anna" {
 		t.Fatalf("nach Löschen: %+v", subs)
+	}
+}
+
+func TestConflictAndEvents(t *testing.T) {
+	ts, _ := newTestServer(t)
+	_, out := call(t, "POST", ts.URL+"/api/drafts", map[string]any{"doc": sampleDoc()}, nil)
+	id := out["id"].(string)
+	token := out["editToken"].(string)
+	_, got := call(t, "GET", ts.URL+"/api/drafts/"+id, nil, nil)
+	loadedAt := got["updatedAt"].(string)
+	if created := out["updatedAt"].(string); created != loadedAt {
+		t.Fatalf("updatedAt aus POST (%s) muss dem Metadaten-Stand (%s) entsprechen, sonst scheitert das erste Speichern am Konfliktschutz", created, loadedAt)
+	}
+	// Fork liefert ebenfalls den Metadaten-Stand
+	_, forked := call(t, "POST", ts.URL+"/api/drafts/"+id+"/fork", map[string]any{"name": "Kopie"}, nil)
+	_, forkedGot := call(t, "GET", ts.URL+"/api/drafts/"+forked["id"].(string), nil, nil)
+	if forked["updatedAt"] != forkedGot["updatedAt"] {
+		t.Fatalf("fork updatedAt %v != %v", forked["updatedAt"], forkedGot["updatedAt"])
+	}
+
+	// Event-Stream öffnen
+	req, _ := http.NewRequest("GET", ts.URL+"/api/drafts/"+id+"/events", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("SSE Content-Type: %s", res.Header.Get("Content-Type"))
+	}
+	buf := make([]byte, 4096)
+	n, _ := res.Body.Read(buf) // "retry: 3000"
+	if !strings.Contains(string(buf[:n]), "retry") {
+		t.Fatalf("erste Zeile: %q", buf[:n])
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	docB := sampleDoc()
+	docB["name"] = "B"
+	res2, out2 := call(t, "PUT", ts.URL+"/api/drafts/"+id, map[string]any{"doc": docB, "baseUpdatedAt": loadedAt}, map[string]string{"X-Edit-Token": token, "X-Client-Id": "browser-1"})
+	if res2.StatusCode != 200 {
+		t.Fatalf("erstes Speichern: %d %+v", res2.StatusCode, out2)
+	}
+	n, _ = res.Body.Read(buf)
+	ev := string(buf[:n])
+	if !strings.Contains(ev, "event: updated") || !strings.Contains(ev, `"clientId":"browser-1"`) {
+		t.Fatalf("updated-Event: %q", ev)
+	}
+
+	docC := sampleDoc()
+	docC["name"] = "C"
+	res3, out3 := call(t, "PUT", ts.URL+"/api/drafts/"+id, map[string]any{"doc": docC, "baseUpdatedAt": loadedAt}, map[string]string{"X-Edit-Token": token})
+	if res3.StatusCode != 409 || out3["doc"] == nil || out3["doc"].(map[string]any)["name"] != "B" {
+		t.Fatalf("Konflikt erwartet mit aktuellem Stand: %d %+v", res3.StatusCode, out3)
+	}
+	res4, _ := call(t, "PUT", ts.URL+"/api/drafts/"+id, map[string]any{"doc": docC}, map[string]string{"X-Edit-Token": token})
+	if res4.StatusCode != 200 {
+		t.Fatalf("ohne baseUpdatedAt überschreibt: %d", res4.StatusCode)
+	}
+	res5, _ := call(t, "PUT", ts.URL+"/api/drafts/"+id, map[string]any{"doc": docC, "baseUpdatedAt": "gestern"}, map[string]string{"X-Edit-Token": token})
+	if res5.StatusCode != 400 {
+		t.Fatalf("kaputter Zeitstempel: %d", res5.StatusCode)
+	}
+	_, _ = call(t, "POST", ts.URL+"/api/drafts/"+id+"/comments", map[string]any{"lat": 47, "lng": 8, "text": "hi", "clientId": "browser-2"}, nil)
+	deadline := time.Now().Add(2 * time.Second)
+	collected := ""
+	for time.Now().Before(deadline) && !strings.Contains(collected, "event: comment") {
+		n, err := res.Body.Read(buf)
+		collected += string(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	if !strings.Contains(collected, "event: comment") {
+		t.Fatalf("comment-Event fehlt: %q", collected)
 	}
 }

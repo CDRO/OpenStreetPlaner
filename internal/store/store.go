@@ -36,6 +36,7 @@ const (
 var (
 	ErrNotFound     = errors.New("Entwurf nicht gefunden")
 	ErrCommentLimit = errors.New("zu viele Kommentare für diesen Entwurf")
+	ErrConflict     = errors.New("der Entwurf wurde inzwischen von jemand anderem gespeichert")
 	ErrBadComment   = errors.New("Kommentar ist ungültig")
 	ErrUnauthorized = errors.New("kein gültiges Bearbeitungs-Token")
 	idPattern       = regexp.MustCompile(`^[0-9a-z]{6,32}$`)
@@ -231,6 +232,12 @@ func (s *Store) Authorize(id, token string) error {
 
 // Save ersetzt den aktuellen Stand und legt eine Version ab.
 func (s *Store) Save(id, token string, doc *model.Document, label string) (*Meta, error) {
+	return s.SaveIfUnchanged(id, token, doc, label, nil)
+}
+
+// SaveIfUnchanged speichert nur, wenn der Stand seit expect (UpdatedAt beim Laden) nicht
+// verändert wurde; nil = ohne Prüfung. Bei Abweichung ErrConflict.
+func (s *Store) SaveIfUnchanged(id, token string, doc *model.Document, label string, expect *time.Time) (*Meta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, err := s.readMeta(id)
@@ -239,6 +246,9 @@ func (s *Store) Save(id, token string, doc *model.Document, label string) (*Meta
 	}
 	if err := s.checkToken(m, token); err != nil {
 		return nil, err
+	}
+	if expect != nil && !m.UpdatedAt.Truncate(time.Millisecond).Equal(expect.Truncate(time.Millisecond)) {
+		return nil, ErrConflict
 	}
 	now := time.Now().UTC()
 	doc.ID = id

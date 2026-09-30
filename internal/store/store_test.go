@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"stadtplaner/internal/model"
 )
@@ -219,5 +220,22 @@ func TestRepliesAndPushSubs(t *testing.T) {
 	subs, _ = s.PushSubs(id)
 	if len(subs) != 0 {
 		t.Fatalf("nach Löschen: %+v", subs)
+	}
+}
+
+func TestSaveIfUnchanged(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	id, token, _ := s.Create(doc("A"), "1")
+	_, meta, _ := s.Get(id)
+	loaded := meta.UpdatedAt
+	time.Sleep(2 * time.Millisecond)
+	if _, err := s.SaveIfUnchanged(id, token, doc("B"), "x", &loaded); err != nil {
+		t.Fatalf("unverändert sollte klappen: %v", err)
+	}
+	if _, err := s.SaveIfUnchanged(id, token, doc("C"), "x", &loaded); !errors.Is(err, ErrConflict) {
+		t.Fatalf("veralteter Stand sollte ErrConflict geben: %v", err)
+	}
+	if _, err := s.SaveIfUnchanged(id, token, doc("D"), "x", nil); err != nil {
+		t.Fatalf("ohne Prüfung: %v", err)
 	}
 }

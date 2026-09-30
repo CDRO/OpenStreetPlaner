@@ -1,10 +1,18 @@
 // Zugriff auf das Go-Backend.
 
+let clientId = '';
+
+/** Kennung dieses Browsers; der Server hängt sie an Live-Ereignisse, damit eigene Speicherungen erkannt werden. */
+export function setClientId(id) {
+  clientId = id || '';
+}
+
 async function request(method, url, { body, token, commentToken } = {}) {
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers['X-Edit-Token'] = token;
   if (commentToken) headers['X-Comment-Token'] = commentToken;
+  if (clientId) headers['X-Client-Id'] = clientId;
   let res;
   try {
     res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -21,6 +29,7 @@ async function request(method, url, { body, token, commentToken } = {}) {
   if (!res.ok) {
     const err = new Error((data && data.error) || `Fehler ${res.status}`);
     err.status = res.status;
+    err.data = data; // bei 409 liegt hier der aktuelle Serverstand
     throw err;
   }
   return data;
@@ -29,7 +38,7 @@ async function request(method, url, { body, token, commentToken } = {}) {
 export const api = {
   createDraft: (doc, label) => request('POST', '/api/drafts', { body: { doc, label } }),
   getDraft: (id) => request('GET', `/api/drafts/${encodeURIComponent(id)}`),
-  saveDraft: (id, token, doc, label) => request('PUT', `/api/drafts/${encodeURIComponent(id)}`, { body: { doc, label }, token }),
+  saveDraft: (id, token, doc, label, baseUpdatedAt = null) => request('PUT', `/api/drafts/${encodeURIComponent(id)}`, { body: { doc, label, baseUpdatedAt: baseUpdatedAt || '' }, token }),
   deleteDraft: (id, token) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}`, { token }),
   authDraft: (id, token) => request('POST', `/api/drafts/${encodeURIComponent(id)}/auth`, { token }),
   forkDraft: (id, name) => request('POST', `/api/drafts/${encodeURIComponent(id)}/fork`, { body: { name } }),

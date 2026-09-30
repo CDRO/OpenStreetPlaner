@@ -192,8 +192,17 @@ details.box summary { cursor: pointer; font-weight: 600; }
 @media (max-width: 860px) {
   .topbar input.draft-name { width: 140px; flex-basis: 140px; }
   .brand { display: none; }
-  .sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: 20; box-shadow: 4px 0 20px rgba(0,0,0,.15); }
-  body.sidebar-hidden .sidebar { margin-left: calc(-1 * var(--sidebar-w) - 30px); }
+  /* Seitenleiste als Bottom-Sheet: die Tabs bleiben als Griff sichtbar */
+  .sidebar {
+    position: absolute; left: 0; right: 0; bottom: 0; top: auto; width: auto; height: 48vh; z-index: 20;
+    border-right: 0; border-top: 1px solid var(--border); border-radius: 12px 12px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,.15);
+    transition: transform .2s ease; margin-left: 0 !important;
+  }
+  body.sidebar-hidden .sidebar { transform: translateY(calc(100% - 42px)); }
+  .tabs { cursor: pointer; }
+  .draw-actions { bottom: calc(48vh + 12px); }
+  body.sidebar-hidden .draw-actions { bottom: 56px; }
+  .smap-scale, .smap-attribution { bottom: 44px; }
 }
 @media (max-width: 560px) {
   :root { --sidebar-w: 88vw; }
@@ -254,3 +263,18 @@ details.box summary { cursor: pointer; font-weight: 600; }
 /* Höhenprofil */
 .profile-box { border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 8px; }
 .profile-chart { display: block; width: 320px; max-width: 100%; height: 140px; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
+
+/* Aktionsleiste beim Zeichnen (Touch ohne Doppelklick/Enter) */
+.draw-actions { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 6px; z-index: 7; background: rgba(255,255,255,.95); padding: 6px; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+.draw-actions[hidden] { display: none; }
+.draw-actions .btn { min-height: 40px; }
+
+/* Präsentationsmodus */
+body.present .sidebar, body.present .statusbar, body.present .topbar-actions, body.present #sidebar-toggle, body.present .search, body.present #dirty-indicator, body.present #readonly-indicator { display: none !important; }
+body.present .topbar input.draft-name { border: 0; background: transparent; font-size: 18px; width: auto; flex: 1; }
+body.present .banner { display: none !important; }
+.present-panel { position: absolute; right: 12px; top: 12px; width: min(340px, 90%); background: rgba(255,255,255,.96); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; z-index: 8; box-shadow: 0 6px 24px rgba(0,0,0,.15); font-size: 13px; }
+.present-panel[hidden] { display: none; }
+.present-panel h2 { font-size: 16px; margin-bottom: 4px; }
+.present-panel .legend { margin: 8px 0; }
+.present-panel .route-table { font-size: 12px; }

@@ -4,6 +4,7 @@
 
 import { LEVELS, ZONE_KINDS } from './model.js';
 import { formatDuration } from './routing.js';
+import { haversine } from './geometry.js';
 
 /** Papierformate in Millimetern (Querformat). */
 export const PAPER = {
@@ -223,18 +224,75 @@ export function canvasToBlob(canvas, type = 'image/png', quality) {
 const A4 = { w: 841.89, h: 595.28 };
 const PT_PER_MM = 72 / 25.4;
 
-/** Baut ein einseitiges PDF mit dem JPEG als Bild. Liefert die PDF-Bytes. */
-export function pdfFromJpeg(jpeg, widthPx, heightPx, { title = 'Stadtplaner', pageWmm = null, pageHmm = null } = {}) {
-  const landscape = widthPx >= heightPx;
-  const pageW = pageWmm ? pageWmm * PT_PER_MM : (landscape ? A4.w : A4.h);
-  const pageH = pageHmm ? pageHmm * PT_PER_MM : (landscape ? A4.h : A4.w);
-  const margin = pageWmm ? MARGIN_MM * PT_PER_MM : 24;
-  const scale = Math.min((pageW - 2 * margin) / widthPx, (pageH - 2 * margin) / heightPx);
-  const iw = widthPx * scale;
-  const ih = heightPx * scale;
-  const ix = (pageW - iw) / 2;
-  const iy = (pageH - ih) / 2;
-  const content = `q ${iw.toFixed(2)} 0 0 ${ih.toFixed(2)} ${ix.toFixed(2)} ${iy.toFixed(2)} cm /Im1 Do Q\n`;
+// Helvetica-Zeichenbreiten (1/1000 em) für den Zeilenumbruch; Umlaute wie ihre Grundbuchstaben.
+const HELVETICA = { ' ': 278, '!': 278, '"': 355, '#': 556, '%': 889, '&': 667, "'": 191, '(': 333, ')': 333, '*': 389, '+': 584, ',': 278, '-': 333, '.': 278, '/': 278, ':': 278, ';': 278, '=': 584, '?': 556, '@': 1015, '[': 278, ']': 278, '_': 556, '`': 333, '{': 334, '|': 260, '}': 334, '~': 584,
+  A: 667, B: 667, C: 722, D: 722, E: 667, F: 611, G: 778, H: 722, I: 278, J: 500, K: 667, L: 556, M: 833, N: 722, O: 778, P: 667, Q: 778, R: 722, S: 667, T: 611, U: 722, V: 667, W: 944, X: 667, Y: 667, Z: 611,
+  a: 556, b: 556, c: 500, d: 556, e: 556, f: 278, g: 556, h: 556, i: 222, j: 222, k: 500, l: 222, m: 833, n: 556, o: 556, p: 556, q: 556, r: 333, s: 500, t: 278, u: 556, v: 500, w: 722, x: 500, y: 500, z: 500 };
+const CP1252 = { '€': 0x80, '„': 0x84, '…': 0x85, '‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94, '•': 0x95, '–': 0x96, '—': 0x97, '«': 0xab, '»': 0xbb, '°': 0xb0, '²': 0xb2, '³': 0xb3, '×': 0xd7, '÷': 0xf7, '·': 0xb7 };
+
+export function textWidth(text, sizePt) {
+  let w = 0;
+  for (const ch of text) {
+    const base = ch.normalize('NFD')[0];
+    w += HELVETICA[ch] ?? HELVETICA[base] ?? (/\d/.test(ch) ? 556 : 556);
+  }
+  return (w / 1000) * sizePt;
+}
+
+/** Bricht Text in Zeilen um, die in maxWidth Punkt passen. */
+export function wrapText(text, sizePt, maxWidth) {
+  const lines = [];
+  for (const para of String(text).split(/\r?\n/)) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      lines.push('');
+      continue;
+    }
+    let line = '';
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (textWidth(candidate, sizePt) <= maxWidth || !line) line = candidate;
+      else {
+        lines.push(line);
+        line = word;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+/** Text als PDF-String in WinAnsi (cp1252); unbekannte Zeichen werden zu '?'. */
+export function pdfWinAnsi(text) {
+  let out = '';
+  for (const ch of String(text)) {
+    let code = ch.codePointAt(0);
+    if (code > 0xff) {
+      code = CP1252[ch] ?? 0x3f;
+    } else if (code >= 0x80 && code <= 0x9f) {
+      code = 0x3f;
+    }
+    if (code === 0x28 || code === 0x29 || code === 0x5c) out += '\\' + String.fromCharCode(code);
+    else if (code < 0x20) out += ' ';
+    else out += String.fromCharCode(code);
+  }
+  return out;
+}
+
+function latin1Bytes(str) {
+  const out = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/**
+ * Baut ein mehrseitiges PDF. pages: [{ image: { jpeg, width, height } } | { blocks: [{ text, size?, bold?, gap? }] }].
+ * Seitengrösse in Millimetern; Text in Helvetica (Standardschrift, keine Einbettung nötig).
+ */
+export function buildPdf({ pages, pageWmm, pageHmm, title = 'Stadtplaner' }) {
+  const pageW = pageWmm * PT_PER_MM;
+  const pageH = pageHmm * PT_PER_MM;
+  const margin = MARGIN_MM * PT_PER_MM;
   const enc = new TextEncoder();
   const parts = [];
   let offset = 0;
@@ -244,32 +302,76 @@ export function pdfFromJpeg(jpeg, widthPx, heightPx, { title = 'Stadtplaner', pa
   };
   const pushStr = (s) => push(enc.encode(s));
   const offsets = [];
-  const obj = (n, body) => {
+  let nextId = 1;
+  const alloc = () => nextId++;
+  const writeObj = (n, body) => {
     offsets[n] = offset;
     pushStr(`${n} 0 obj\n${body}\nendobj\n`);
   };
+  const writeStream = (n, dict, bytes) => {
+    offsets[n] = offset;
+    pushStr(`${n} 0 obj\n<< ${dict} /Length ${bytes.length} >>\nstream\n`);
+    push(bytes);
+    pushStr('\nendstream\nendobj\n');
+  };
   pushStr('%PDF-1.4\n');
   push(new Uint8Array([0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]));
-  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
-  obj(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
-  obj(3, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)}] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>`);
-  offsets[4] = offset;
-  pushStr(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${widthPx} /Height ${heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`);
-  push(jpeg);
-  pushStr('\nendstream\nendobj\n');
-  const contentBytes = enc.encode(content);
-  offsets[5] = offset;
-  pushStr(`5 0 obj\n<< /Length ${contentBytes.length} >>\nstream\n`);
-  push(contentBytes);
-  pushStr('endstream\nendobj\n');
+  const catalogId = alloc();
+  const pagesId = alloc();
+  const fontId = alloc();
+  const fontBoldId = alloc();
+  const infoId = alloc();
+  const pageIds = [];
+  const pending = []; // [id, body] oder [id, dict, bytes]
+  for (const page of pages) {
+    const pageId = alloc();
+    const contentId = alloc();
+    pageIds.push(pageId);
+    if (page.image) {
+      const imgId = alloc();
+      const { jpeg, width, height } = page.image;
+      const scale = Math.min((pageW - 2 * margin) / width, (pageH - 2 * margin) / height);
+      const iw = width * scale;
+      const ih = height * scale;
+      const content = enc.encode(`q ${iw.toFixed(2)} 0 0 ${ih.toFixed(2)} ${((pageW - iw) / 2).toFixed(2)} ${((pageH - ih) / 2).toFixed(2)} cm /Im${imgId} Do Q\n`);
+      pending.push({ id: pageId, body: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)}] /Resources << /XObject << /Im${imgId} ${imgId} 0 R >> >> /Contents ${contentId} 0 R >>` });
+      pending.push({ id: imgId, dict: `/Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, bytes: jpeg });
+      pending.push({ id: contentId, dict: '', bytes: content });
+    } else {
+      let y = pageH - margin;
+      let text = '';
+      for (const block of page.blocks || []) {
+        const size = block.size || 10.5;
+        const font = block.bold ? 'F2' : 'F1';
+        const lines = wrapText(block.text, size, pageW - 2 * margin);
+        for (const line of lines) {
+          y -= size * 1.35;
+          if (y < margin) break;
+          text += `BT /${font} ${size} Tf 1 0 0 1 ${margin.toFixed(2)} ${y.toFixed(2)} Tm (${pdfWinAnsi(line)}) Tj ET\n`;
+        }
+        y -= block.gap ?? size * 0.5;
+      }
+      pending.push({ id: pageId, body: `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)}] /Resources << /Font << /F1 ${fontId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>` });
+      pending.push({ id: contentId, dict: '', bytes: latin1Bytes(text) });
+    }
+  }
+  writeObj(catalogId, `<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
+  writeObj(pagesId, `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`);
+  writeObj(fontId, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  writeObj(fontBoldId, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
   const now = new Date();
   const pad2 = (n) => String(n).padStart(2, '0');
   const date = `D:${now.getUTCFullYear()}${pad2(now.getUTCMonth() + 1)}${pad2(now.getUTCDate())}${pad2(now.getUTCHours())}${pad2(now.getUTCMinutes())}${pad2(now.getUTCSeconds())}Z`;
-  obj(6, `<< /Title ${pdfTextString(title)} /Producer (Stadtplaner) /Creator (Stadtplaner) /CreationDate (${date}) >>`);
+  writeObj(infoId, `<< /Title ${pdfTextString(title)} /Producer (Stadtplaner) /Creator (Stadtplaner) /CreationDate (${date}) >>`);
+  for (const p of pending) {
+    if (p.bytes) writeStream(p.id, p.dict, p.bytes);
+    else writeObj(p.id, p.body);
+  }
+  const total = nextId;
   const xref = offset;
-  let table = `xref\n0 7\n0000000000 65535 f \n`;
-  for (let i = 1; i <= 6; i++) table += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
-  table += `trailer\n<< /Size 7 /Root 1 0 R /Info 6 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  let table = `xref\n0 ${total}\n0000000000 65535 f \n`;
+  for (let i = 1; i < total; i++) table += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  table += `trailer\n<< /Size ${total} /Root ${catalogId} 0 R /Info ${infoId} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   pushStr(table);
   const out = new Uint8Array(offset);
   let pos = 0;
@@ -278,6 +380,14 @@ export function pdfFromJpeg(jpeg, widthPx, heightPx, { title = 'Stadtplaner', pa
     pos += p.length;
   }
   return out;
+}
+
+/** Einseitiges PDF mit einem JPEG (Rückwärtskompatibilität, Tests). */
+export function pdfFromJpeg(jpeg, widthPx, heightPx, { title = 'Stadtplaner', pageWmm = null, pageHmm = null } = {}) {
+  const landscape = widthPx >= heightPx;
+  const wmm = pageWmm || (landscape ? A4.w : A4.h) / PT_PER_MM;
+  const hmm = pageHmm || (landscape ? A4.h : A4.w) / PT_PER_MM;
+  return buildPdf({ pages: [{ image: { jpeg, width: widthPx, height: heightPx } }], pageWmm: wmm, pageHmm: hmm, title });
 }
 
 /** Text als UTF-16BE-Hex-String mit BOM (Umlaute im PDF-Info-Dictionary). */
@@ -293,6 +403,96 @@ function pdfTextString(s) {
     }
   }
   return `<${hex.toUpperCase()}>`;
+}
+
+const ROAD_KINDS_LABELS = [
+  { id: 'motorway', label: 'Autobahn' }, { id: 'trunk', label: 'Autostrasse' }, { id: 'main', label: 'Hauptstrasse' }, { id: 'secondary', label: 'Nebenstrasse' },
+  { id: 'residential', label: 'Quartierstrasse' }, { id: 'service', label: 'Zufahrt' }, { id: 'path', label: 'Fuss-/Veloweg' }, { id: 'other', label: 'Sonstiges' },
+];
+const STATUS_LABELS = { new: 'neu', existing: 'bestehend', remove: 'Rückbau' };
+const JUNCTION_LABELS = [
+  { id: 'plain', label: 'Kreuzung' }, { id: 'signals', label: 'Ampel' }, { id: 'priority', label: 'Vortritt' }, { id: 'stop', label: 'Stop' },
+  { id: 'crossing', label: 'Fussgängerstreifen' }, { id: 'busstop', label: 'Bushaltestelle' }, { id: 'interchange', label: 'Anschluss' },
+];
+
+/** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
+export function reportBlocks(doc, { routes = null, comments = [], link = '' } = {}) {
+  const blocks = [];
+  const date = new Date().toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
+  blocks.push({ text: doc.name, size: 18, bold: true });
+  blocks.push({ text: `Planungsvorschlag · ${date}${link ? ` · ${link}` : ''}`, size: 9.5, gap: 10 });
+  const layerName = (id) => (doc.layers.find((l) => l.id === id) || {}).name || '';
+  const kindLabel = (list, id) => (list.find((k) => k.id === id) || {}).label || id;
+  const roads = doc.features.filter((f) => f.type === 'road');
+  const zones = doc.features.filter((f) => f.type === 'zone');
+  const points = doc.features.filter((f) => f.type === 'junction' || f.type === 'roundabout');
+  blocks.push({ text: 'Massnahmen', size: 13, bold: true });
+  if (!roads.length && !zones.length && !points.length) blocks.push({ text: 'Keine Elemente.' });
+  roads.forEach((r, i) => {
+    const len = Math.round(pathLengthLL(r.nodes));
+    const parts = [`${i + 1}. ${r.name || 'Strasse'} (${kindLabel(ROAD_KINDS_LABELS, r.kind)}, ${STATUS_LABELS[r.status] || r.status})`, `${len} m`];
+    if (r.maxspeed) parts.push(`Tempo ${r.maxspeed}`);
+    const special = r.segments.filter((s) => s.level !== 'ground').length;
+    if (special) parts.push(`${special} Abschnitt(e) Brücke/Tunnel`);
+    if (r.oneway) parts.push('Einbahn');
+    parts.push(`Ebene ${layerName(r.layerId)}`);
+    blocks.push({ text: parts.join(' · ') + (r.note ? ` – ${r.note}` : ''), gap: 2 });
+  });
+  zones.forEach((z) => blocks.push({ text: `Fläche: ${z.name ? z.name + ' – ' : ''}${kindLabel(ZONE_KINDS, z.kind)} (${z.nodes.length} Eckpunkte)${z.note ? ` – ${z.note}` : ''}`, gap: 2 }));
+  points.forEach((p) => blocks.push({ text: p.type === 'roundabout' ? `Kreisel${p.name ? ' ' + p.name : ''}, Radius ${p.radius} m` : `${kindLabel(JUNCTION_LABELS, p.kind)}${p.name ? ' ' + p.name : ''}`, gap: 2 }));
+  const cur = routes && routes.current && !routes.current.error ? routes.current : null;
+  const neu = routes && routes.proposed && !routes.proposed.error ? routes.proposed : null;
+  if (cur || neu) {
+    blocks.push({ text: 'Routenvergleich', size: 13, bold: true, gap: 4 });
+    const fmt = (r) => (r ? `${(r.dist / 1000).toFixed(2)} km, ${formatDuration(r.time)}${r.sd > 0 ? ` (P15–P85 ${formatDuration(r.p15)} – ${formatDuration(r.p85)})` : ''}` : 'keine Verbindung');
+    blocks.push({ text: `Heute: ${fmt(cur)}`, gap: 2 });
+    blocks.push({ text: `Neu: ${fmt(neu)}`, gap: 2 });
+    if (cur && neu) blocks.push({ text: `Differenz: ${neu.dist - cur.dist >= 0 ? '+' : '−'}${(Math.abs(neu.dist - cur.dist) / 1000).toFixed(2)} km, ${neu.time - cur.time >= 0 ? '+' : '−'}${formatDuration(Math.abs(neu.time - cur.time))}` });
+  }
+  const tops = comments.filter((c) => !c.parentId);
+  if (tops.length) {
+    blocks.push({ text: `Kommentare (${tops.length})`, size: 13, bold: true, gap: 4 });
+    tops.forEach((c, i) => {
+      const when = new Date(c.at).toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
+      blocks.push({ text: `${i + 1}. ${c.author}, ${when}${c.resolved ? ' (erledigt)' : ''}: ${c.text}`, gap: 1 });
+      comments.filter((r) => r.parentId === c.id).forEach((r) => blocks.push({ text: `    ↳ ${r.author}: ${r.text}`, gap: 1 }));
+    });
+  }
+  return blocks;
+}
+
+
+function pathLengthLL(nodes) {
+  let m = 0;
+  for (let i = 1; i < nodes.length; i++) m += haversine(nodes[i - 1], nodes[i]);
+  return m;
+}
+
+/** Bericht: Kartenseite plus Textseiten (automatisch auf mehrere Seiten verteilt). */
+export async function exportReport(map, doc, opts = {}) {
+  const { canvas, size } = await renderExport(map, doc, opts);
+  const blob = await canvasToBlob(canvas, 'image/jpeg', 0.9);
+  const jpeg = new Uint8Array(await blob.arrayBuffer());
+  const pages = [{ image: { jpeg, width: canvas.width, height: canvas.height } }];
+  const blocks = reportBlocks(doc, opts);
+  // Textseiten füllen: grob nach Zeilenzahl aufteilen
+  const pageH = size.pageHmm * PT_PER_MM - 2 * MARGIN_MM * PT_PER_MM;
+  const pageW = size.pageWmm * PT_PER_MM - 2 * MARGIN_MM * PT_PER_MM;
+  let current = [];
+  let used = 0;
+  for (const b of blocks) {
+    const sizePt = b.size || 10.5;
+    const h = wrapText(b.text, sizePt, pageW).length * sizePt * 1.35 + (b.gap ?? sizePt * 0.5);
+    if (used + h > pageH && current.length) {
+      pages.push({ blocks: current });
+      current = [];
+      used = 0;
+    }
+    current.push(b);
+    used += h;
+  }
+  if (current.length) pages.push({ blocks: current });
+  return new Blob([buildPdf({ pages, pageWmm: size.pageWmm, pageHmm: size.pageHmm, title: doc.name })], { type: 'application/pdf' });
 }
 
 export async function exportPng(map, doc, opts = {}) {

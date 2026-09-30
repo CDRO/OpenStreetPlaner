@@ -563,7 +563,17 @@ export class SlippyMap {
     }
     const ev = this.eventFor(e, p);
     this.emit('pointerdown', ev);
-    this.drag = { id: e.pointerId, startX: p.x, startY: p.y, lastX: p.x, lastY: p.y, moved: false, pan: this.dragEnabled && !ev.consumed };
+    this.drag = { id: e.pointerId, startX: p.x, startY: p.y, lastX: p.x, lastY: p.y, moved: false, pan: this.dragEnabled && !ev.consumed, longPress: false };
+    // Long-Press auf Touch/Stift entspricht dem Rechtsklick (Kontextmenü).
+    clearTimeout(this.longPressTimer);
+    if (e.pointerType !== 'mouse') {
+      this.longPressTimer = setTimeout(() => {
+        if (this.drag && this.drag.id === e.pointerId && !this.drag.moved) {
+          this.drag.longPress = true;
+          this.emit('contextmenu', this.eventFor(e, p));
+        }
+      }, 600);
+    }
   }
 
   onPointerMove(e) {
@@ -576,7 +586,10 @@ export class SlippyMap {
     if (this.drag && this.drag.id === e.pointerId) {
       const dx = p.x - this.drag.lastX;
       const dy = p.y - this.drag.lastY;
-      if (!this.drag.moved && Math.hypot(p.x - this.drag.startX, p.y - this.drag.startY) > 4) this.drag.moved = true;
+      if (!this.drag.moved && Math.hypot(p.x - this.drag.startX, p.y - this.drag.startY) > 4) {
+        this.drag.moved = true;
+        clearTimeout(this.longPressTimer);
+      }
       if (this.drag.moved && this.drag.pan) {
         this.stopAnim();
         this.panBy(dx, dy);
@@ -606,9 +619,10 @@ export class SlippyMap {
     const drag = this.drag;
     if (!drag || drag.id !== e.pointerId) return;
     this.drag = null;
+    clearTimeout(this.longPressTimer);
     const ev = this.eventFor(e, p);
     this.emit('pointerup', ev);
-    if (cancelled || drag.moved) return;
+    if (cancelled || drag.moved || drag.longPress) return;
     const now = performance.now();
     this.emit('click', ev);
     if (this.lastClick && now - this.lastClick.t < 400 && Math.hypot(p.x - this.lastClick.x, p.y - this.lastClick.y) < 8) {
