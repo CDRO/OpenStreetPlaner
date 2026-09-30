@@ -28,6 +28,31 @@ export function roadWidthMeters(road) {
   return roadKind(road).widthM;
 }
 
+/** Kennung der Punktfolge, um veraltete Höhenprofile zu erkennen. */
+export function nodesKey(nodes) {
+  let h = 0;
+  for (const n of nodes) {
+    const str = `${n[0]},${n[1]}`;
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return `${nodes.length}:${h.toString(36)}`;
+}
+
+export function normalizeProfile(raw) {
+  if (!raw || !Array.isArray(raw.points) || raw.points.length < 2 || raw.points.length > 1000 || typeof raw.key !== 'string') return null;
+  const points = [];
+  for (const p of raw.points) {
+    if (!Array.isArray(p) || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) return null;
+    points.push([Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10]);
+  }
+  return { points, key: raw.key };
+}
+
+/** Höhenprofil einer Strasse, falls vorhanden und noch zur Geometrie passend. */
+export function validProfile(road) {
+  return road.profile && road.profile.key === nodesKey(road.nodes) ? road.profile : null;
+}
+
 export function normalizeWidth(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0 || n > MAX_WIDTH_M) return null;
@@ -188,6 +213,7 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     osmId: Number.isInteger(osmId) && osmId > 0 ? osmId : null,
     nodes: pts,
     segments: pts.slice(1).map(() => ({ level, maxspeed: null })),
+    profile: null,
     note: '',
   };
 }
@@ -422,6 +448,7 @@ export function normalizeDocument(raw) {
         osmId: Number.isInteger(f.osmId) && f.osmId > 0 ? f.osmId : null,
         nodes,
         segments,
+        profile: normalizeProfile(f.profile),
       });
     } else if (f.type === 'junction') {
       if (!isLatLng(f.at)) throw new Error(`Kreuzung ${f.id} hat keine Position`);

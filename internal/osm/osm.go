@@ -125,15 +125,17 @@ type Client struct {
 	OverpassURL  string
 	TileURL      string
 	TileDir      string
+	ProfileURL   string
 
-	searchCache *memCache
-	roadsCache  *memCache
-	nomMu       sync.Mutex
-	nomLast     time.Time
-	tileMu      sync.Mutex
-	tileInFly   map[string]chan struct{}
-	sources     map[string]TileSource
-	sourceOrder []string
+	searchCache  *memCache
+	roadsCache   *memCache
+	nomMu        sync.Mutex
+	nomLast      time.Time
+	tileMu       sync.Mutex
+	tileInFly    map[string]chan struct{}
+	sources      map[string]TileSource
+	sourceOrder  []string
+	profileCache *memCache
 }
 
 func New(tileDir string) *Client {
@@ -144,6 +146,7 @@ func New(tileDir string) *Client {
 		OverpassURL:  DefaultOverpassURL,
 		TileURL:      DefaultTileURL,
 		TileDir:      tileDir,
+		ProfileURL:   DefaultProfileURL,
 		searchCache:  newMemCache(searchCacheTTL),
 		roadsCache:   newMemCache(roadsCacheTTL),
 		tileInFly:    map[string]chan struct{}{},

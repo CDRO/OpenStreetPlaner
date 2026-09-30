@@ -13,6 +13,8 @@ import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, cellsFor, routeBounds } from './
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
 import { computeRoutes } from './routing.js';
+import { smoothRoad, simplifyRoad } from './smooth.js';
+import { nodesKey } from './model.js';
 import { exportPdf, exportPng } from './export.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
@@ -216,7 +218,7 @@ async function main() {
         state.routes = null;
       } else {
         try {
-          state.routes = computeRoutes({ osmWays: osm.list(), doc: store.doc, from: q.from, to: q.to });
+          state.routes = computeRoutes({ osmWays: osm.list(), doc: store.doc, from: q.from, to: q.to, model: settings.speedModel });
         } catch (e) {
           state.routes = { current: { error: e.message }, proposed: { error: e.message } };
         }
@@ -379,6 +381,10 @@ async function main() {
       local.saveSettings(settings);
       state.snapDirty = true;
       if ('basemap' in patch || 'overlays' in patch) applyTileLayers();
+      if ('speedModel' in patch) {
+        recomputeRoutes();
+        ui.refreshRoute();
+      }
       if ('showOsm' in patch || 'snapOsm' in patch) ensureOsm();
       map.requestRender();
       ui.refreshTools();
@@ -409,6 +415,33 @@ async function main() {
     commitDoc(label, fn) {
       if (!actions.requireEdit()) return;
       store.commit(label, fn);
+    },
+    smoothRoad(id) {
+      if (!actions.requireEdit()) return;
+      store.commit('Strasse glätten', (d) => smoothRoad(getFeature(d, id), 4));
+    },
+    simplifyRoad(id) {
+      if (!actions.requireEdit()) return;
+      let changed = false;
+      store.commit('Strasse vereinfachen', (d) => { changed = simplifyRoad(getFeature(d, id), 1); });
+      if (!changed) ui.toast('Nichts zu vereinfachen (Toleranz 1 m).');
+    },
+    async loadProfile(id) {
+      if (!actions.requireEdit()) return;
+      const road = getFeature(store.doc, id);
+      if (!road || road.type !== 'road') return;
+      ui.toast('Höhenprofil wird geladen…');
+      try {
+        const res = await api.profile(road.nodes);
+        const key = nodesKey(road.nodes);
+        store.commit('Höhenprofil laden', (d) => {
+          const r = getFeature(d, id);
+          if (r) r.profile = { points: res.points, key };
+        });
+        ui.toast('Höhenprofil geladen.', 'ok');
+      } catch (e) {
+        ui.toast(`Höhenprofil: ${e.message}`, 'error', 7000);
+      }
     },
     patchFeature(id, label, fn) {
       if (!actions.requireEdit()) return;

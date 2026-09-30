@@ -168,3 +168,32 @@ func TestTileSourcesAndWMSBBox(t *testing.T) {
 		t.Fatalf("Quelle ohne URL akzeptiert")
 	}
 }
+
+func TestProfile(t *testing.T) {
+	var calls int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_ = r.ParseForm()
+		if !strings.Contains(r.Form.Get("geom"), `"coordinates":[[8,47],[8.001,47.001]]`) || r.Form.Get("sr") != "4326" {
+			t.Errorf("Anfrage: %v", r.Form)
+		}
+		_, _ = w.Write([]byte(`[{"dist":0,"alts":{"COMB":500.5,"DTM2":500.4}},{"dist":70,"alts":{"DTM25":510}},{"dist":140,"alts":{}}]`))
+	}))
+	defer up.Close()
+	c := New("")
+	c.ProfileURL = up.URL
+	pts, err := c.Profile(context.Background(), [][2]float64{{47, 8}, {47.001, 8.001}})
+	if err != nil || len(pts) != 2 || pts[0].Height != 500.5 || pts[1].Height != 510 || pts[1].Dist != 70 {
+		t.Fatalf("Profile: %v %+v", err, pts)
+	}
+	if _, err := c.Profile(context.Background(), [][2]float64{{47, 8}, {47.001, 8.001}}); err != nil || atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("Cache: %v calls=%d", err, calls)
+	}
+	if _, err := c.Profile(context.Background(), [][2]float64{{47, 8}}); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("ein Punkt: %v", err)
+	}
+	c.ProfileURL = ""
+	if _, err := c.Profile(context.Background(), [][2]float64{{47, 8}, {47.001, 8.001}}); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("deaktiviert: %v", err)
+	}
+}

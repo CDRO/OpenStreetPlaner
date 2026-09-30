@@ -189,6 +189,8 @@ func TestOsmProxiesAndStatic(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"display_name":"Testdorf","lat":"47.2","lon":"8.5","type":"village"}]`))
 		case strings.HasPrefix(r.URL.Path, "/overpass"):
 			_, _ = w.Write([]byte(`{"elements":[{"type":"way","id":1,"tags":{"highway":"primary"},"geometry":[{"lat":47,"lon":8},{"lat":47.001,"lon":8.001}]}]}`))
+		case strings.HasPrefix(r.URL.Path, "/profile"):
+			_, _ = w.Write([]byte(`[{"dist":0,"alts":{"COMB":500}},{"dist":150,"alts":{"COMB":512}}]`))
 		default:
 			w.Header().Set("Content-Type", "image/png")
 			_, _ = w.Write([]byte("PNG"))
@@ -197,6 +199,7 @@ func TestOsmProxiesAndStatic(t *testing.T) {
 	defer up.Close()
 	client.NominatimURL = up.URL + "/search"
 	client.OverpassURL = up.URL + "/overpass"
+	client.ProfileURL = up.URL + "/profile"
 	client.TileURL = up.URL + "/t/{z}/{x}/{y}.png"
 
 	req, _ := http.NewRequest("GET", ts.URL+"/api/search?q=Testdorf", nil)
@@ -221,6 +224,14 @@ func TestOsmProxiesAndStatic(t *testing.T) {
 	res, _ = call(t, "GET", ts.URL+"/api/roads?bbox=0,0,10,10", nil, nil)
 	if res.StatusCode != 400 {
 		t.Fatalf("bbox zu gross: %d", res.StatusCode)
+	}
+	res, out = call(t, "POST", ts.URL+"/api/profile", map[string]any{"coords": [][2]float64{{47, 8}, {47.001, 8.001}}}, nil)
+	if res.StatusCode != 200 || out["points"] == nil || len(out["points"].([]any)) != 2 {
+		t.Fatalf("profile: %d %+v", res.StatusCode, out)
+	}
+	res, _ = call(t, "POST", ts.URL+"/api/profile", map[string]any{"coords": [][2]float64{{47, 8}}}, nil)
+	if res.StatusCode != 400 {
+		t.Fatalf("profile mit einem Punkt: %d", res.StatusCode)
 	}
 
 	res, err := http.Get(ts.URL + "/tiles/16/34000/23000.png")

@@ -7,6 +7,7 @@ import {
 } from '../js/routing.js';
 import { createDocument, createLayer, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
 import { project as projectLL } from '../js/geometry.js';
+import { nodesKey } from '../js/model.js';
 
 test('parseMaxspeed versteht Zahlen, mph, Zonen und Sonderwerte', () => {
   assert.equal(parseMaxspeed('50'), 50);
@@ -173,4 +174,44 @@ test('Ausgeblendete Ebenen zählen nicht; Abschnitts-Tempolimit wirkt', () => {
   const r20 = computeRoutes({ osmWays: ways, doc, from, to });
   assert.ok(r20.proposed.time > t50, `Abschnittslimit wirkt: ${r20.proposed.time} vs ${t50}`);
   assert.ok(Math.abs(r20.proposed.dist - r20.current.dist) < 1e-6, 'bei Tempo 20 lohnt sich wieder der Umweg');
+});
+
+test('Geometriemodell: Kurven verlangsamen, Steigung aus Profil, Streuband, Ampel-Streuung', () => {
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  // Gerade Strasse 1 km, daneben eine kurvige mit gleicher Länge (Zickzack)
+  const from = [47, 8];
+  const to = [47, 8.0132];
+  const straight = createRoad({ layerId, nodes: [from, to], kind: 'main', maxspeed: 80 });
+  doc.features.push(straight);
+  const limitRes = computeRoutes({ osmWays: [], doc, from, to, model: 'limit' });
+  const geoRes = computeRoutes({ osmWays: [], doc, from, to, model: 'geometry' });
+  assert.ok(Math.abs(limitRes.proposed.time - geoRes.proposed.time) < 1e-6, 'gerade Strasse: Modell ändert Erwartungswert nicht');
+  assert.equal(limitRes.proposed.sd, 0);
+  assert.ok(geoRes.proposed.sd > 0 && geoRes.proposed.p15 < geoRes.proposed.time && geoRes.proposed.p85 > geoRes.proposed.time, 'Streuband');
+  // Enge Kurve einbauen
+  straight.nodes = [from, [47.0003, 8.004], [46.9997, 8.0045], [47.0003, 8.005], to];
+  straight.segments = straight.nodes.slice(1).map(() => ({ level: 'ground', maxspeed: null }));
+  const curvy = computeRoutes({ osmWays: [], doc, from, to, model: 'geometry' });
+  const curvyLimit = computeRoutes({ osmWays: [], doc, from, to, model: 'limit' });
+  assert.ok(curvy.proposed.time > curvyLimit.proposed.time * 1.1, `Kurven kosten Zeit: ${curvy.proposed.time} vs ${curvyLimit.proposed.time}`);
+  // Steigung aus Höhenprofil (nur bei passendem Schlüssel)
+  straight.nodes = [from, to];
+  straight.segments = [{ level: 'ground', maxspeed: null }];
+  straight.profile = { points: [[0, 500], [1000, 600]], key: nodesKey(straight.nodes) };
+  const steep = computeRoutes({ osmWays: [], doc, from, to, model: 'geometry' });
+  assert.ok(steep.proposed.time > geoRes.proposed.time * 1.15, `Steigung bremst: ${steep.proposed.time} vs ${geoRes.proposed.time}`);
+  straight.profile.key = 'veraltet';
+  const stale = computeRoutes({ osmWays: [], doc, from, to, model: 'geometry' });
+  assert.ok(Math.abs(stale.proposed.time - geoRes.proposed.time) < 1e-6, 'veraltetes Profil wird ignoriert');
+  // Ampel an einem Zwischenknoten bringt Erwartungswert und Streuung (Start und Ziel selbst kosten nichts)
+  straight.profile = null;
+  const mid = [47, 8.0066];
+  straight.nodes = [from, mid, to];
+  straight.segments = [{ level: 'ground', maxspeed: null }, { level: 'ground', maxspeed: null }];
+  const withoutSignal = computeRoutes({ osmWays: [], doc, from, to, model: 'geometry' }).proposed;
+  doc.features.push(createJunction({ layerId, at: mid, kind: 'signals' }));
+  const withSignal = computeRoutes({ osmWays: [], doc, from, to, model: 'geometry' }).proposed;
+  assert.ok(Math.abs(withSignal.time - withoutSignal.time - 20) < 1e-6, `Ampel +20 s: ${withSignal.time} vs ${withoutSignal.time}`);
+  assert.ok(withSignal.sd > withoutSignal.sd, 'Ampel erhöht die Streuung');
 });

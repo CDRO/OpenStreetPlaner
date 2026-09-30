@@ -118,6 +118,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /sw.js", s.serveWorker)
 	m.HandleFunc("GET /api/search", s.search)
 	m.HandleFunc("GET /api/roads", s.roads)
+	m.HandleFunc("POST /api/profile", s.profile)
 	m.HandleFunc("GET /tiles/{z}/{x}/{y}", s.tile)
 	m.HandleFunc("GET /tiles/{source}/{z}/{x}/{y}", s.tileFrom)
 	m.HandleFunc("GET /api/tiles/sources", s.tileSources)
@@ -678,6 +679,27 @@ func (s *Server) tileFrom(w http.ResponseWriter, r *http.Request) {
 	}
 	data, ctype, err := s.osm.TileFrom(r.Context(), r.PathValue("source"), z, x, y)
 	s.writeTile(w, r, data, ctype, err)
+}
+
+func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
+	var in struct {
+		Coords [][2]float64 `json:"coords"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, errors.Join(osm.ErrBadRequest, errors.New("kein gültiges JSON")))
+		return
+	}
+	pts, err := s.osm.Profile(r.Context(), in.Coords)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := make([][2]float64, len(pts))
+	for i, p := range pts {
+		out[i] = [2]float64{p.Dist, p.Height}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"points": out})
 }
 
 func (s *Server) tile(w http.ResponseWriter, r *http.Request) {

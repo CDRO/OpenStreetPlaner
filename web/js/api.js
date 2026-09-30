@@ -41,6 +41,7 @@ export const api = {
   deleteComment: (id, cid, { token, commentToken } = {}) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/comments/${encodeURIComponent(cid)}`, { token, commentToken }),
   pushKey: () => request('GET', '/api/push/key'),
   tileSources: () => request('GET', '/api/tiles/sources'),
+  profile: (coords) => request('POST', '/api/profile', { body: { coords } }),
   setPushSub: (id, body, token) => request('PUT', `/api/drafts/${encodeURIComponent(id)}/push`, { body, token }),
   deletePushSub: (id, clientId) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/push?clientId=${encodeURIComponent(clientId)}`),
   search: (q) => request('GET', `/api/search?q=${encodeURIComponent(q)}&limit=8`),

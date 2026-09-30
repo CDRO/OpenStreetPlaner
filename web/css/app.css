@@ -250,3 +250,7 @@ details.box summary { cursor: pointer; font-weight: 600; }
 .reply-form { margin: 4px 0 6px 30px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #fbfcfd; }
 .reply-form input, .reply-form textarea { margin-bottom: 6px; }
 .notify h3 { margin-top: 0; }
+
+/* Höhenprofil */
+.profile-box { border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 8px; }
+.profile-chart { display: block; width: 320px; max-width: 100%; height: 140px; background: #fff; border: 1px solid var(--border); border-radius: 6px; }

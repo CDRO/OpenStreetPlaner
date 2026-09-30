@@ -1,9 +1,10 @@
 // Seitenleiste, Kopfzeile, Statuszeile, Dialoge. Reine DOM-Arbeit; die Logik
 // steckt in app.js (actions) und den Modulen.
 
-import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, ZONE_KINDS, docStats, featureLabel, getFeature, roadSpeed, roadWidthMeters, segmentSpeed, splitRoadAtNode } from './model.js';
+import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, ZONE_KINDS, docStats, featureLabel, getFeature, roadSpeed, roadWidthMeters, segmentSpeed, splitRoadAtNode, validProfile } from './model.js';
 import { DPI, PAPER } from './export.js';
-import { pathLength } from './geometry.js';
+import { haversine, pathLength } from './geometry.js';
+import { segmentGrades } from './speedmodel.js';
 import { TOOLS } from './tools.js';
 import { formatDuration } from './routing.js';
 
@@ -14,6 +15,132 @@ const fmtDate = (iso) => {
 };
 const fmtLen = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
 const options = (list, value) => list.map((o) => `<option value="${o.id}"${o.id === value ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+
+function nodeDistances(nodes) {
+  const d = [0];
+  for (let i = 1; i < nodes.length; i++) d.push(d[i - 1] + haversine(nodes[i - 1], nodes[i]));
+  return d;
+}
+
+function profileBlock(road) {
+  const profile = validProfile(road);
+  const stale = road.profile && !profile;
+  if (!profile) {
+    return `<div class="profile-box">
+      <div class="btn-row"><button type="button" id="prop-profile-load" class="btn small">Höhenprofil laden</button>
+      <span class="muted small">${stale ? 'Profil veraltet (Geometrie geändert).' : 'swisstopo-Höhenmodell, nur Schweiz.'}</span></div>
+    </div>`;
+  }
+  const dists = nodeDistances(road.nodes);
+  const grades = segmentGrades(dists, profile.points);
+  let up = 0;
+  let down = 0;
+  for (let i = 1; i < profile.points.length; i++) {
+    const dh = profile.points[i][1] - profile.points[i - 1][1];
+    if (dh > 0) up += dh;
+    else down -= dh;
+  }
+  const maxGrade = grades.reduce((m, g) => Math.max(m, Math.abs(g)), 0);
+  return `<div class="profile-box">
+    <canvas id="prop-profile-chart" class="profile-chart" width="320" height="140"></canvas>
+    <div class="muted small">↑ ${Math.round(up)} m · ↓ ${Math.round(down)} m · max. Steigung ${maxGrade.toFixed(1)} %</div>
+    <div class="btn-row"><button type="button" id="prop-profile-load" class="btn small">Neu laden</button><button type="button" id="prop-profile-clear" class="btn small">Profil entfernen</button></div>
+  </div>`;
+}
+
+/** Zeichnet Gelände und Strassenführung (Brücke über, Tunnel unter dem Gelände). */
+function drawProfileChart(canvas, road) {
+  const profile = validProfile(road);
+  if (!profile) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = 320;
+  const H = 140;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = `${W}px`;
+  canvas.style.height = `${H}px`;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const pts = profile.points;
+  const maxD = Math.max(pts[pts.length - 1][0], 1);
+  let minH = Infinity;
+  let maxH = -Infinity;
+  for (const [, h] of pts) {
+    minH = Math.min(minH, h);
+    maxH = Math.max(maxH, h);
+  }
+  const span = Math.max(maxH - minH, 10);
+  minH -= span * 0.15;
+  maxH += span * 0.15;
+  const pad = { l: 36, r: 8, t: 8, b: 18 };
+  const X = (d) => pad.l + (d / maxD) * (W - pad.l - pad.r);
+  const Y = (h) => H - pad.b - ((h - minH) / (maxH - minH)) * (H - pad.t - pad.b);
+  const heightAt = (d) => {
+    if (d <= pts[0][0]) return pts[0][1];
+    for (let i = 1; i < pts.length; i++) {
+      if (d <= pts[i][0]) {
+        const [d0, h0] = pts[i - 1];
+        const [d1, h1] = pts[i];
+        return d1 === d0 ? h1 : h0 + ((d - d0) / (d1 - d0)) * (h1 - h0);
+      }
+    }
+    return pts[pts.length - 1][1];
+  };
+  // Gelände
+  ctx.beginPath();
+  ctx.moveTo(X(pts[0][0]), H - pad.b);
+  for (const [d, h] of pts) ctx.lineTo(X(d), Y(h));
+  ctx.lineTo(X(pts[pts.length - 1][0]), H - pad.b);
+  ctx.closePath();
+  ctx.fillStyle = '#e8ecf0';
+  ctx.fill();
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const [d, h] = pts[i];
+    if (i === 0) ctx.moveTo(X(d), Y(h));
+    else ctx.lineTo(X(d), Y(h));
+  }
+  ctx.strokeStyle = '#6b7480';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // Strassenführung je Abschnitt
+  const dists = nodeDistances(road.nodes);
+  for (let i = 0; i < road.segments.length; i++) {
+    const seg = road.segments[i];
+    const d0 = dists[i];
+    const d1 = dists[i + 1];
+    ctx.beginPath();
+    if (seg.level === 'ground') {
+      const steps = Math.max(2, Math.round((d1 - d0) / 5));
+      for (let k = 0; k <= steps; k++) {
+        const d = d0 + ((d1 - d0) * k) / steps;
+        if (k === 0) ctx.moveTo(X(d), Y(heightAt(d)));
+        else ctx.lineTo(X(d), Y(heightAt(d)));
+      }
+      ctx.strokeStyle = '#d7263d';
+      ctx.setLineDash([]);
+    } else {
+      ctx.moveTo(X(d0), Y(heightAt(d0)));
+      ctx.lineTo(X(d1), Y(heightAt(d1)));
+      ctx.strokeStyle = seg.level === 'bridge' ? '#1a1a1a' : '#7b3fbf';
+      ctx.setLineDash(seg.level === 'tunnel' ? [5, 4] : []);
+    }
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // Achsen
+  ctx.fillStyle = '#6b7480';
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(`${Math.round(maxH - span * 0.15)} m`, pad.l - 4, pad.t + 8);
+  ctx.fillText(`${Math.round(minH + span * 0.15)} m`, pad.l - 4, H - pad.b);
+  ctx.textAlign = 'left';
+  ctx.fillText('0 m', pad.l, H - 5);
+  ctx.textAlign = 'right';
+  ctx.fillText(maxD >= 1000 ? `${(maxD / 1000).toFixed(2)} km` : `${Math.round(maxD)} m`, W - pad.r, H - 5);
+}
 
 export class UI {
   constructor(ctx) {
@@ -260,6 +387,12 @@ export class UI {
           </div>
         </label>
         <label class="field">Breite (m)<input type="number" id="prop-width" min="1" max="60" step="0.5" value="${f.width ?? ''}" placeholder="Standard ${roadWidthMeters({ ...f, width: null })} m" ${dis}></label>
+        <div class="btn-row">
+          <button type="button" id="prop-smooth" class="btn small" ${dis || f.nodes.length < 3 ? 'disabled' : ''} title="Knicke durch eine Spline ersetzen (fügt Zwischenpunkte ein)">Glätten</button>
+          <button type="button" id="prop-simplify" class="btn small" ${dis || f.nodes.length < 3 ? 'disabled' : ''} title="Überflüssige Punkte entfernen (Toleranz 1 m)">Vereinfachen</button>
+          <span class="muted small">${f.nodes.length} Punkte</span>
+        </div>
+        ${profileBlock(f)}
         <div class="segments">
           <div class="seg-head">Abschnitte <span class="muted">(${f.segments.length}, ${fmtLen(pathLength(f.nodes))})</span></div>
           <div class="seg-chips">${chips}</div>
@@ -298,6 +431,16 @@ export class UI {
         <button type="button" id="prop-delete" class="btn small danger" ${dis}>Löschen (Entf)</button>
       </div>`;
     const patch = (label, fn) => actions.patchFeature(f.id, label, fn);
+    if (f.type === 'road') {
+      this.$('prop-smooth').onclick = () => actions.smoothRoad(f.id);
+      this.$('prop-simplify').onclick = () => actions.simplifyRoad(f.id);
+      const loadBtn = this.$('prop-profile-load');
+      if (loadBtn) loadBtn.onclick = () => actions.loadProfile(f.id);
+      const clearBtn = this.$('prop-profile-clear');
+      if (clearBtn) clearBtn.onclick = () => patch('Höhenprofil entfernen', (x) => { x.profile = null; });
+      const canvas = this.$('prop-profile-chart');
+      if (canvas) drawProfileChart(canvas, f);
+    }
     this.$('prop-name').onchange = (e) => patch('Name ändern', (x) => { x.name = e.target.value.trim(); });
     this.$('prop-layer').onchange = (e) => patch('Ebene wechseln', (x) => { x.layerId = e.target.value; });
     this.$('prop-note').onchange = (e) => patch('Notiz ändern', (x) => { x.note = e.target.value; });
@@ -781,6 +924,8 @@ export class UI {
     };
     const cur = routes && routes.current && !routes.current.error ? routes.current : null;
     const neu = routes && routes.proposed && !routes.proposed.error ? routes.proposed : null;
+    const geometry = this.ctx.settings.speedModel === 'geometry';
+    const band = (r) => (geometry && r && r.sd > 0 ? `<div class="muted small">${formatDuration(r.p15)} – ${formatDuration(r.p85)}</div>` : '');
     let body = '';
     if (!q) {
       body = `<p class="muted">${tools.routeDraft ? 'Start gesetzt – jetzt das Ziel auf der Karte anklicken.' : 'Start und Ziel auf der Karte anklicken (Werkzeug „Route“, Taste T).'}</p>`;
@@ -792,7 +937,7 @@ export class UI {
           <thead><tr><th></th><th><span class="dot" style="background:#1b6ac9"></span>Heute</th><th><span class="dot" style="background:#2a9d3f"></span>Neu</th><th>Differenz</th></tr></thead>
           <tbody>
             <tr><td>Distanz</td><td>${cur ? fmtKm(cur.dist) : '–'}</td><td>${neu ? fmtKm(neu.dist) : '–'}</td><td>${diff(cur && cur.dist, neu && neu.dist, fmtKm)}</td></tr>
-            <tr><td>Fahrzeit</td><td>${cur ? formatDuration(cur.time) : '–'}</td><td>${neu ? formatDuration(neu.time) : '–'}</td><td>${diff(cur && cur.time, neu && neu.time, formatDuration)}</td></tr>
+            <tr><td>Fahrzeit${geometry ? ' <span class="muted small">(typisch, P15–P85)</span>' : ''}</td><td>${cur ? formatDuration(cur.time) + band(cur) : '–'}</td><td>${neu ? formatDuration(neu.time) + band(neu) : '–'}</td><td>${diff(cur && cur.time, neu && neu.time, formatDuration)}</td></tr>
           </tbody>
         </table>
         ${routes.current && routes.current.error ? `<p class="muted small">Heute: ${esc(routes.current.error)}</p>` : ''}
@@ -801,6 +946,7 @@ export class UI {
     el.innerHTML = `
       <p class="muted small">Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.</p>
       ${body}
+      <label class="check"><input type="checkbox" id="route-model" ${geometry ? 'checked' : ''}> Fahrzeit aus der Strassenführung (Kurvenradien, Steigung aus Höhenprofil, Wartezeiten mit Streuung)</label>
       <div class="btn-row">
         <button type="button" id="route-tool" class="btn small ${tools.tool === 'route' ? 'primary' : ''}">Punkte setzen</button>
         <button type="button" id="route-swap" class="btn small" ${q ? '' : 'disabled'}>A ↔ B</button>
@@ -809,6 +955,7 @@ export class UI {
       </div>
       <p class="muted small" id="route-net">${esc(net)}</p>`;
     this.$('route-tool').onclick = () => tools.setTool('route');
+    this.$('route-model').onchange = (e) => actions.updateSettings({ speedModel: e.target.checked ? 'geometry' : 'limit' });
     this.$('route-swap').onclick = () => actions.swapRoute();
     this.$('route-clear').onclick = () => actions.clearRoute();
     this.$('route-load').onclick = () => actions.loadRouteNetwork();

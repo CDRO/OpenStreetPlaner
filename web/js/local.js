@@ -18,6 +18,7 @@ export const DEFAULT_SETTINGS = {
   author: '', // Name für Kommentare
   basemap: 'osm',
   overlays: [], // IDs eingeschalteter Kachel-Overlays (z. B. Parzellen)
+  speedModel: 'limit', // 'limit' = Tempolimit, 'geometry' = Kurven, Steigung, Streuung
 };
 
 export class LocalState {

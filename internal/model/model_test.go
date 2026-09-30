@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -182,5 +183,22 @@ func TestSegmentSpeedAndWidth(t *testing.T) {
 	_ = Normalize(d)
 	if d.Features[0].Width != nil {
 		t.Fatalf("zu grosse Breite nicht verworfen")
+	}
+}
+
+func TestProfileField(t *testing.T) {
+	d := sample()
+	d.Features[0].Profile = &Profile{Points: [][2]float64{{0, 500}, {100, 510}}, Key: "2:abc"}
+	d.Features[1].Profile = &Profile{Points: [][2]float64{{0, 500}, {100, 510}}, Key: "x"}
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Features[0].Profile == nil || d.Features[1].Profile != nil {
+		t.Fatalf("Profil nur an Strassen: %+v %+v", d.Features[0].Profile, d.Features[1].Profile)
+	}
+	d.Features[0].Profile = &Profile{Points: [][2]float64{{0, math.NaN()}, {1, 1}}, Key: "k"}
+	_ = Normalize(d)
+	if d.Features[0].Profile != nil {
+		t.Fatalf("NaN-Profil nicht verworfen")
 	}
 }

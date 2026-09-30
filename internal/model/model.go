@@ -72,11 +72,19 @@ type Feature struct {
 	OsmID    int64     `json:"osmId,omitempty"`    // OSM-Way, aus dem die Strasse übernommen wurde
 	Nodes    []LatLng  `json:"nodes,omitempty"`
 	Segments []Segment `json:"segments,omitempty"`
+	// Höhenprofil einer Strasse (vom Profil-Dienst), mit Kennung der Punktfolge
+	Profile *Profile `json:"profile,omitempty"`
 	// Kreuzung / Punkt-Massnahme
 	At *LatLng `json:"at,omitempty"`
 	// Kreisel
 	Center *LatLng `json:"center,omitempty"`
 	Radius float64 `json:"radius,omitempty"`
+}
+
+// Profile ist ein Höhenprofil: Punkte [Distanz m, Höhe m ü. M.] und Kennung der Geometrie.
+type Profile struct {
+	Points [][2]float64 `json:"points"`
+	Key    string       `json:"key"`
 }
 
 // Route ist die gespeicherte Routenanfrage (Start/Ziel) des Routen-Rechners.
@@ -264,6 +272,18 @@ func Normalize(d *Document) error {
 				v := math.Round(*f.Width*10) / 10
 				f.Width = &v
 			}
+			if f.Profile != nil {
+				if len(f.Profile.Points) < 2 || len(f.Profile.Points) > 1000 || len(f.Profile.Key) > 64 {
+					f.Profile = nil
+				} else {
+					for _, pt := range f.Profile.Points {
+						if math.IsNaN(pt[0]) || math.IsNaN(pt[1]) || math.IsInf(pt[0], 0) || math.IsInf(pt[1], 0) {
+							f.Profile = nil
+							break
+						}
+					}
+				}
+			}
 			f.At, f.Center, f.Radius = nil, nil, 0
 		case "junction":
 			if f.At == nil || !validLatLng(*f.At) {
@@ -273,7 +293,7 @@ func Normalize(d *Document) error {
 			f.At = &p
 			f.Kind = oneOf(JunctionKinds, f.Kind, "plain")
 			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius = "", nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID, f.Width = nil, 0, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Profile = nil, 0, nil, nil
 		case "roundabout":
 			if f.Center == nil || !validLatLng(*f.Center) {
 				return invalid("Kreisel %s hat kein gültiges Zentrum", f.ID)
@@ -288,7 +308,7 @@ func Normalize(d *Document) error {
 			}
 			f.Radius = math.Round(f.Radius*10) / 10
 			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At = "", "", nil, nil, nil, nil
-			f.Maxspeed, f.OsmID, f.Width = nil, 0, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Profile = nil, 0, nil, nil
 		case "zone":
 			if len(f.Nodes) < 3 {
 				return invalid("Zone %s braucht mindestens drei Punkte", f.ID)
@@ -304,7 +324,7 @@ func Normalize(d *Document) error {
 			}
 			f.Kind = oneOf(ZoneKinds, f.Kind, "other")
 			f.Status, f.Oneway, f.Segments, f.At, f.Center, f.Radius = "", nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID, f.Width = nil, 0, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Profile = nil, 0, nil, nil
 		default:
 			return invalid("unbekannter Elementtyp %q", f.Type)
 		}

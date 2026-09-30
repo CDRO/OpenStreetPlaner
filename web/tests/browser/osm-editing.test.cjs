@@ -194,6 +194,68 @@ const C = [47.05, 8.3];
   void beforeZone;
   console.log('✓ Zonen');
 
+  // Glätten, Vereinfachen, Höhenprofil (gemockt), Geschwindigkeitsmodell mit Band
+  await page.route('**/api/profile', async (route) => {
+    const body = JSON.parse(route.request().postData());
+    const n = body.coords.length;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ points: [[0, 500], [200, 520], [400, 510]] }) });
+    void n;
+  });
+  await page.keyboard.press('s');
+  const gA = { x: box.x + 500, y: box.y + 200 };
+  await page.keyboard.down('Shift');
+  await page.mouse.click(gA.x, gA.y); await h.settle(60);
+  await page.mouse.click(gA.x + 120, gA.y + 90); await h.settle(60);
+  await page.mouse.click(gA.x + 240, gA.y + 20); await h.settle(60);
+  await page.keyboard.up('Shift');
+  await page.keyboard.press('Enter');
+  await h.settle();
+  doc = await h.doc();
+  const zig = doc.features[doc.features.length - 1];
+  assert.equal(zig.nodes.length, 3);
+  await page.keyboard.press('v');
+  await page.evaluate((id) => window.stadtplaner.tools.setSelection({ featureId: id, segIndex: 0 }), zig.id);
+  await h.settle(300);
+  await page.click('#prop-smooth');
+  await h.settle();
+  doc = await h.doc();
+  assert.equal(doc.features.find((f) => f.id === zig.id).nodes.length, 3 + 2 * 4, 'Glätten fügt 4 Zwischenpunkte je Abschnitt ein');
+  await page.click('#prop-simplify');
+  await h.settle();
+  doc = await h.doc();
+  const afterSimplify = doc.features.find((f) => f.id === zig.id).nodes.length;
+  assert.ok(afterSimplify < 11 && afterSimplify >= 3, `Vereinfachen reduziert (${afterSimplify})`);
+  await page.click('#prop-profile-load');
+  await page.waitForSelector('#prop-profile-chart');
+  doc = await h.doc();
+  const withProfile = doc.features.find((f) => f.id === zig.id);
+  assert.equal(withProfile.profile.points.length, 3);
+  assert.ok((await page.textContent('.profile-box')).includes('max. Steigung'));
+  await page.click('#prop-profile-clear');
+  await h.settle();
+  assert.equal((await h.doc()).features.find((f) => f.id === zig.id).profile, null);
+  // Geschwindigkeitsmodell: Route über die geglättete Strasse zeigt ein Band
+  await page.keyboard.press('t');
+  const zA = await h.project(withProfile.nodes[0]);
+  const zB = await h.project(withProfile.nodes[withProfile.nodes.length - 1]);
+  await page.mouse.click(box.x + zA.x, box.y + zA.y);
+  await h.settle(200);
+  await page.mouse.click(box.x + zB.x, box.y + zB.y);
+  await page.waitForFunction(() => { const r = window.stadtplaner.routes(); return r && r.proposed && !r.proposed.error; });
+  await page.click('.tabs button[data-tab="route"]');
+  await page.check('#route-model');
+  await page.waitForFunction(() => { const r = window.stadtplaner.routes(); return r && r.model === 'geometry' && r.proposed && r.proposed.sd > 0; });
+  assert.ok((await page.textContent('#route-panel')).includes('P15–P85'), 'Band im Panel');
+  await page.uncheck('#route-model');
+  await page.waitForFunction(() => { const r = window.stadtplaner.routes(); return r && r.model === 'limit'; });
+  await page.evaluate(() => window.stadtplaner.actions.clearRoute());
+  await page.keyboard.press('v');
+  await page.evaluate((id) => window.stadtplaner.tools.setSelection({ featureId: id, segIndex: 0 }), zig.id);
+  await h.settle(200);
+  await page.keyboard.press('Delete');
+  await h.settle(300);
+  console.log('✓ Glätten, Profil, Geschwindigkeitsmodell');
+
   // Kartenquellen: Grundkarte wechseln und Parzellen-Overlay einschalten -> Kacheln der Quellen werden angefragt
   const tileHits = { swisstopo: 0, cadastre: 0, osm: 0 };
   await page.route(/\/tiles\/(\w[\w-]*\/)?\d+\/\d+\/\d+/, (route) => {

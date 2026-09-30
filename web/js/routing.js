@@ -7,7 +7,9 @@
 // eingerastet sind, teilen diesen Abschnitt beim Aufbau des Netzes.
 
 import { closestPointOnSegment, haversine, mercatorScale, project, unproject } from './geometry.js';
-import { pointInPolygon, segmentSpeed, zoneKind } from './model.js';
+import { pointInPolygon, segmentSpeed, validProfile, zoneKind } from './model.js';
+import { polylineRadii } from './smooth.js';
+import { NODE_DELAY, expectedSpeedKmh, segmentGrades, segmentTime, summarize } from './speedmodel.js';
 
 const DRIVABLE = new Set([
   'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service',
@@ -79,9 +81,10 @@ export function wayDirection(tags = {}) {
 export const keyOf = (ll) => `${ll[0].toFixed(6)},${ll[1].toFixed(6)}`;
 
 export class Graph {
-  constructor() {
-    this.nodes = new Map(); // key -> { latlng, edges: [{ to, dist, time }] }
-    this.penalty = new Map(); // key -> Sekunden
+  constructor(model = 'limit') {
+    this.model = model; // 'limit' = Tempolimit, 'geometry' = Kurven, Steigung, Streuung
+    this.nodes = new Map(); // key -> { latlng, edges: [{ to, dist, time, variance }] }
+    this.penalty = new Map(); // key -> { mean, variance } in Sekunden
     this.segments = []; // für die Suche nach dem nächsten Punkt: { a, b, ka, kb, speed, dir }
     this.speedCap = null; // (latlng) -> km/h oder null; deckelt Abschnitte in Zonen
   }
@@ -96,8 +99,11 @@ export class Graph {
     return k;
   }
 
-  /** Verbindet a und b; dir 0 = beide Richtungen, 1 = nur a->b, -1 = nur b->a. */
-  link(a, b, speedKmh, dir = 0) {
+  /**
+   * Verbindet a und b; dir 0 = beide Richtungen, 1 = nur a->b, -1 = nur b->a.
+   * geo = { radiusA, radiusB, grade } fliesst nur im Geometriemodell ein.
+   */
+  link(a, b, speedKmh, dir = 0, geo = null) {
     if (this.speedCap) {
       const cap = this.speedCap([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
       if (cap !== null) speedKmh = Math.min(speedKmh, cap);
@@ -107,18 +113,43 @@ export class Graph {
     const kb = this.node(b);
     if (ka === kb) return;
     const dist = haversine(a, b);
-    const time = dist / (speedKmh / 3.6);
-    if (dir >= 0) this.nodes.get(ka).edges.push({ to: kb, dist, time });
-    if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time });
+    let time;
+    let variance = 0;
+    if (this.model === 'geometry') {
+      const v = expectedSpeedKmh({ limitKmh: speedKmh, radiusStart: geo ? geo.radiusA : Infinity, radiusEnd: geo ? geo.radiusB : Infinity, gradePercent: geo ? geo.grade : 0 });
+      const t = segmentTime(dist, v);
+      time = t.mean;
+      variance = t.variance;
+    } else {
+      time = dist / (speedKmh / 3.6);
+    }
+    if (dir >= 0) this.nodes.get(ka).edges.push({ to: kb, dist, time, variance });
+    if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time, variance });
     this.segments.push({ a, b, ka, kb, speed: speedKmh, dir });
   }
 
-  addPolyline(points, speedKmh, dir = 0) {
-    for (let i = 1; i < points.length; i++) this.link(points[i - 1], points[i], speedKmh, dir);
+  /** Linienzug mit einer Geschwindigkeit; im Geometriemodell mit Kurvenradien. */
+  addPolyline(points, speedKmh, dir = 0, grades = null) {
+    this.addPolylineSpeeds(points, points.slice(1).map(() => speedKmh), dir, grades);
   }
 
-  addPenalty(ll, seconds) {
-    if (seconds > 0) this.penalty.set(keyOf(ll), (this.penalty.get(keyOf(ll)) || 0) + seconds);
+  /** Linienzug mit Geschwindigkeit je Abschnitt (speeds.length = points.length - 1). */
+  addPolylineSpeeds(points, speeds, dir = 0, grades = null) {
+    const radii = this.model === 'geometry' ? polylineRadii(points) : null;
+    for (let i = 1; i < points.length; i++) {
+      const geo = radii ? { radiusA: radii[i - 1], radiusB: radii[i], grade: grades ? grades[i - 1] : 0 } : null;
+      // Steigung wirkt in Fahrtrichtung; bei beiden Richtungen nehmen wir den Betrag konservativ als bergauf.
+      if (geo && dir === 0 && geo.grade) geo.grade = Math.abs(geo.grade);
+      if (geo && dir === -1 && geo.grade) geo.grade = -geo.grade;
+      this.link(points[i - 1], points[i], speeds[i - 1], dir, geo);
+    }
+  }
+
+  addPenalty(ll, mean, sd = 0) {
+    if (!(mean > 0) && !(sd > 0)) return;
+    const k = keyOf(ll);
+    const cur = this.penalty.get(k) || { mean: 0, variance: 0 };
+    this.penalty.set(k, { mean: cur.mean + mean, variance: cur.variance + sd * sd });
   }
 }
 
@@ -159,8 +190,9 @@ export function insertPointsOnLine(points, candidates, toleranceMeters = 1) {
  * neue Strassen kommen dazu, Kreisel verbinden ihre Anschlüsse, Kreuzungen
  * kosten Zeit.
  */
-export function buildGraph({ osmWays = [], doc = null, mode = 'current' }) {
-  const g = new Graph();
+export function buildGraph({ osmWays = [], doc = null, mode = 'current', model = 'limit' }) {
+  const g = new Graph(model);
+  const geometry = model === 'geometry';
   // Nur sichtbare Ebenen zählen: Ebenen ein- und ausblenden ist der Variantenvergleich.
   const hidden = doc ? new Set(doc.layers.filter((l) => l.visible === false).map((l) => l.id)) : new Set();
   const visible = mode === 'proposed' && doc ? doc.features.filter((f) => !hidden.has(f.layerId)) : [];
@@ -182,18 +214,37 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current' }) {
     const roundabouts = visible.filter((f) => f.type === 'roundabout');
     for (const r of roads) {
       if (r.status === 'remove') continue;
-      for (let i = 0; i < r.nodes.length - 1; i++) g.link(r.nodes[i], r.nodes[i + 1], segmentSpeed(r, i), r.oneway ? 1 : 0);
+      const speeds = r.segments.map((_, i) => segmentSpeed(r, i));
+      let grades = null;
+      const profile = geometry ? validProfile(r) : null;
+      if (profile) {
+        const dists = [0];
+        for (let i = 1; i < r.nodes.length; i++) dists.push(dists[i - 1] + haversine(r.nodes[i - 1], r.nodes[i]));
+        grades = segmentGrades(dists, profile.points);
+      }
+      g.addPolylineSpeeds(r.nodes, speeds, r.oneway ? 1 : 0, grades);
     }
     for (const k of roundabouts) {
       const c = project(k.center);
       const scale = mercatorScale(k.center[0]);
+      let attached = false;
       for (const n of draftNodes) {
         const d = Math.hypot(n.p.x - c.x, n.p.y - c.y) / scale;
-        if (Math.abs(d - k.radius) <= 1.5) g.link(n.ll, k.center, ROUNDABOUT_SPEED, 0);
+        if (Math.abs(d - k.radius) <= 1.5) {
+          g.link(n.ll, k.center, ROUNDABOUT_SPEED, 0);
+          attached = true;
+        }
       }
+      if (attached && geometry) g.addPenalty(k.center, NODE_DELAY.roundabout.mean, NODE_DELAY.roundabout.sd);
     }
     for (const j of visible) {
-      if (j.type === 'junction') g.addPenalty(j.at, JUNCTION_PENALTY[j.kind] || 0);
+      if (j.type !== 'junction') continue;
+      if (geometry) {
+        const d = NODE_DELAY[j.kind] || NODE_DELAY.plain;
+        g.addPenalty(j.at, d.mean, d.sd);
+      } else {
+        g.addPenalty(j.at, JUNCTION_PENALTY[j.kind] || 0);
+      }
     }
   }
   return g;
@@ -266,7 +317,7 @@ class MinHeap {
 /** Schnellste Route (nach Zeit). Liefert { path: [[lat,lng]], dist, time } oder null. */
 export function shortestPath(g, fromKey, toKey) {
   if (!g.nodes.has(fromKey) || !g.nodes.has(toKey)) return null;
-  const best = new Map([[fromKey, { cost: 0, dist: 0, prev: null }]]);
+  const best = new Map([[fromKey, { cost: 0, dist: 0, variance: 0, prev: null }]]);
   const heap = new MinHeap();
   heap.push({ key: fromKey, cost: 0 });
   const done = new Set();
@@ -276,12 +327,15 @@ export function shortestPath(g, fromKey, toKey) {
     done.add(key);
     if (key === toKey) break;
     const node = g.nodes.get(key);
-    const penalty = key === fromKey ? 0 : (g.penalty.get(key) || 0);
+    const pen = key === fromKey ? null : g.penalty.get(key);
+    const penalty = pen ? pen.mean : 0;
+    const penVar = pen ? pen.variance : 0;
     for (const e of node.edges) {
       const c = cost + penalty + e.time;
       const cur = best.get(e.to);
       if (!cur || c < cur.cost) {
-        best.set(e.to, { cost: c, dist: best.get(key).dist + e.dist, prev: key });
+        const here = best.get(key);
+        best.set(e.to, { cost: c, dist: here.dist + e.dist, variance: here.variance + penVar + (e.variance || 0), prev: key });
         heap.push({ key: e.to, cost: c });
       }
     }
@@ -291,14 +345,15 @@ export function shortestPath(g, fromKey, toKey) {
   const path = [];
   for (let k = toKey; k; k = best.get(k).prev) path.push(g.nodes.get(k).latlng);
   path.reverse();
-  return { path, dist: end.dist, time: end.cost };
+  const band = summarize(end.cost, end.variance);
+  return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85 };
 }
 
 /** Beide Netze rechnen. Liefert { current, proposed, network: { current: n, proposed: n } }. */
-export function computeRoutes({ osmWays, doc, from, to }) {
-  const result = { current: null, proposed: null, error: null };
+export function computeRoutes({ osmWays, doc, from, to, model = 'limit' }) {
+  const result = { current: null, proposed: null, error: null, model };
   for (const mode of ['current', 'proposed']) {
-    const g = buildGraph({ osmWays, doc, mode });
+    const g = buildGraph({ osmWays, doc, mode, model });
     const a = attachPoint(g, from);
     const b = attachPoint(g, to);
     if (!a || !b) {

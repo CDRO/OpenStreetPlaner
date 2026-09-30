@@ -35,7 +35,10 @@ go run . -data ./data
 | Ebenen | Beliebig viele, ein-/ausblenden, umbenennen, einfärben, sortieren; jedes Element gehört zu einer Ebene |
 | Strassen | Linienzug zeichnen (Klick für Punkte, Doppelklick/Enter/Rechtsklick beendet), Strassentyp, Status *Neu / Bestehend / Rückbau*, Einbahn mit Pfeilen, Beschriftung ab Zoom 16 |
 | Tempolimit | Pro Strasse in km/h (Schnellwahl 20/30/50/80 oder Standard je Strassentyp); wird beim Übernehmen aus OSM `maxspeed` gelesen (auch `30 mph`, `CH:urban` usw.) und ab Zoom 16 als Schild gezeichnet |
-| Routen-Rechner | Start A und Ziel B klicken: schnellste Fahrroute im heutigen OSM-Netz vs. im Netz mit dem Entwurf (neue Strassen dazu, Rückbau weg, übernommene Strassen mit ihren Änderungen), Distanz und Fahrzeit aus Tempolimits, gezeichnete Kreuzungen kosten Zeit (Ampel 20 s, Stop 8 s, Vortritt 3 s), Kreisel verbinden ihre Anschlüsse |
+| Routen-Rechner | Start A und Ziel B klicken: schnellste Fahrroute im heutigen OSM-Netz vs. im Netz mit dem Entwurf (neue Strassen dazu, Rückbau weg, übernommene Strassen mit ihren Änderungen, nur sichtbare Ebenen), Distanz und Fahrzeit aus Tempolimits, gezeichnete Kreuzungen kosten Zeit (Ampel 20 s, Stop 8 s, Vortritt 3 s), Kreisel verbinden ihre Anschlüsse |
+| Geschwindigkeitsmodell | Schalter im Routen-Tab: Fahrzeit aus der Strassenführung statt nur aus dem Limit. Kurvenradien aus der Geometrie (v = √(3 m/s² · R)), Steigung aus dem Höhenprofil, Wartezeiten an Kreuzungen und Kreiseln mit Streuung. Ergebnis als typische Zeit mit Band P15–P85 |
+| Glätten / Vereinfachen | Strassen per Catmull-Rom-Spline glätten (Abschnittseigenschaften bleiben) oder per Douglas-Peucker auf 1 m vereinfachen |
+| Höhenprofil | Pro Strasse vom swisstopo-Profildienst laden: Gelände, Steigungen, Brücken über und Tunnel unter dem Gelände als Diagramm; fliesst ins Geschwindigkeitsmodell ein |
 | Bild / PDF | Export-Dialog: aktuelle Ansicht oder ganzer Entwurf, A4/A3, Hoch- oder Querformat, 96/150/300 dpi. Die Karte wird dafür offscreen neu gezeichnet (Kacheln werden vorgeladen), mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution; PNG oder einseitiges PDF, beides ohne Bibliothek |
 | Abschnitte | Jeder Abschnitt zwischen zwei Punkten hat seine eigene Führung: **Ebenerdig, Brücke oder Tunnel** |
 | Kreuzungen / Punkte | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop, Fussgängerstreifen, Bushaltestelle) |
@@ -69,6 +72,7 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 | `TILE_SOURCES` | leer | JSON-Liste weiterer oder ersetzender Kartenquellen: `[{"id":"…","label":"…","url":"…{z}/{x}/{y}… oder …{bbox}…","attribution":"…","maxZoom":19,"minZoom":0,"overlay":false}]`. `{bbox}` wird zur EPSG:3857-Box der Kachel (für WMS) |
 | `NOMINATIM_URL` | `https://nominatim.openstreetmap.org/search` | Geocoder |
 | `OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Strassengeometrie |
+| `PROFILE_URL` | `https://api3.geo.admin.ch/rest/services/profile.json` | Höhenprofil-Dienst (swisstopo, nur Schweiz); leer schaltet ab |
 | `USER_AGENT` | `Stadtplaner/1.0 (+…)` | User-Agent gegenüber den OSM-Diensten – bitte auf die eigene Installation anpassen |
 | `MAX_VERSIONS` | `30` | Versionen pro Entwurf |
 | `WRITE_RATE` | `60` | Schreibende API-Aufrufe pro Minute und Client-IP (Burst 20); `0` schaltet die Drosselung aus |
@@ -108,6 +112,7 @@ speichert nur einen Hash davon).
 | `GET` | `/sw.js` | Service Worker (Push-Empfang, Klick öffnet den Kommentar) |
 | `GET` | `/api/search?q=` | Ortssuche |
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
+| `POST` | `/api/profile` | `{coords: [[lat,lng],…]}` → `{points: [[dist,height],…]}` Höhenprofil |
 | `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache (Standardquelle) |
 | `GET` | `/tiles/{source}/{z}/{x}/{y}.png` | Kachel einer benannten Quelle |
 | `GET` | `/api/tiles/sources` | Verfügbare Kartenquellen (ohne Upstream-URLs) |
@@ -137,6 +142,8 @@ web/js/snap.js           Einrast-Index aus Entwurf + OSM-Daten
 web/js/store.js          Zustand mit Undo/Redo
 web/js/osm.js            Strassen-Cache, Tag-Zuordnung
 web/js/routing.js        Routen-Rechner: Netz aus OSM + Entwurf, Dijkstra, maxspeed-Parser
+web/js/smooth.js         Glätten (Catmull-Rom), Vereinfachen (Douglas-Peucker), Kurvenradien
+web/js/speedmodel.js     Erwartete Geschwindigkeit aus Kurve, Steigung und Umfeld; Streuung und Zeitband
 web/js/export.js         PNG/PDF-Export (Bildkomposition, handgeschriebener PDF-Writer)
 web/js/api.js            Aufrufe ans Backend
 web/js/local.js          Browser-lokal: eigene Entwürfe, Arbeitskopie, Einstellungen, Browser-Kennung
@@ -183,6 +190,13 @@ optional (null = Standard je Strassentyp), `osmId` verweist auf den
 - Einbahnen werden beachtet (OSM `oneway`, Zeichenrichtung im Entwurf).
 - Zonen mit Tempolimit deckeln jeden Abschnitt, dessen Mittelpunkt in der
   Fläche liegt; Fussgängerzonen sperren ihn.
+- Geschwindigkeitsmodell (optional): erwartete Geschwindigkeit je Abschnitt
+  = min(Limit, Kurvengeschwindigkeit √(a·R) mit a = 3 m/s², Limit ×
+  Steigungsfaktor). Streuung der freien Fahrgeschwindigkeit je Tempo-Niveau
+  (Variationskoeffizient 0,22 bis 0,10), Wartezeiten Ampel 20 ± 15 s, Stop
+  8 ± 5 s, Vortritt 3 ± 3 s, Fussgängerstreifen 2 ± 2 s, Kreisel 5 ± 4 s.
+  Varianzen werden als unabhängig summiert; das Band ist P15–P85. Das
+  Modell liefert Vergleichbarkeit, keine kalibrierte Prognose.
 - Das Netz wird in Zellen von 0.025° (etwa 2,8 km × 1,9 km) geladen, für den
   Bereich um Start und Ziel plus Rand, höchstens 100 Zellen pro Anfrage. Der
   Server begrenzt weiterhin jede einzelne Abfrage auf 0.06°. Ohne Abbiege- und
