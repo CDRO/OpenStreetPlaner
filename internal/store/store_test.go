@@ -106,3 +106,58 @@ func TestForkAndInvalidIDs(t *testing.T) {
 		t.Fatalf("Authorize: %v", err)
 	}
 }
+
+func TestComments(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	id, editToken, _ := s.Create(doc("A"), "1")
+	list, err := s.Comments(id)
+	if err != nil || len(list) != 0 {
+		t.Fatalf("leer erwartet: %v %+v", err, list)
+	}
+	c, ctoken, err := s.AddComment(id, Comment{Lat: 47, Lng: 8, Author: "  Anna ", Text: " Hier fehlt ein Fussgängerstreifen "})
+	if err != nil || c.ID == "" || ctoken == "" || c.Author != "Anna" || c.TokenHash != "" {
+		t.Fatalf("AddComment: %v %+v", err, c)
+	}
+	c2, _, _ := s.AddComment(id, Comment{Lat: 47, Lng: 8, Text: "zweiter"})
+	if c2.Author != "Anonym" {
+		t.Fatalf("Anonym erwartet: %+v", c2)
+	}
+	if _, _, err := s.AddComment(id, Comment{Lat: 47, Lng: 8, Text: "   "}); !errors.Is(err, ErrBadComment) {
+		t.Fatalf("leerer Text akzeptiert: %v", err)
+	}
+	if _, _, err := s.AddComment(id, Comment{Lat: 99, Lng: 8, Text: "x"}); !errors.Is(err, ErrBadComment) {
+		t.Fatalf("ungültige Position akzeptiert: %v", err)
+	}
+	if _, _, err := s.AddComment("doesnotexist1", Comment{Lat: 1, Lng: 1, Text: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unbekannter Entwurf: %v", err)
+	}
+	list, _ = s.Comments(id)
+	if len(list) != 2 || list[0].TokenHash != "" {
+		t.Fatalf("Liste: %+v", list)
+	}
+	if err := s.ResolveComment(id, c.ID, "", "falsch", true); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Fremdes Token akzeptiert: %v", err)
+	}
+	if err := s.ResolveComment(id, c.ID, "", ctoken, true); err != nil {
+		t.Fatalf("Verfasser darf erledigen: %v", err)
+	}
+	list, _ = s.Comments(id)
+	if !list[0].Resolved {
+		t.Fatalf("nicht erledigt: %+v", list[0])
+	}
+	if err := s.DeleteComment(id, c2.ID, editToken, ""); err != nil {
+		t.Fatalf("Besitzer darf löschen: %v", err)
+	}
+	if err := s.DeleteComment(id, c2.ID, editToken, ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("doppelt löschen: %v", err)
+	}
+	list, _ = s.Comments(id)
+	if len(list) != 1 {
+		t.Fatalf("nach Löschen: %+v", list)
+	}
+	fid, _, _ := s.Fork(id, "Kopie")
+	flist, _ := s.Comments(fid)
+	if len(flist) != 0 {
+		t.Fatalf("Fork darf keine Kommentare kopieren")
+	}
+}

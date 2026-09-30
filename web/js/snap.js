@@ -16,6 +16,12 @@ export function buildSnapIndex(doc, { osmWays = [], includeOsm = true } = {}) {
       for (let i = 0; i < pts.length - 1; i++) {
         index.segments.push(segmentEntry(pts[i], pts[i + 1], { source: 'draft', type: 'road', featureId: f.id, index: i }));
       }
+    } else if (f.type === 'zone') {
+      const pts = f.nodes.map(project);
+      pts.forEach((p, i) => index.nodes.push({ x: p.x, y: p.y, ref: { source: 'draft', type: 'zone', featureId: f.id, index: i } }));
+      for (let i = 0; i < pts.length; i++) {
+        index.segments.push(segmentEntry(pts[i], pts[(i + 1) % pts.length], { source: 'draft', type: 'zone', featureId: f.id, index: i }));
+      }
     } else if (f.type === 'junction') {
       const p = project(f.at);
       index.nodes.push({ x: p.x, y: p.y, ref: { source: 'draft', type: 'junction', featureId: f.id } });

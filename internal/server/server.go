@@ -20,17 +20,26 @@ import (
 )
 
 const (
-	maxBodyBytes    = 8 << 20
-	editTokenHeader = "X-Edit-Token"
+	maxBodyBytes       = 8 << 20
+	editTokenHeader    = "X-Edit-Token"
+	commentTokenHeader = "X-Comment-Token"
 )
 
 type Server struct {
-	store  *store.Store
-	osm    *osm.Client
-	index  []byte
-	static http.Handler
-	mux    *http.ServeMux
-	logger *log.Logger
+	store   *store.Store
+	osm     *osm.Client
+	index   []byte
+	static  http.Handler
+	mux     *http.ServeMux
+	logger  *log.Logger
+	limiter *limiter
+}
+
+// RateLimit konfiguriert die Drosselung schreibender API-Aufrufe pro Client.
+type RateLimit struct {
+	PerMinute  float64
+	Burst      int
+	TrustProxy bool
 }
 
 // New baut den Server. webFS enthält den Ordner "web" mit index.html, css/ und js/.
@@ -52,6 +61,18 @@ func New(st *store.Store, osmClient *osm.Client, webFS fs.FS, logger *log.Logger
 	return s, nil
 }
 
+// SetRateLimit aktiviert die Drosselung; PerMinute <= 0 schaltet sie aus.
+func (s *Server) SetRateLimit(rl RateLimit) {
+	if rl.PerMinute <= 0 {
+		s.limiter = nil
+		return
+	}
+	if rl.Burst <= 0 {
+		rl.Burst = 10
+	}
+	s.limiter = newLimiter(rl.PerMinute, rl.Burst, rl.TrustProxy)
+}
+
 func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +86,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/drafts/{id}/fork", s.forkDraft)
 	m.HandleFunc("GET /api/drafts/{id}/versions", s.listVersions)
 	m.HandleFunc("GET /api/drafts/{id}/versions/{n}", s.getVersion)
+	m.HandleFunc("GET /api/drafts/{id}/comments", s.listComments)
+	m.HandleFunc("POST /api/drafts/{id}/comments", s.addComment)
+	m.HandleFunc("PATCH /api/drafts/{id}/comments/{cid}", s.resolveComment)
+	m.HandleFunc("DELETE /api/drafts/{id}/comments/{cid}", s.deleteComment)
 	m.HandleFunc("GET /api/search", s.search)
 	m.HandleFunc("GET /api/roads", s.roads)
 	m.HandleFunc("GET /tiles/{z}/{x}/{y}", s.tile)
@@ -76,9 +101,9 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /{$}", s.serveIndex)
 }
 
-// Handler liefert den Router mit Logging und Sicherheits-Headern.
+// Handler liefert den Router mit Logging, Sicherheits-Headern und Drosselung.
 func (s *Server) Handler() http.Handler {
-	return s.logging(s.headers(s.mux))
+	return s.logging(s.headers(s.limiter.middleware(s.mux)))
 }
 
 func (s *Server) headers(next http.Handler) http.Handler {
@@ -133,8 +158,10 @@ func writeError(w http.ResponseWriter, err error) {
 		status, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, store.ErrUnauthorized):
 		status, msg = http.StatusForbidden, err.Error()
-	case errors.Is(err, model.ErrInvalid), errors.Is(err, osm.ErrBadRequest):
+	case errors.Is(err, model.ErrInvalid), errors.Is(err, osm.ErrBadRequest), errors.Is(err, store.ErrBadComment):
 		status, msg = http.StatusBadRequest, err.Error()
+	case errors.Is(err, store.ErrCommentLimit):
+		status, msg = http.StatusConflict, err.Error()
 	case errors.As(err, &maxErr):
 		status, msg = http.StatusRequestEntityTooLarge, "Entwurf ist zu gross"
 	case errors.Is(err, context.Canceled):
@@ -335,6 +362,91 @@ func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"n": info.N, "at": info.At, "label": info.Label, "stats": info.Stats, "doc": doc})
+}
+
+// --- Kommentare ----------------------------------------------------------------
+
+func (s *Server) listComments(w http.ResponseWriter, r *http.Request) {
+	id, err := draftID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	list, err := s.store.Comments(id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
+	id, err := draftID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var in struct {
+		Lat    float64 `json:"lat"`
+		Lng    float64 `json:"lng"`
+		Author string  `json:"author"`
+		Text   string  `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, errors.Join(store.ErrBadComment, errors.New("kein gültiges JSON")))
+		return
+	}
+	c, token, err := s.store.AddComment(id, store.Comment{Lat: in.Lat, Lng: in.Lng, Author: in.Author, Text: in.Text})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"comment": c, "commentToken": token})
+}
+
+func (s *Server) resolveComment(w http.ResponseWriter, r *http.Request) {
+	id, err := draftID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	cid := r.PathValue("cid")
+	if !store.ValidID(cid) {
+		writeError(w, store.ErrNotFound)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var in struct {
+		Resolved bool `json:"resolved"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, errors.Join(store.ErrBadComment, errors.New("kein gültiges JSON")))
+		return
+	}
+	if err := s.store.ResolveComment(id, cid, r.Header.Get(editTokenHeader), r.Header.Get(commentTokenHeader), in.Resolved); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteComment(w http.ResponseWriter, r *http.Request) {
+	id, err := draftID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	cid := r.PathValue("cid")
+	if !store.ValidID(cid) {
+		writeError(w, store.ErrNotFound)
+		return
+	}
+	if err := s.store.DeleteComment(id, cid, r.Header.Get(editTokenHeader), r.Header.Get(commentTokenHeader)); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- OSM ----------------------------------------------------------------------

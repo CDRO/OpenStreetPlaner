@@ -194,17 +194,72 @@ export class SlippyMap {
     this.anim = null;
   }
 
-  /** bounds = { south, west, north, east } */
-  fitBounds(b, { padding = 40, maxZoom = this.maxZoom } = {}) {
+  /** Mitte und Zoom, mit denen bounds in width × height CSS-Pixel passt. */
+  viewForBounds(b, width, height, { padding = 40, maxZoom = this.maxZoom } = {}) {
     const sw = project([b.south, b.west]);
     const ne = project([b.north, b.east]);
     const w = Math.max(1e-9, ne.x - sw.x);
     const h = Math.max(1e-9, ne.y - sw.y);
-    const availW = Math.max(50, this.width - 2 * padding);
-    const availH = Math.max(50, this.height - 2 * padding);
+    const availW = Math.max(50, width - 2 * padding);
+    const availH = Math.max(50, height - 2 * padding);
     const upp = Math.max(w / availW, h / availH);
     const zoom = Math.log2((2 * Math.PI * EARTH_RADIUS) / (TILE * upp));
-    this.setView(unproject({ x: (sw.x + ne.x) / 2, y: (sw.y + ne.y) / 2 }), Math.min(maxZoom, Math.floor(zoom * 100) / 100));
+    return { center: unproject({ x: (sw.x + ne.x) / 2, y: (sw.y + ne.y) / 2 }), zoom: this.clampZoom(Math.min(maxZoom, Math.floor(zoom * 100) / 100)) };
+  }
+
+  /** bounds = { south, west, north, east } */
+  fitBounds(b, opts = {}) {
+    const v = this.viewForBounds(b, this.width, this.height, opts);
+    this.setView(v.center, v.zoom);
+  }
+
+  /** Führt fn mit einer anderen Ansicht/Grösse aus und stellt den Zustand danach wieder her. */
+  withView({ center, zoom, width, height, pixelRatio }, fn) {
+    const saved = { center: this.center, zoom: this.zoom, width: this.width, height: this.height, dpr: this.dpr, ctx: this.ctx };
+    try {
+      if (center) this.center = project(center);
+      if (zoom !== undefined) this.zoom = this.clampZoom(zoom);
+      if (width) this.width = width;
+      if (height) this.height = height;
+      if (pixelRatio) this.dpr = pixelRatio;
+      return fn();
+    } finally {
+      Object.assign(this, saved);
+    }
+  }
+
+  /** Lädt alle Kacheln einer Ansicht vor (löst auf, wenn geladen, fehlerhaft oder nach timeout). */
+  prefetchTiles(view, timeoutMs = 20000) {
+    const tiles = this.withView(view, () => {
+      const list = [];
+      this.eachVisibleTile((z, x, y, key) => list.push(this.getTile(z, x, y, key)));
+      return list;
+    });
+    const all = Promise.all(tiles.map((t) => t.done));
+    return Promise.race([all, new Promise((r) => setTimeout(r, timeoutMs))]).then(() => tiles.filter((t) => t.ok).length);
+  }
+
+  /** Zeichnet Kacheln und Overlay in ein neues Canvas (Gerätepixel = CSS-Grösse × pixelRatio). */
+  renderOffscreen({ center, zoom, width, height, pixelRatio = 1 }) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(width * pixelRatio);
+    canvas.height = Math.round(height * pixelRatio);
+    const ctx = canvas.getContext('2d');
+    this.withView({ center, zoom, width, height, pixelRatio }, () => {
+      ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      ctx.fillStyle = '#e8ecf0';
+      ctx.fillRect(0, 0, width, height);
+      this.drawTiles(ctx);
+      if (this.overlay) {
+        ctx.save();
+        try {
+          this.overlay(ctx, this);
+        } finally {
+          ctx.restore();
+        }
+      }
+    });
+    return canvas;
   }
 
   scheduleMoveEnd(ms) {
@@ -270,7 +325,8 @@ export class SlippyMap {
     this.emit('render');
   }
 
-  drawTiles(ctx) {
+  /** Ruft fn(z, x, y, key, sx, sy, size) für jede sichtbare Kachel der aktuellen Ansicht auf. */
+  eachVisibleTile(fn) {
     const z = Math.max(0, Math.min(this.maxNativeZoom, Math.round(this.zoom)));
     const scale = Math.pow(2, this.zoom - z);
     const n = 1 << z;
@@ -278,35 +334,36 @@ export class SlippyMap {
     const cx = ((this.center.x + HALF) / (2 * HALF)) * worldPx;
     const cy = ((HALF - this.center.y) / (2 * HALF)) * worldPx;
     const tileSize = TILE * scale;
-    const left = cx - this.width / 2 / scale;
-    const right = cx + this.width / 2 / scale;
-    const top = cy - this.height / 2 / scale;
-    const bottom = cy + this.height / 2 / scale;
-    const tx0 = Math.floor(left / TILE);
-    const tx1 = Math.floor(right / TILE);
-    const ty0 = Math.max(0, Math.floor(top / TILE));
-    const ty1 = Math.min(n - 1, Math.floor(bottom / TILE));
-    const visible = new Set();
-    ctx.imageSmoothingEnabled = true;
+    const tx0 = Math.floor((cx - this.width / 2 / scale) / TILE);
+    const tx1 = Math.floor((cx + this.width / 2 / scale) / TILE);
+    const ty0 = Math.max(0, Math.floor((cy - this.height / 2 / scale) / TILE));
+    const ty1 = Math.min(n - 1, Math.floor((cy + this.height / 2 / scale) / TILE));
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
         const sx = this.width / 2 + (tx * TILE - cx) * scale;
         const sy = this.height / 2 + (ty * TILE - cy) * scale;
         const wx = ((tx % n) + n) % n;
-        const key = `${z}/${wx}/${ty}`;
-        visible.add(key);
-        const t = this.getTile(z, wx, ty, key);
-        const dx = Math.round(sx);
-        const dy = Math.round(sy);
-        const dw = Math.round(sx + tileSize) - dx;
-        const dh = Math.round(sy + tileSize) - dy;
-        if (t.ok) {
-          ctx.drawImage(t.img, dx, dy, dw, dh);
-        } else {
-          this.drawFallback(ctx, z, wx, ty, dx, dy, dw, dh);
-        }
+        fn(z, wx, ty, `${z}/${wx}/${ty}`, sx, sy, tileSize);
       }
     }
+  }
+
+  drawTiles(ctx) {
+    const visible = new Set();
+    ctx.imageSmoothingEnabled = true;
+    this.eachVisibleTile((z, x, y, key, sx, sy, tileSize) => {
+      visible.add(key);
+      const t = this.getTile(z, x, y, key);
+      const dx = Math.round(sx);
+      const dy = Math.round(sy);
+      const dw = Math.round(sx + tileSize) - dx;
+      const dh = Math.round(sy + tileSize) - dy;
+      if (t.ok) {
+        ctx.drawImage(t.img, dx, dy, dw, dh);
+      } else {
+        this.drawFallback(ctx, z, x, y, dx, dy, dw, dh);
+      }
+    });
     this.pruneTiles(visible);
   }
 
@@ -330,14 +387,18 @@ export class SlippyMap {
     let t = this.tiles.get(key);
     if (!t) {
       const img = new Image();
-      t = { img, ok: false, err: false, seq: 0 };
-      img.onload = () => {
-        t.ok = true;
-        this.requestRender();
-      };
-      img.onerror = () => {
-        t.err = true;
-      };
+      t = { img, ok: false, err: false, seq: 0, done: null };
+      t.done = new Promise((resolve) => {
+        img.onload = () => {
+          t.ok = true;
+          this.requestRender();
+          resolve();
+        };
+        img.onerror = () => {
+          t.err = true;
+          resolve();
+        };
+      });
       img.src = this.tileUrl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
       this.tiles.set(key, t);
     }
@@ -352,8 +413,7 @@ export class SlippyMap {
     for (let i = 0; i < drop; i++) {
       const [k, t] = entries[i];
       if (!t.ok && !t.err) {
-        t.img.onload = null;
-        t.img.onerror = null;
+        t.err = true;
         t.img.src = '';
       }
       this.tiles.delete(k);

@@ -134,3 +134,28 @@ func TestMaxspeedOsmIDAndRoute(t *testing.T) {
 		t.Fatalf("ungültige Route nicht verworfen")
 	}
 }
+
+func TestZones(t *testing.T) {
+	d := sample()
+	d.Features = append(d.Features, Feature{ID: "z1", Type: "zone", LayerID: "l1", Kind: "tempo30", Nodes: []LatLng{{47, 8}, {47, 8.001}, {47.001, 8.001}}, Status: "new", Radius: 5})
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	z := d.Features[3]
+	if z.Kind != "tempo30" || z.Status != "" || z.Radius != 0 || len(z.Nodes) != 3 {
+		t.Fatalf("Zone nicht bereinigt: %+v", z)
+	}
+	if Compute(d).Zones != 1 {
+		t.Fatalf("Zone nicht gezählt")
+	}
+	d.Features[3].Nodes = d.Features[3].Nodes[:2]
+	if err := Normalize(d); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Zone mit zwei Punkten akzeptiert: %v", err)
+	}
+	d = sample()
+	d.Features[1].Kind = "crossing"
+	_ = Normalize(d)
+	if d.Features[1].Kind != "crossing" {
+		t.Fatalf("Fussgängerstreifen nicht akzeptiert")
+	}
+}

@@ -46,7 +46,42 @@ export const JUNCTION_KINDS = [
   { id: 'signals', label: 'Ampel' },
   { id: 'priority', label: 'Vortritt' },
   { id: 'stop', label: 'Stop' },
+  { id: 'crossing', label: 'Fussgängerstreifen' },
+  { id: 'busstop', label: 'Bushaltestelle' },
 ];
+
+// speed: Tempolimit, das die Zone auf alle Strassen darin legt (0 = nicht befahrbar, null = keines).
+// color: Darstellung; null = Ebenenfarbe.
+export const ZONE_KINDS = [
+  { id: 'tempo30', label: 'Tempo-30-Zone', speed: 30, color: '#1b6ac9' },
+  { id: 'tempo20', label: 'Begegnungszone (Tempo 20)', speed: 20, color: '#7b3fbf' },
+  { id: 'pedestrian', label: 'Fussgängerzone', speed: 0, color: '#2a9d3f' },
+  { id: 'parking', label: 'Parkplatz / Parkierung', speed: null, color: '#6b7480' },
+  { id: 'other', label: 'Sonstige Fläche', speed: null, color: null },
+];
+
+export function zoneKind(zone) {
+  return ZONE_KINDS.find((k) => k.id === zone.kind) || ZONE_KINDS[4];
+}
+
+/** Punkt-in-Polygon (Strahl nach Osten) in Breite/Länge; nodes = Ring ohne Wiederholung des Startpunkts. */
+export function pointInPolygon(latlng, nodes) {
+  let inside = false;
+  const [y, x] = latlng;
+  for (let i = 0, j = nodes.length - 1; i < nodes.length; j = i++) {
+    const [yi, xi] = nodes[i];
+    const [yj, xj] = nodes[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Fläche eines Rings in Quadratgrad (nur zum Vergleichen, z. B. kleinste umschliessende Zone). */
+export function ringArea(nodes) {
+  let a = 0;
+  for (let i = 0, j = nodes.length - 1; i < nodes.length; j = i++) a += (nodes[j][1] + nodes[i][1]) * (nodes[j][0] - nodes[i][0]);
+  return Math.abs(a / 2);
+}
 
 export const LAYER_COLORS = [
   '#d7263d', '#1b6ac9', '#2a9d3f', '#e08a00',
@@ -134,6 +169,32 @@ export function createJunction({ layerId, at, kind = 'plain', name = '' }) {
   return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), note: '' };
 }
 
+export function createZone({ layerId, nodes, kind = 'tempo30', name = '' }) {
+  return { id: newId('z'), type: 'zone', layerId, name, kind, nodes: nodes.map(roundCoord), note: '' };
+}
+
+export function insertZoneNode(doc, zoneId, afterIndex, latlng) {
+  const z = getFeature(doc, zoneId);
+  if (!z || z.type !== 'zone') return -1;
+  const at = Math.min(afterIndex + 1, z.nodes.length);
+  z.nodes.splice(at, 0, roundCoord(latlng));
+  return at;
+}
+
+export function removeZoneNode(doc, zoneId, index) {
+  const z = getFeature(doc, zoneId);
+  if (!z || z.type !== 'zone' || z.nodes.length <= 3 || index < 0 || index >= z.nodes.length) return false;
+  z.nodes.splice(index, 1);
+  return true;
+}
+
+/** Verschiebt einen Punkt einer Strasse oder Zone. */
+export function moveFeatureNode(doc, featureId, index, latlng) {
+  const f = getFeature(doc, featureId);
+  if (!f || !Array.isArray(f.nodes) || !f.nodes[index]) return;
+  f.nodes[index] = roundCoord(latlng);
+}
+
 export function createRoundabout({ layerId, center, radius = 15, name = '' }) {
   return {
     id: newId('k'),
@@ -159,6 +220,7 @@ export function featureLabel(f) {
   if (f.type === 'road') return (ROAD_KINDS.find((k) => k.id === f.kind) || ROAD_KINDS[5]).label;
   if (f.type === 'junction') return (JUNCTION_KINDS.find((k) => k.id === f.kind) || JUNCTION_KINDS[0]).label;
   if (f.type === 'roundabout') return 'Kreisel';
+  if (f.type === 'zone') return zoneKind(f).label;
   return 'Element';
 }
 
@@ -304,6 +366,11 @@ export function normalizeDocument(raw) {
       if (!isLatLng(f.center)) throw new Error(`Kreisel ${f.id} hat kein Zentrum`);
       const radius = Number.isFinite(f.radius) && f.radius > 0 ? Math.min(500, f.radius) : 15;
       doc.features.push({ ...base, type: 'roundabout', center: roundCoord(f.center), radius });
+    } else if (f.type === 'zone') {
+      if (!Array.isArray(f.nodes) || f.nodes.length < 3 || !f.nodes.every(isLatLng)) {
+        throw new Error(`Zone ${f.id} hat ungültige Punkte`);
+      }
+      doc.features.push({ ...base, type: 'zone', kind: idIn(ZONE_KINDS, f.kind, 'other'), nodes: f.nodes.map(roundCoord) });
     } else {
       throw new Error(`Unbekannter Elementtyp: ${f.type}`);
     }
@@ -330,7 +397,7 @@ export function cloneDocument(doc) {
 }
 
 export function docStats(doc) {
-  const stats = { roads: 0, junctions: 0, roundabouts: 0, lengthMeters: 0, bridges: 0, tunnels: 0 };
+  const stats = { roads: 0, junctions: 0, roundabouts: 0, zones: 0, lengthMeters: 0, bridges: 0, tunnels: 0 };
   for (const f of doc.features) {
     if (f.type === 'road') {
       stats.roads++;
@@ -341,6 +408,7 @@ export function docStats(doc) {
       }
     } else if (f.type === 'junction') stats.junctions++;
     else if (f.type === 'roundabout') stats.roundabouts++;
+    else if (f.type === 'zone') stats.zones++;
   }
   return stats;
 }
@@ -373,6 +441,13 @@ export function toGeoJSON(doc) {
         type: 'Feature',
         properties: { ...common, type: 'roundabout', radius: f.radius },
         geometry: { type: 'Polygon', coordinates: [circleRing(f.center, f.radius).map(([lat, lng]) => [lng, lat])] },
+      });
+    } else if (f.type === 'zone') {
+      const ring = [...f.nodes, f.nodes[0]].map(([lat, lng]) => [lng, lat]);
+      features.push({
+        type: 'Feature',
+        properties: { ...common, type: 'zone', kind: f.kind, speed: zoneKind(f).speed },
+        geometry: { type: 'Polygon', coordinates: [ring] },
       });
     }
   }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { OsmRoadCache, roadKindFromHighway } from '../js/osm.js';
+import { OsmRoadCache, roadKindFromHighway, cellsFor, routeBounds, CELL_DEG, MAX_CELLS } from '../js/osm.js';
 
 test('roadKindFromHighway ordnet gängige Tags zu', () => {
   assert.equal(roadKindFromHighway('primary'), 'main');
@@ -10,36 +10,53 @@ test('roadKindFromHighway ordnet gängige Tags zu', () => {
   assert.equal(roadKindFromHighway('raceway'), 'other');
 });
 
-test('OsmRoadCache lädt einmal pro Bereich und meldet Zustand', async () => {
-  let calls = 0;
-  const cache = new OsmRoadCache(async () => {
-    calls++;
-    return [{ id: 1, tags: { highway: 'primary' }, geometry: [[47, 8], [47, 8.001]] }, { id: 2, geometry: [[1, 1]] }];
-  });
-  const states = [];
-  cache.subscribe((s) => states.push(s.status));
-  const bounds = { south: 46.99, west: 7.99, north: 47.01, east: 8.01 };
-  cache.ensure(bounds, 15);
-  assert.equal(calls, 0, 'unter Mindestzoom kein Laden');
-  cache.ensure(bounds, 17);
-  await cache.pending;
-  assert.equal(calls, 1);
-  assert.equal(cache.list().length, 1);
-  assert.equal(cache.get(1).tags.highway, 'primary');
-  cache.ensure({ south: 46.995, west: 7.995, north: 47.005, east: 8.005 }, 17);
-  assert.equal(calls, 1, 'enthaltener Bereich wird nicht neu geladen');
-  cache.ensure({ south: 48, west: 9, north: 48.01, east: 9.01 }, 17);
-  await cache.pending;
-  assert.equal(calls, 2);
-  assert.deepEqual(states, ['loading', 'ready', 'loading', 'ready']);
+test('cellsFor deckt den Bereich mit festen Zellen ab', () => {
+  const one = cellsFor({ south: 47.001, west: 8.001, north: 47.002, east: 8.002 });
+  assert.equal(one.length, 1);
+  assert.ok(one[0].bounds.south <= 47.001 && one[0].bounds.north >= 47.002);
+  assert.ok(Math.abs(one[0].bounds.north - one[0].bounds.south - CELL_DEG) < 1e-12);
+  const four = cellsFor({ south: 47.024, west: 8.024, north: 47.026, east: 8.026 });
+  assert.equal(four.length, 4, 'Bereich über einer Zellgrenze in beide Richtungen');
+  const r = routeBounds([47, 8], [47.3, 8.4]);
+  assert.ok(r.cells > 100 && r.tooLarge, `zu grosse Route erkannt (${r.cells} Zellen)`);
+  const small = routeBounds([47, 8], [47.01, 8.01]);
+  assert.ok(!small.tooLarge && small.cells <= 4);
+  assert.ok(MAX_CELLS >= 50);
 });
 
-test('OsmRoadCache meldet Fehler statt zu werfen', async () => {
-  const cache = new OsmRoadCache(async () => { throw new Error('kaputt'); });
+test('OsmRoadCache lädt jede Zelle einmal, meldet Fortschritt und dedupliziert Ways', async () => {
+  const calls = [];
+  const cache = new OsmRoadCache(async (b) => {
+    calls.push(b);
+    return [{ id: 1, tags: { highway: 'primary' }, geometry: [[47, 8], [47, 8.001]] }, { id: 2, geometry: [[1, 1]] }];
+  }, { delayMs: 0 });
   const states = [];
   cache.subscribe((s) => states.push(s.status));
-  cache.ensure({ south: 46.99, west: 7.99, north: 47.01, east: 8.01 }, 17);
+  const bounds = { south: 47.001, west: 8.001, north: 47.002, east: 8.002 };
+  assert.equal(cache.ensure(bounds, 15), false, 'unter Mindestzoom kein Laden');
+  assert.equal(cache.ensure(bounds, 17), true);
+  await cache.pending;
+  assert.equal(calls.length, 1);
+  assert.equal(cache.list().length, 1);
+  assert.equal(cache.get(1).tags.highway, 'primary');
+  cache.ensureArea({ south: 47.0015, west: 8.0015, north: 47.0018, east: 8.0018 });
+  assert.equal(cache.pending, null, 'enthaltene Zelle wird nicht neu geladen');
+  cache.ensureArea({ south: 47.024, west: 8.024, north: 47.026, east: 8.026 });
+  await cache.pending;
+  assert.equal(calls.length, 4, 'drei neue Zellen, die erste war schon geladen');
+  assert.equal(cache.list().length, 1, 'gleiche Way-IDs werden nicht dupliziert');
+  assert.equal(states[0], 'loading');
+  assert.equal(states[states.length - 1], 'ready');
+});
+
+test('OsmRoadCache meldet Fehler und zu grosse Bereiche', async () => {
+  const cache = new OsmRoadCache(async () => { throw new Error('kaputt'); }, { delayMs: 0 });
+  const states = [];
+  cache.subscribe((s) => states.push(s.status));
+  cache.ensureArea({ south: 47.001, west: 8.001, north: 47.002, east: 8.002 });
   await cache.pending;
   assert.deepEqual(states, ['loading', 'error']);
   assert.equal(cache.lastError.message, 'kaputt');
+  assert.equal(cache.ensureArea({ south: 40, west: 0, north: 50, east: 10 }), false);
+  assert.ok(cache.lastError.message.includes('zu gross'));
 });

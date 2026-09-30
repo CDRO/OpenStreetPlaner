@@ -247,3 +247,71 @@ func TestOsmProxiesAndStatic(t *testing.T) {
 		t.Fatalf("healthz: %d", res.StatusCode)
 	}
 }
+
+func TestCommentsAPIAndRateLimit(t *testing.T) {
+	ts, _ := newTestServer(t)
+	res, out := call(t, "POST", ts.URL+"/api/drafts", map[string]any{"doc": sampleDoc()}, nil)
+	if res.StatusCode != 201 {
+		t.Fatalf("create: %d %+v", res.StatusCode, out)
+	}
+	id := out["id"].(string)
+	editToken := out["editToken"].(string)
+
+	res, out = call(t, "POST", ts.URL+"/api/drafts/"+id+"/comments", map[string]any{"lat": 47, "lng": 8, "author": "Anna", "text": "Hier bitte Tempo 30"}, nil)
+	if res.StatusCode != 201 || out["commentToken"] == nil {
+		t.Fatalf("addComment: %d %+v", res.StatusCode, out)
+	}
+	comment := out["comment"].(map[string]any)
+	cid := comment["id"].(string)
+	ctoken := out["commentToken"].(string)
+	if _, has := comment["tokenHash"]; has {
+		t.Fatalf("tokenHash darf nicht ausgeliefert werden: %+v", comment)
+	}
+	res, out = call(t, "POST", ts.URL+"/api/drafts/"+id+"/comments", map[string]any{"lat": 47, "lng": 8, "text": ""}, nil)
+	if res.StatusCode != 400 {
+		t.Fatalf("leerer Kommentar: %d %+v", res.StatusCode, out)
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/api/drafts/"+id+"/comments", nil)
+	lres, _ := http.DefaultClient.Do(req)
+	var list []map[string]any
+	_ = json.NewDecoder(lres.Body).Decode(&list)
+	if len(list) != 1 || list[0]["author"] != "Anna" {
+		t.Fatalf("list: %+v", list)
+	}
+	res, _ = call(t, "PATCH", ts.URL+"/api/drafts/"+id+"/comments/"+cid, map[string]any{"resolved": true}, nil)
+	if res.StatusCode != 403 {
+		t.Fatalf("resolve ohne Token: %d", res.StatusCode)
+	}
+	res, _ = call(t, "PATCH", ts.URL+"/api/drafts/"+id+"/comments/"+cid, map[string]any{"resolved": true}, map[string]string{"X-Comment-Token": ctoken})
+	if res.StatusCode != 204 {
+		t.Fatalf("resolve mit Kommentar-Token: %d", res.StatusCode)
+	}
+	res, _ = call(t, "DELETE", ts.URL+"/api/drafts/"+id+"/comments/"+cid, nil, map[string]string{"X-Edit-Token": editToken})
+	if res.StatusCode != 204 {
+		t.Fatalf("delete als Besitzer: %d", res.StatusCode)
+	}
+	res, _ = call(t, "DELETE", ts.URL+"/api/drafts/"+id+"/comments/"+cid, nil, map[string]string{"X-Edit-Token": editToken})
+	if res.StatusCode != 404 {
+		t.Fatalf("delete doppelt: %d", res.StatusCode)
+	}
+
+	// Drosselung: 3 Schreibzugriffe pro Minute, Burst 2
+	st, _ := store.Open(t.TempDir())
+	web := fstest.MapFS{"web/index.html": {Data: []byte("<title>Stadtplaner</title>")}}
+	srv, _ := New(st, osm.New(t.TempDir()), web, log.New(io.Discard, "", 0))
+	srv.SetRateLimit(RateLimit{PerMinute: 3, Burst: 2})
+	lts := httptest.NewServer(srv.Handler())
+	defer lts.Close()
+	codes := []int{}
+	for i := 0; i < 3; i++ {
+		r, _ := call(t, "POST", lts.URL+"/api/drafts", map[string]any{"doc": sampleDoc()}, nil)
+		codes = append(codes, r.StatusCode)
+	}
+	if codes[0] != 201 || codes[1] != 201 || codes[2] != 429 {
+		t.Fatalf("Drosselung: %v", codes)
+	}
+	r, _ := http.Get(lts.URL + "/healthz")
+	if r.StatusCode != 200 {
+		t.Fatalf("GET wird nicht gedrosselt: %d", r.StatusCode)
+	}
+}

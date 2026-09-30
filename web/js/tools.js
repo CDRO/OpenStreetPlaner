@@ -3,26 +3,29 @@
 // den draw.js auf das Canvas bringt.
 
 import {
-  applySnapSplits, createJunction, createRoad, createRoundabout, getFeature, moveRoadNode,
-  removeFeature, removeRoadNode, splitRoadSegment, roundCoord,
+  applySnapSplits, createJunction, createRoad, createRoundabout, createZone, getFeature, getLayer,
+  insertZoneNode, moveFeatureNode, pointInPolygon, removeFeature, removeRoadNode, removeZoneNode, ringArea,
+  splitRoadSegment, roundCoord,
 } from './model.js';
 import { snapLatLng, excludeFeature } from './snap.js';
 import { haversine } from './geometry.js';
 import { roadKindFromHighway } from './osm.js';
-import { hitHandle } from './draw.js';
+import { hitComment, hitHandle } from './draw.js';
 import { parseMaxspeed } from './routing.js';
 
 export const TOOLS = [
   { id: 'select', label: 'Auswählen', key: 'V', hint: 'Element anklicken zum Auswählen. Griffe ziehen zum Verschieben, Rechtsklick auf einen Griff löscht den Punkt, Klick auf einen Zwischenpunkt fügt einen ein.' },
   { id: 'road', label: 'Strasse', key: 'S', hint: 'Klicken setzt Punkte. Doppelklick, Enter oder Rechtsklick beendet, Esc bricht ab, Backspace entfernt den letzten Punkt.' },
-  { id: 'junction', label: 'Kreuzung', key: 'K', hint: 'Klicken platziert eine Kreuzung, am besten auf einen Strassenpunkt.' },
+  { id: 'junction', label: 'Kreuzung / Punkt', key: 'K', hint: 'Klicken platziert eine Kreuzung oder Punkt-Massnahme (Ampel, Stop, Fussgängerstreifen, Bushaltestelle), am besten auf einen Strassenpunkt.' },
+  { id: 'zone', label: 'Zone / Fläche', key: 'F', hint: 'Klicken setzt Eckpunkte. Doppelklick, Enter oder Rechtsklick schliesst die Fläche (mindestens drei Punkte), Esc bricht ab.' },
   { id: 'roundabout', label: 'Kreisel', key: 'R', hint: 'Klicken setzt das Zentrum, Maus bewegen wählt den Radius, erneut klicken bestätigt.' },
   { id: 'adopt', label: 'OSM übernehmen', key: 'O', hint: 'Bestehende OSM-Strasse anklicken, um sie als bearbeitbare Strasse in die aktive Ebene zu kopieren (ab Zoom 16).' },
   { id: 'route', label: 'Route', key: 'T', hint: 'Klicken setzt den Start (A), ein zweiter Klick das Ziel (B). Weitere Klicks beginnen neu, Esc löscht die Route.' },
+  { id: 'comment', label: 'Kommentar', key: 'C', hint: 'Auf die Karte klicken, um dort einen Kommentar zu hinterlassen. Geht auch ohne Bearbeitungsrecht.' },
 ];
 
 /** Werkzeuge, die auch ohne Bearbeitungsrecht erlaubt sind. */
-const VIEW_TOOLS = new Set(['select', 'route']);
+const VIEW_TOOLS = new Set(['select', 'route', 'comment']);
 
 const MODIFIER_PROP = { Shift: 'shiftKey', Control: 'ctrlKey', Alt: 'altKey' };
 const PICK_TOLERANCE = 9;
@@ -39,6 +42,7 @@ export class ToolController {
     this.preview = null;
     this.snapPoint = null;
     this.routeDraft = null; // Start gesetzt, Ziel fehlt noch
+    this.commentDraft = null; // Position für einen neuen Kommentar
     this.modifiers = { Shift: false, Control: false, Alt: false };
 
     const map = this.map;
@@ -123,15 +127,26 @@ export class ToolController {
   /** Element unter dem Mauszeiger (nur Entwurf, keine OSM-Strassen). */
   pick(e) {
     const r = snapLatLng(e.latlng, this.getPickIndex(), this.map.getZoom(), PICK_TOLERANCE);
-    if (!r.snap) return null;
-    const ref = r.snap.ref;
-    const f = getFeature(this.store.doc, ref.featureId);
-    if (!f) return null;
-    let segIndex = null;
-    if (f.type === 'road') {
-      segIndex = r.snap.kind === 'segment' ? ref.index : Math.min(ref.index, f.segments.length - 1);
+    if (r.snap) {
+      const ref = r.snap.ref;
+      const f = getFeature(this.store.doc, ref.featureId);
+      if (f) {
+        let segIndex = null;
+        if (f.type === 'road') segIndex = r.snap.kind === 'segment' ? ref.index : Math.min(ref.index, f.segments.length - 1);
+        return { featureId: f.id, segIndex };
+      }
     }
-    return { featureId: f.id, segIndex };
+    // Zonen: Klick ins Innere trifft die kleinste umschliessende Fläche
+    const doc = this.store.doc;
+    let best = null;
+    for (const f of doc.features) {
+      if (f.type !== 'zone') continue;
+      const layer = getLayer(doc, f.layerId);
+      if (!layer || layer.visible === false || !pointInPolygon(e.latlng, f.nodes)) continue;
+      const area = ringArea(f.nodes);
+      if (!best || area < best.area) best = { featureId: f.id, segIndex: null, area };
+    }
+    return best ? { featureId: best.featureId, segIndex: null } : null;
   }
 
   // --- Ereignisse --------------------------------------------------------------
@@ -143,12 +158,14 @@ export class ToolController {
       case 'roundabout': return this.roundaboutClick(e);
       case 'adopt': return this.adoptClick(e);
       case 'route': return this.routeClick(e);
+      case 'zone': return this.zoneClick(e);
+      case 'comment': return this.commentClick(e);
       default: return this.selectClick(e);
     }
   }
 
   onDblClick(e) {
-    if (this.tool === 'road' && this.draft) {
+    if ((this.tool === 'road' || this.tool === 'zone') && this.draft) {
       e.consume();
       const v = this.draft.vertices;
       if (v.length >= 2) {
@@ -156,7 +173,8 @@ export class ToolController {
         const b = this.map.project(v[v.length - 2].latlng);
         if (Math.hypot(a.x - b.x, a.y - b.y) < 3) v.pop();
       }
-      this.finishRoad();
+      if (this.tool === 'road') this.finishRoad();
+      else this.finishZone();
     } else if (this.tool !== 'select') {
       e.consume();
     }
@@ -165,7 +183,8 @@ export class ToolController {
   onPointerMove(e) {
     if (this.drag) return this.dragMove(e);
     switch (this.tool) {
-      case 'road': {
+      case 'road':
+      case 'zone': {
         const r = this.snap(e);
         this.setSnap(r);
         if (this.draft) this.previewRoad(r.latlng);
@@ -210,6 +229,7 @@ export class ToolController {
 
   onContextMenu(e) {
     if (this.tool === 'road' && this.draft) return this.finishRoad();
+    if (this.tool === 'zone' && this.draft) return this.finishZone();
     if (this.tool === 'select') {
       const f = this.selectedFeature();
       const hit = f && this.canEdit() ? hitHandle(this.map, f, e.point) : null;
@@ -224,6 +244,12 @@ export class ToolController {
     if (this.routeDraft) {
       this.routeDraft = null;
       this.onStatus(this.toolInfo().hint);
+      this.onSceneChange();
+      return true;
+    }
+    if (this.commentDraft) {
+      this.commentDraft = null;
+      if (this.onCommentPlace) this.onCommentPlace(null);
       this.onSceneChange();
       return true;
     }
@@ -243,10 +269,11 @@ export class ToolController {
 
   finish() {
     if (this.tool === 'road' && this.draft) this.finishRoad();
+    if (this.tool === 'zone' && this.draft) this.finishZone();
   }
 
   popVertex() {
-    if (this.tool === 'road' && this.draft && this.draft.vertices.length) {
+    if ((this.tool === 'road' || this.tool === 'zone') && this.draft && this.draft.vertices.length) {
       this.draft.vertices.pop();
       if (!this.draft.vertices.length) return this.cancel();
       this.previewRoad(null);
@@ -274,6 +301,12 @@ export class ToolController {
       this.setHover(null);
       return;
     }
+    const commentId = this.getComments ? hitComment(this.map, this.getComments(), e.point) : null;
+    if (commentId) {
+      this.map.setCursor('pointer');
+      this.setHover({ commentId, point: e.point });
+      return;
+    }
     const hit = this.pick(e);
     this.map.setCursor(hit ? 'pointer' : '');
     this.setHover(hit ? { ...hit, point: e.point } : null);
@@ -288,10 +321,15 @@ export class ToolController {
 
   selectClick(e) {
     if (this.drag) return;
+    const commentId = this.getComments ? hitComment(this.map, this.getComments(), e.point) : null;
+    if (commentId) {
+      if (this.onCommentSelect) this.onCommentSelect(commentId);
+      return;
+    }
     const f = this.selectedFeature();
     if (f && this.canEdit()) {
       const hit = hitHandle(this.map, f, e.point);
-      if (hit && hit.kind === 'midpoint' && f.type === 'road') return this.insertVertex(hit.index);
+      if (hit && hit.kind === 'midpoint' && (f.type === 'road' || f.type === 'zone')) return this.insertVertex(hit.index);
       if (hit && hit.kind === 'vertex') return;
     }
     const hit = this.pick(e);
@@ -317,6 +355,10 @@ export class ToolController {
       pts.push(this.drag.latlng);
       if (i < f.nodes.length - 1) pts.push(f.nodes[i + 1]);
       this.setPreview({ points: pts, color });
+    } else if (f.type === 'zone') {
+      const n = f.nodes.length;
+      const i = this.drag.index;
+      this.setPreview({ points: [f.nodes[(i - 1 + n) % n], this.drag.latlng, f.nodes[(i + 1) % n]], color });
     } else if (f.type === 'roundabout') {
       this.setPreview({ circle: { center: this.drag.latlng, radius: f.radius }, color });
     } else {
@@ -334,7 +376,7 @@ export class ToolController {
     const f = getFeature(this.store.doc, drag.featureId);
     if (!f) return;
     this.store.commit('Punkt verschieben', (doc) => {
-      if (f.type === 'road') moveRoadNode(doc, f.id, drag.index, drag.latlng);
+      if (f.type === 'road' || f.type === 'zone') moveFeatureNode(doc, f.id, drag.index, drag.latlng);
       else if (f.type === 'junction') getFeature(doc, f.id).at = drag.latlng;
       else if (f.type === 'roundabout') getFeature(doc, f.id).center = drag.latlng;
     });
@@ -342,7 +384,13 @@ export class ToolController {
 
   deleteVertex(index) {
     const f = this.selectedFeature();
-    if (!f || f.type !== 'road') return;
+    if (!f) return;
+    if (f.type === 'zone') {
+      if (f.nodes.length <= 3) return this.toast('Eine Fläche braucht mindestens drei Punkte.');
+      this.store.commit('Punkt löschen', (doc) => removeZoneNode(doc, f.id, index));
+      return;
+    }
+    if (f.type !== 'road') return;
     if (f.nodes.length <= 2) {
       this.toast('Eine Strasse braucht mindestens zwei Punkte. Lösche stattdessen die Strasse.');
       return;
@@ -355,7 +403,14 @@ export class ToolController {
 
   insertVertex(index) {
     const f = this.selectedFeature();
-    if (!f || f.type !== 'road') return;
+    if (!f) return;
+    if (f.type === 'zone') {
+      const a = f.nodes[index];
+      const b = f.nodes[(index + 1) % f.nodes.length];
+      this.store.commit('Punkt einfügen', (doc) => insertZoneNode(doc, f.id, index, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]));
+      return;
+    }
+    if (f.type !== 'road') return;
     const a = f.nodes[index];
     const b = f.nodes[index + 1];
     this.store.commit('Punkt einfügen', (doc) => splitRoadSegment(doc, f.id, index, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]));
@@ -368,9 +423,9 @@ export class ToolController {
     return layer ? layer.color : '#333';
   }
 
-  roadClick(e) {
+  roadClick(e, type = 'road') {
     const r = this.snap(e);
-    if (!this.draft) this.draft = { type: 'road', vertices: [] };
+    if (!this.draft) this.draft = { type, vertices: [] };
     const v = this.draft.vertices;
     if (v.length) {
       const a = this.map.project(v[v.length - 1].latlng);
@@ -379,12 +434,47 @@ export class ToolController {
     }
     v.push({ latlng: roundCoord(r.latlng), snap: r.snap });
     this.previewRoad(r.latlng);
-    this.onStatus(`${v.length} Punkt${v.length === 1 ? '' : 'e'} gesetzt – Doppelklick, Enter oder Rechtsklick beendet die Strasse.`);
+    this.onStatus(`${v.length} Punkt${v.length === 1 ? '' : 'e'} gesetzt – Doppelklick, Enter oder Rechtsklick ${type === 'zone' ? 'schliesst die Fläche' : 'beendet die Strasse'}.`);
+  }
+
+  // --- Zone / Fläche ---------------------------------------------------------
+
+  zoneClick(e) {
+    this.roadClick(e, 'zone');
+  }
+
+  finishZone() {
+    const draft = this.draft;
+    this.draft = null;
+    this.setPreview(null);
+    this.setSnap(null);
+    if (!draft || draft.vertices.length < 3) {
+      this.onStatus('Fläche verworfen (mindestens drei Punkte nötig).');
+      return;
+    }
+    const layerId = this.getActiveLayerId();
+    const kind = this.getDefaultZoneKind ? this.getDefaultZoneKind() : 'tempo30';
+    this.store.commit('Fläche zeichnen', (doc) => doc.features.push(createZone({ layerId, nodes: draft.vertices.map((v) => v.latlng), kind })));
+    this.onStatus(this.toolInfo().hint);
+  }
+
+  // --- Kommentar ----------------------------------------------------------------
+
+  commentClick(e) {
+    this.commentDraft = { latlng: roundCoord(e.latlng) };
+    if (this.onCommentPlace) this.onCommentPlace(this.commentDraft.latlng);
+    this.onStatus('Kommentar in der Seitenleiste eingeben und senden. Esc bricht ab.');
+    this.onSceneChange();
+  }
+
+  clearCommentDraft() {
+    this.commentDraft = null;
+    this.onSceneChange();
   }
 
   previewRoad(cursor) {
     if (!this.draft) return;
-    this.setPreview({ points: this.draft.vertices.map((v) => v.latlng), cursor, color: this.activeColor() });
+    this.setPreview({ points: this.draft.vertices.map((v) => v.latlng), cursor, color: this.activeColor(), closed: this.draft.type === 'zone' });
   }
 
   finishRoad() {

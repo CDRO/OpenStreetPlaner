@@ -45,11 +45,13 @@ const C = [47.05, 8.3];
   // OSM laden bei Zoom 17
   await page.evaluate(() => window.stadtplaner.map.setView([47.05, 8.3], 17));
   await h.settle(800);
-  assert.equal(roadsCalls, 1, 'Strassen genau einmal abgefragt');
+  await page.waitForFunction(() => !window.stadtplaner.osm.pending);
+  const initialCalls = roadsCalls;
+  assert.ok(initialCalls >= 1 && initialCalls <= 4, `Ansicht deckt 1–4 Zellen ab (${initialCalls})`);
   assert.ok((await page.textContent('#status-osm')).includes('4 OSM-Strassen'));
   await page.evaluate(() => window.stadtplaner.map.panBy(20, 20));
   await h.settle(600);
-  assert.equal(roadsCalls, 1, 'kleiner Versatz lädt nicht neu');
+  assert.equal(roadsCalls, initialCalls, 'kleiner Versatz lädt nicht neu');
   await page.check('#set-show-osm');
   await h.settle(300);
   console.log('✓ OSM-Strassen laden');
@@ -147,19 +149,84 @@ const C = [47.05, 8.3];
   assert.equal((await h.doc()).route, null);
   console.log('✓ Routen-Rechner');
 
-  // PNG- und PDF-Export
+  // Zone: Tempo-30-Fläche über die Abkürzung legen -> neue Route wird langsamer
+  await page.evaluate(() => window.stadtplaner.tools.setSelection(null));
+  const beforeZone = await page.evaluate(() => window.stadtplaner.routes());
+  await page.keyboard.press('t');
+  await page.mouse.click(box.x + pa.x, box.y + pa.y);
+  await h.settle(200);
+  await page.mouse.click(box.x + pb.x, box.y + pb.y);
+  await page.waitForFunction(() => { const r = window.stadtplaner.routes(); return r && r.proposed && !r.proposed.error; });
+  const noZone = await page.evaluate(() => window.stadtplaner.routes());
+  await page.keyboard.press('f');
+  const zc = { x: box.x + (pa.x + pb.x) / 2, y: box.y + (pa.y + pb.y) / 2 };
+  await page.keyboard.down('Shift');
+  for (const [dx, dy] of [[-60, -60], [60, -60], [60, 60], [-60, 60]]) {
+    await page.mouse.click(zc.x + dx, zc.y + dy);
+    await h.settle(80);
+  }
+  await page.keyboard.up('Shift');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction((t) => { const r = window.stadtplaner.routes(); return r && r.proposed && !r.proposed.error && r.proposed.time > t; }, noZone.proposed.time);
+  doc = await h.doc();
+  const zone = doc.features.find((f) => f.type === 'zone');
+  assert.ok(zone && zone.kind === 'tempo30' && zone.nodes.length === 4, 'Tempo-30-Zone gezeichnet');
+  const withZone = await page.evaluate(() => window.stadtplaner.routes());
+  assert.ok(withZone.proposed.time > noZone.proposed.time, `Zone verlangsamt: ${withZone.proposed.time} > ${noZone.proposed.time}`);
+  assert.ok(Math.abs(withZone.current.time - noZone.current.time) < 1e-6, 'heute unverändert');
+  // Zone auswählen (Klick ins Innere), Art ändern, Eckpunkt einfügen
+  await page.keyboard.press('v');
+  await page.mouse.click(zc.x + 20, zc.y + 25);
+  await h.settle(300);
+  assert.ok(await page.locator('#prop-zkind').count(), 'Zone per Klick ins Innere ausgewählt');
+  await page.selectOption('#prop-zkind', 'parking');
+  await h.settle(400);
+  assert.equal((await h.doc()).features.find((f) => f.type === 'zone').kind, 'parking');
+  const zmid = await h.project([(zone.nodes[0][0] + zone.nodes[1][0]) / 2, (zone.nodes[0][1] + zone.nodes[1][1]) / 2]);
+  await page.mouse.click(box.x + zmid.x, box.y + zmid.y);
+  await h.settle(400);
+  assert.equal((await h.doc()).features.find((f) => f.type === 'zone').nodes.length, 5, 'Eckpunkt eingefügt');
+  await page.keyboard.press('Delete');
+  await h.settle(300);
+  assert.equal((await h.doc()).features.filter((f) => f.type === 'zone').length, 0);
+  await page.evaluate(() => window.stadtplaner.actions.clearRoute());
+  await h.settle(200);
+  void beforeZone;
+  console.log('✓ Zonen');
+
+  // Kachelweises Laden: grosser Bereich -> mehrere Zellen, jede einmal
+  const before = roadsCalls;
+  await page.evaluate(() => window.stadtplaner.osm.ensureArea({ south: 47.03, west: 8.28, north: 47.08, east: 8.36 }));
+  await page.waitForFunction(() => !window.stadtplaner.osm.pending);
+  const cellsLoaded = roadsCalls - before;
+  assert.ok(cellsLoaded >= 4 && cellsLoaded <= 16, `Zellen geladen: ${cellsLoaded}`);
+  await page.evaluate(() => window.stadtplaner.osm.ensureArea({ south: 47.03, west: 8.28, north: 47.08, east: 8.36 }));
+  await h.settle(300);
+  assert.equal(roadsCalls - before, cellsLoaded, 'zweite Anfrage lädt nichts neu');
+  console.log('✓ Kachelweises Netz-Laden');
+
+  // Export-Dialog: PNG in 96 dpi (Ansicht) und PDF A3 300 dpi (ganzer Entwurf)
   await page.click('.tabs button[data-tab="drafts"]');
-  const [png] = await Promise.all([page.waitForEvent('download'), page.click('#d-png')]);
+  await page.click('#d-export-map');
+  await page.waitForSelector('#export-png');
+  await page.selectOption('#export-dpi', '96');
+  const [png] = await Promise.all([page.waitForEvent('download'), page.click('#export-png')]);
   assert.ok(png.suggestedFilename().endsWith('.png'));
   const pngBytes = require('fs').readFileSync(await png.path());
   assert.deepEqual(Array.from(pngBytes.subarray(0, 4)), [0x89, 0x50, 0x4e, 0x47], 'PNG-Signatur');
-  const [pdf] = await Promise.all([page.waitForEvent('download'), page.click('#d-pdf')]);
+  await page.selectOption('#export-mode', 'all');
+  await page.selectOption('#export-paper', 'a3');
+  await page.selectOption('#export-dpi', '300');
+  const [pdf] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#export-pdf')]);
   assert.ok(pdf.suggestedFilename().endsWith('.pdf'));
   const pdfBytes = require('fs').readFileSync(await pdf.path());
   assert.equal(pdfBytes.subarray(0, 8).toString('latin1'), '%PDF-1.4');
-  assert.ok(pdfBytes.toString('latin1').includes('/DCTDecode'));
-  assert.ok(pdfBytes.length > 20000, `PDF enthält ein Bild (${pdfBytes.length} Bytes)`);
-  console.log('✓ PNG/PDF-Export');
+  const pdfText = pdfBytes.toString('latin1');
+  assert.ok(pdfText.includes('/MediaBox [0 0 1190.55 841.89]'), 'A3 quer');
+  const width = Number(/\/Width (\d+)/.exec(pdfText)[1]);
+  assert.ok(width > 4000, `300 dpi auf A3 ergibt breites Bild (${width} px)`);
+  await page.keyboard.press('Escape');
+  console.log('✓ Export in Druckqualität');
   await page.keyboard.press('v');
   await page.evaluate(() => window.stadtplaner.map.setView([47.05, 8.3], 17));
   await h.settle(500);

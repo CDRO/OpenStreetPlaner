@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  roadSpeed, normalizeMaxspeed,
+  roadSpeed, normalizeMaxspeed, createZone, pointInPolygon, ringArea, insertZoneNode, removeZoneNode, moveFeatureNode, zoneKind,
   createDocument, createLayer, createRoad, createJunction, createRoundabout, splitRoadSegment,
   applySnapSplits, removeRoadNode, normalizeDocument, deserialize, serialize, toGeoJSON, docStats,
   removeLayer, moveLayer, featureLabel,
@@ -141,4 +141,34 @@ test('Tempolimit: Normalisierung, Standard je Typ, Route im Dokument', () => {
   assert.deepEqual(back.route, { from: [47, 8], to: [47, 8.001] });
   const noRoute = normalizeDocument({ layers: [{ id: 'l1' }], route: { from: [99, 0], to: [0, 0] } });
   assert.equal(noRoute.route, null);
+});
+
+test('Zonen: anlegen, Punkt-in-Polygon, Punkte einfügen/entfernen, GeoJSON, Normalisierung', () => {
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const z = createZone({ layerId, nodes: [[47, 8], [47, 8.01], [47.01, 8.01], [47.01, 8]], kind: 'tempo30' });
+  doc.features.push(z);
+  assert.equal(zoneKind(z).speed, 30);
+  assert.equal(pointInPolygon([47.005, 8.005], z.nodes), true);
+  assert.equal(pointInPolygon([47.02, 8.005], z.nodes), false);
+  assert.ok(ringArea(z.nodes) > 0.00009 && ringArea(z.nodes) < 0.00011);
+  assert.equal(insertZoneNode(doc, z.id, 3, [47.005, 8]), 4, 'Zwischenpunkt auf der Schlusskante wird angehängt');
+  assert.equal(z.nodes.length, 5);
+  moveFeatureNode(doc, z.id, 4, [47.0049999, 8.0000004]);
+  assert.deepEqual(z.nodes[4], [47.005, 8]);
+  assert.equal(removeZoneNode(doc, z.id, 4), true);
+  assert.equal(removeZoneNode(doc, z.id, 0), true);
+  assert.equal(removeZoneNode(doc, z.id, 0), false, 'drei Punkte bleiben');
+  const gj = toGeoJSON(doc);
+  assert.equal(gj.features[0].geometry.type, 'Polygon');
+  assert.equal(gj.features[0].geometry.coordinates[0].length, 4, 'Ring geschlossen');
+  assert.equal(gj.features[0].properties.speed, 30);
+  assert.equal(docStats(doc).zones, 1);
+  const back = deserialize(serialize(doc));
+  assert.deepEqual(back.features[0], z);
+  assert.throws(() => normalizeDocument({ layers: [{ id: 'l1' }], features: [{ id: 'z', type: 'zone', nodes: [[1, 1], [2, 2]] }] }));
+  const other = normalizeDocument({ layers: [{ id: 'l1' }], features: [{ id: 'z', type: 'zone', kind: 'weird', nodes: [[1, 1], [2, 2], [3, 1]] }] });
+  assert.equal(other.features[0].kind, 'other');
+  assert.equal(featureLabel({ type: 'zone', kind: 'pedestrian' }), 'Fussgängerzone');
+  assert.equal(featureLabel({ type: 'junction', kind: 'crossing', name: '' }), 'Fussgängerstreifen');
 });

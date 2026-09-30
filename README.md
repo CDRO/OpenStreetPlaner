@@ -36,9 +36,11 @@ go run . -data ./data
 | Strassen | Linienzug zeichnen (Klick für Punkte, Doppelklick/Enter/Rechtsklick beendet), Strassentyp, Status *Neu / Bestehend / Rückbau*, Einbahn mit Pfeilen, Beschriftung ab Zoom 16 |
 | Tempolimit | Pro Strasse in km/h (Schnellwahl 20/30/50/80 oder Standard je Strassentyp); wird beim Übernehmen aus OSM `maxspeed` gelesen (auch `30 mph`, `CH:urban` usw.) und ab Zoom 16 als Schild gezeichnet |
 | Routen-Rechner | Start A und Ziel B klicken: schnellste Fahrroute im heutigen OSM-Netz vs. im Netz mit dem Entwurf (neue Strassen dazu, Rückbau weg, übernommene Strassen mit ihren Änderungen), Distanz und Fahrzeit aus Tempolimits, gezeichnete Kreuzungen kosten Zeit (Ampel 20 s, Stop 8 s, Vortritt 3 s), Kreisel verbinden ihre Anschlüsse |
-| Bild / PDF | Karte mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution als PNG oder als einseitiges A4-PDF, beides ohne Bibliothek erzeugt |
+| Bild / PDF | Export-Dialog: aktuelle Ansicht oder ganzer Entwurf, A4/A3, Hoch- oder Querformat, 96/150/300 dpi. Die Karte wird dafür offscreen neu gezeichnet (Kacheln werden vorgeladen), mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution; PNG oder einseitiges PDF, beides ohne Bibliothek |
 | Abschnitte | Jeder Abschnitt zwischen zwei Punkten hat seine eigene Führung: **Ebenerdig, Brücke oder Tunnel** |
-| Kreuzungen | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop) |
+| Kreuzungen / Punkte | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop, Fussgängerstreifen, Bushaltestelle) |
+| Flächen | Polygone als Tempo-30-Zone, Begegnungszone (20), Fussgängerzone, Parkplatz oder sonstige Fläche; Eckpunkte ziehen, einfügen, löschen. Zonen mit Tempolimit deckeln im Routen-Rechner alle Strassen darin, Fussgängerzonen sperren sie |
+| Kommentare | Wer den Ansichtslink hat, heftet Kommentare an Kartenpunkte; Besitzer und Verfasser können sie erledigen oder löschen. Kommentare liegen getrennt vom Entwurf auf dem Server |
 | Kreisel | Zentrum klicken, Radius mit der Maus wählen; später in Metern editierbar |
 | Einrasten | Beim Zeichnen und Verschieben rastet der Cursor an eigene Punkte, Abschnitte, Kreisel-Ringe und – ab Zoom 16 – an OSM-Strassen. Wird auf einen eigenen Abschnitt eingerastet, wird dieser dort geteilt, damit das Netz verbunden ist. **Shift** (einstellbar: Shift/Ctrl/Alt) gedrückt halten setzt das Einrasten für die aktuelle Aktion aus. |
 | OSM übernehmen | Bestehende OSM-Strasse anklicken und als bearbeitbare Kopie holen (Name, Typ, Brücke/Tunnel, Einbahn, Tempolimit werden übernommen; die Kopie merkt sich den OSM-Way, damit der Routen-Rechner ihn ersetzt) |
@@ -49,7 +51,7 @@ go run . -data ./data
 
 ### Tastenkürzel
 
-`V` Auswählen · `S` Strasse · `K` Kreuzung · `R` Kreisel · `O` OSM übernehmen · `T` Route ·
+`V` Auswählen · `S` Strasse · `K` Kreuzung/Punkt · `R` Kreisel · `F` Fläche · `O` OSM übernehmen · `T` Route · `C` Kommentar ·
 `Enter` Strasse beenden · `Esc` abbrechen · `⌫` letzter Punkt · `Entf` löschen ·
 `Ctrl+Z` / `Ctrl+Y` rückgängig / wiederholen · `Ctrl+S` speichern ·
 Karte: Pfeiltasten, `+` / `−`
@@ -67,6 +69,8 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 | `OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Strassengeometrie |
 | `USER_AGENT` | `Stadtplaner/1.0 (+…)` | User-Agent gegenüber den OSM-Diensten – bitte auf die eigene Installation anpassen |
 | `MAX_VERSIONS` | `30` | Versionen pro Entwurf |
+| `WRITE_RATE` | `60` | Schreibende API-Aufrufe pro Minute und Client-IP (Burst 20); `0` schaltet die Drosselung aus |
+| `TRUST_PROXY` | leer | `1`, wenn die Client-IP aus `X-Forwarded-For` gelesen werden soll (hinter einem Reverse-Proxy) |
 
 Die öffentlichen OSM-Dienste haben Nutzungsbedingungen (Kacheln, Nominatim,
 Overpass). Der Server drosselt Nominatim auf eine Anfrage pro Sekunde, cacht
@@ -90,13 +94,18 @@ speichert nur einen Hash davon).
 | `POST` | `/api/drafts/{id}/fork` | Kopie mit eigenem Token: `{name?}` |
 | `GET` | `/api/drafts/{id}/versions` | Versionsliste (neueste zuerst) |
 | `GET` | `/api/drafts/{id}/versions/{n}` | Eine Version samt Inhalt |
+| `GET` | `/api/drafts/{id}/comments` | Kommentare (älteste zuerst) |
+| `POST` | `/api/drafts/{id}/comments` | Kommentar anlegen: `{lat, lng, author?, text}` → `{comment, commentToken}` (kein Edit-Token nötig) |
+| `PATCH` | `/api/drafts/{id}/comments/{cid}` | `{resolved}`; Header `X-Edit-Token` (Besitzer) oder `X-Comment-Token` (Verfasser) |
+| `DELETE` | `/api/drafts/{id}/comments/{cid}` | Kommentar löschen; gleiche Berechtigung |
 | `GET` | `/api/search?q=` | Ortssuche |
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
 | `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache |
 | `GET` | `/healthz` | Lebenszeichen |
 
 Der Server prüft eingehende Entwürfe (Struktur, Grenzen, Aufzählungswerte)
-und lehnt Ungültiges mit `400` ab; Bodies sind auf 8 MB begrenzt.
+und lehnt Ungültiges mit `400` ab; Bodies sind auf 8 MB begrenzt. Schreibende
+Aufrufe sind pro Client-IP gedrosselt (`429` mit `Retry-After`).
 
 ## Aufbau
 
@@ -138,7 +147,9 @@ web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwri
       "nodes": [[47.05, 8.30], [47.051, 8.302], [47.052, 8.305]],
       "segments": [{ "level": "ground" }, { "level": "tunnel" }] },
     { "id": "j_…", "type": "junction", "layerId": "l_…", "kind": "signals", "at": [47.05, 8.30] },
-    { "id": "k_…", "type": "roundabout", "layerId": "l_…", "center": [47.052, 8.305], "radius": 14 }
+    { "id": "k_…", "type": "roundabout", "layerId": "l_…", "center": [47.052, 8.305], "radius": 14 },
+    { "id": "z_…", "type": "zone", "layerId": "l_…", "kind": "tempo30",
+      "nodes": [[47.049, 8.299], [47.049, 8.303], [47.052, 8.303], [47.052, 8.299]] }
   ],
   "route": { "from": [47.049, 8.298], "to": [47.053, 8.306] }
 }
@@ -157,10 +168,12 @@ optional (null = Standard je Strassentyp), `osmId` verweist auf den
   gesetzte Tempolimit, sonst Standard je Typ (Hauptstrasse 50, Quartierstrasse
   30, Zufahrt 20; Fuss-/Veloweg nicht befahrbar).
 - Einbahnen werden beachtet (OSM `oneway`, Zeichenrichtung im Entwurf).
-- Das Netz wird nur für den Bereich um Start und Ziel (plus Rand) geladen;
-  die Servergrenze pro Abfrage liegt bei 0.06°, also etwa 6 km. Ohne Abbiege-
-  und Verkehrsmodell sind die Zeiten Richtwerte für den Vergleich, keine
-  Prognose.
+- Zonen mit Tempolimit deckeln jeden Abschnitt, dessen Mittelpunkt in der
+  Fläche liegt; Fussgängerzonen sperren ihn.
+- Das Netz wird in Zellen von 0.025° (etwa 2,8 km × 1,9 km) geladen, für den
+  Bereich um Start und Ziel plus Rand, höchstens 100 Zellen pro Anfrage. Der
+  Server begrenzt weiterhin jede einzelne Abfrage auf 0.06°. Ohne Abbiege- und
+  Verkehrsmodell sind die Zeiten Richtwerte für den Vergleich, keine Prognose.
 
 ## Entwicklung und Tests
 
@@ -182,4 +195,5 @@ Frontend-Unit-Tests und einen Docker-Build mit Smoke-Test aus.
   `DATA_DIR/drafts` entfernen.
 - Der Routen-Rechner kennt keine Abbiegebeziehungen, Ampeln aus OSM oder
   Verkehrsaufkommen; er vergleicht Netzgeometrie und Tempolimits.
-- Der Export gibt den aktuellen Kartenausschnitt in Bildschirmauflösung aus.
+- Der Export in 300 dpi auf A3 erzeugt Bilder um 4900 × 3500 Pixel; auf
+  schwachen Geräten dauert das einige Sekunden.

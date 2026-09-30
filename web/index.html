@@ -36,12 +36,14 @@
         <button type="button" data-tab="drafts">Entwürfe</button>
         <button type="button" data-tab="history">Verlauf</button>
         <button type="button" data-tab="route">Route</button>
+        <button type="button" data-tab="comments">Kommentare</button>
       </nav>
 
       <section id="tab-draw" class="tab active">
         <div id="tool-buttons" class="tool-grid"></div>
         <label class="field">Zeichnen auf Ebene<select id="active-layer"></select></label>
         <label class="field">Typ für neue Strassen<select id="default-kind"></select></label>
+        <label class="field">Art für neue Flächen<select id="default-zone-kind"></select></label>
         <div id="properties" class="box"></div>
         <details class="box" open>
           <summary>Einrasten</summary>
@@ -57,9 +59,11 @@
             <li><span class="swatch osm"></span> Geladene OSM-Strassen (Einrast-Ziele)</li>
             <li><span class="swatch route-cur"></span> Route heute · <span class="swatch route-new"></span> Route neu</li>
             <li><span class="sign">30</span> Tempolimit (ab Zoom 16)</li>
+            <li><span class="swatch zone"></span> Flächen: Tempo-30 blau, Begegnungszone violett, Fussgängerzone grün, Parkplatz grau</li>
+            <li><span class="swatch comment"></span> Kommentare (orange, erledigt grau)</li>
           </ul>
           <ul class="keys">
-            <li><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung · <kbd>R</kbd> Kreisel · <kbd>O</kbd> OSM übernehmen · <kbd>T</kbd> Route</li>
+            <li><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung/Punkt · <kbd>R</kbd> Kreisel · <kbd>F</kbd> Fläche · <kbd>O</kbd> OSM übernehmen · <kbd>T</kbd> Route · <kbd>C</kbd> Kommentar</li>
             <li><kbd>Enter</kbd> Strasse beenden · <kbd>Esc</kbd> abbrechen / Auswahl aufheben · <kbd>⌫</kbd> letzter Punkt</li>
             <li><kbd>Entf</kbd> Ausgewähltes löschen · <kbd>Ctrl</kbd>+<kbd>Z</kbd>/<kbd>Y</kbd> rückgängig/wiederholen · <kbd>Ctrl</kbd>+<kbd>S</kbd> speichern</li>
             <li><kbd>Shift</kbd> (einstellbar) gedrückt halten: Einrasten für diese Aktion aussetzen</li>
@@ -91,6 +95,11 @@
       <section id="tab-route" class="tab">
         <h3>Routen-Rechner: heute vs. neu</h3>
         <div id="route-panel"></div>
+      </section>
+
+      <section id="tab-comments" class="tab">
+        <h3>Kommentare</h3>
+        <div id="comments-panel"></div>
       </section>
     </aside>
     <div class="map-wrap">

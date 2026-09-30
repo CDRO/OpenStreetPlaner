@@ -9,7 +9,7 @@ import {
   cloneDocument, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
-import { OSM_MIN_ZOOM, OSM_MAX_SPAN, OsmRoadCache, routeBounds } from './osm.js';
+import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
 import { computeRoutes } from './routing.js';
@@ -54,6 +54,10 @@ async function main() {
     searchMarker: null,
     routes: null,
     routeTimer: null,
+    defaultZoneKind: 'tempo30',
+    comments: [],
+    activeCommentId: null,
+    commentsLoadedFor: null,
   };
 
   // --- Entwurf bestimmen: Link (/d/<id>) > Arbeitskopie > neuer Entwurf --------
@@ -134,6 +138,8 @@ async function main() {
     getActiveLayerId: () => state.activeLayerId,
     getDefaultRoadKind: () => state.defaultRoadKind,
     getOsmWay: (id) => osm.get(id),
+    getDefaultZoneKind: () => state.defaultZoneKind,
+    getComments: () => (settings.showComments ? state.comments : []),
     canEdit,
     onSelectionChange: (sel) => {
       if (!ui) return;
@@ -144,10 +150,24 @@ async function main() {
     onStatus: (text) => ui && ui.setStatus(text),
     onSceneChange: () => map.requestRender(),
     onHoverChange: (h) => ui && ui.setTooltip(h ? { text: hoverText(h), point: h.point } : null),
+    onCommentPlace: (latlng) => {
+      if (!ui) return;
+      if (latlng && !state.id) {
+        tools.clearCommentDraft();
+        ui.toast('Kommentare brauchen einen gespeicherten Entwurf. Zuerst speichern.', 'error', 5000);
+        return;
+      }
+      ui.showTab('comments');
+      ui.refreshComments();
+    },
     toast: (text) => ui && ui.toast(text),
   });
 
   function hoverText(h) {
+    if (h.commentId) {
+      const c = state.comments.find((x) => x.id === h.commentId);
+      return c ? `${c.author}: ${c.text.length > 80 ? c.text.slice(0, 80) + '…' : c.text}` : '';
+    }
     const f = getFeature(store.doc, h.featureId);
     if (!f) return '';
     const base = f.name || { road: 'Strasse', junction: 'Kreuzung', roundabout: 'Kreisel' }[f.type];
@@ -156,6 +176,7 @@ async function main() {
       return level && level !== 'ground' ? `${base} · ${level === 'bridge' ? 'Brücke' : 'Tunnel'}` : base;
     }
     if (f.type === 'roundabout') return `${base} · r = ${f.radius} m`;
+    if (f.type === 'zone') return f.name ? `${f.name} · ${base}` : base;
     return base;
   }
 
@@ -169,7 +190,28 @@ async function main() {
     showHandles: tools.tool === 'select' && canEdit(),
     routes: store.doc.route ? state.routes : null,
     routeDraft: tools.routeDraft,
+    comments: settings.showComments ? state.comments : [],
+    activeCommentId: state.activeCommentId,
+    commentDraft: tools.commentDraft,
   }));
+
+  // --- Kommentare ---------------------------------------------------------------
+  async function loadComments() {
+    if (!state.id) {
+      state.comments = [];
+      state.commentsLoadedFor = null;
+      return;
+    }
+    try {
+      state.comments = await api.comments(state.id);
+      state.commentsLoadedFor = state.id;
+    } catch (e) {
+      if (e.status !== 404) ui.toast(`Kommentare: ${e.message}`, 'error');
+      state.comments = [];
+    }
+    map.requestRender();
+    ui.refreshComments();
+  }
 
   // --- Routen-Rechner ----------------------------------------------------------
   function recomputeRoutes() {
@@ -195,7 +237,7 @@ async function main() {
     if (!q) return;
     const b = routeBounds(q.from, q.to);
     if (b.tooLarge) {
-      ui.toast(`Start und Ziel liegen zu weit auseinander (max. ${OSM_MAX_SPAN}° pro Abfrage). Näher zusammenliegende Punkte wählen.`, 'error', 6000);
+      ui.toast(`Start und Ziel liegen zu weit auseinander (${b.cells} Zellen, erlaubt ${MAX_CELLS}). Näher zusammenliegende Punkte wählen.`, 'error', 6000);
       return;
     }
     osm.ensureArea(b);
@@ -218,6 +260,67 @@ async function main() {
     setDefaultRoadKind(kind) {
       state.defaultRoadKind = kind;
     },
+    defaultZoneKind: () => state.defaultZoneKind,
+    setDefaultZoneKind(kind) {
+      state.defaultZoneKind = kind;
+    },
+    comments: () => state.comments,
+    activeCommentId: () => state.activeCommentId,
+    canManageComment: (c) => !!state.token || !!local.commentToken(c.id),
+    refreshComments: () => loadComments(),
+    async submitComment({ author, text }) {
+      const draft = tools.commentDraft;
+      if (!draft || !state.id) return;
+      const clean = text.trim();
+      if (!clean) return ui.toast('Bitte einen Text eingeben.', 'error');
+      if (author.trim() !== settings.author) actions.updateSettings({ author: author.trim() });
+      try {
+        const res = await api.addComment(state.id, { lat: draft.latlng[0], lng: draft.latlng[1], author: author.trim(), text: clean });
+        local.rememberCommentToken(res.comment.id, res.commentToken);
+        tools.clearCommentDraft();
+        state.activeCommentId = res.comment.id;
+        await loadComments();
+        ui.toast('Kommentar gespeichert.', 'ok');
+      } catch (e) {
+        ui.toast(`Kommentar fehlgeschlagen: ${e.message}`, 'error', 6000);
+      }
+    },
+    cancelComment() {
+      tools.clearCommentDraft();
+      ui.refreshComments();
+    },
+    async resolveComment(id, resolved) {
+      try {
+        await api.resolveComment(state.id, id, resolved, { token: state.token, commentToken: local.commentToken(id) });
+        await loadComments();
+      } catch (e) {
+        ui.toast(`Ändern fehlgeschlagen: ${e.message}`, 'error', 6000);
+      }
+    },
+    async deleteComment(id) {
+      if (!confirm('Kommentar löschen?')) return;
+      try {
+        await api.deleteComment(state.id, id, { token: state.token, commentToken: local.commentToken(id) });
+        if (state.activeCommentId === id) state.activeCommentId = null;
+        await loadComments();
+      } catch (e) {
+        ui.toast(`Löschen fehlgeschlagen: ${e.message}`, 'error', 6000);
+      }
+    },
+    focusComment(id) {
+      const c = state.comments.find((x) => x.id === id);
+      if (!c) return;
+      state.activeCommentId = id;
+      map.flyTo([c.lat, c.lng], Math.max(map.getZoom(), 16));
+      ui.showTab('comments');
+      ui.refreshComments();
+      map.requestRender();
+    },
+    async runExport({ format, mode, paper, orientation, dpi }) {
+      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '' };
+      const blob = format === 'pdf' ? await exportPdf(map, store.doc, opts) : await exportPng(map, store.doc, opts);
+      download(`${safeFilename(store.doc.name)}.${format}`, blob);
+    },
     updateSettings(patch) {
       Object.assign(settings, patch);
       local.saveSettings(settings);
@@ -225,6 +328,7 @@ async function main() {
       if ('showOsm' in patch || 'snapOsm' in patch) ensureOsm();
       map.requestRender();
       ui.refreshTools();
+      if ('showComments' in patch) ui.refreshComments();
       updateOsmStatus();
     },
     requireEdit() {
@@ -458,7 +562,7 @@ async function main() {
     },
     routes: () => (store.doc.route ? state.routes : null),
     routeNetworkStatus() {
-      if (osm.pending) return 'Strassennetz wird geladen…';
+      if (osm.pending) return `Strassennetz wird geladen… (${osm.remaining} Zellen offen)`;
       if (osm.lastError) return `Strassennetz: ${osm.lastError.message}`;
       return osm.ways.size ? `${osm.ways.size} OSM-Strassen im Speicher.` : 'Noch kein Strassennetz geladen – Start und Ziel setzen oder „Netz für Ansicht laden“.';
     },
@@ -477,8 +581,9 @@ async function main() {
     },
     loadRouteNetwork() {
       const b = map.getBounds();
-      if (b.north - b.south > OSM_MAX_SPAN || b.east - b.west > OSM_MAX_SPAN) {
-        ui.toast(`Ansicht zu gross (max. ${OSM_MAX_SPAN}° pro Abfrage) – näher heranzoomen.`, 'error', 5000);
+      const n = cellsFor(b).length;
+      if (n > MAX_CELLS) {
+        ui.toast(`Ansicht zu gross (${n} Zellen, erlaubt ${MAX_CELLS}) – näher heranzoomen.`, 'error', 5000);
         return;
       }
       osm.ensureArea(b);
@@ -486,16 +591,14 @@ async function main() {
     },
     async exportPng() {
       try {
-        const blob = await exportPng(map, store.doc, { routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '' });
-        download(`${safeFilename(store.doc.name)}.png`, blob);
+        await actions.runExport({ format: 'png', mode: 'view', paper: 'a4', orientation: 'landscape', dpi: 150 });
       } catch (e) {
         ui.toast(`PNG-Export fehlgeschlagen: ${e.message}`, 'error', 6000);
       }
     },
     async exportPdf() {
       try {
-        const blob = await exportPdf(map, store.doc, { routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '' });
-        download(`${safeFilename(store.doc.name)}.pdf`, blob);
+        await actions.runExport({ format: 'pdf', mode: 'view', paper: 'a4', orientation: 'landscape', dpi: 150 });
       } catch (e) {
         ui.toast(`PDF-Export fehlgeschlagen: ${e.message}`, 'error', 6000);
       }
@@ -519,10 +622,16 @@ async function main() {
     },
   };
 
+  tools.onCommentSelect = (id) => actions.focusComment(id);
+
   function bind(id, token) {
     state.id = id;
     state.token = token;
     state.serverUpdatedAt = null;
+    state.comments = [];
+    state.activeCommentId = null;
+    tools.commentDraft = null;
+    if (id) loadComments();
   }
 
   function currentView() {
@@ -553,7 +662,7 @@ async function main() {
     const zoom = map.getZoom();
     if (!settings.snapOsm && !settings.showOsm) return ui.setOsmStatus('');
     if (zoom < OSM_MIN_ZOOM) return ui.setOsmStatus(`OSM-Strassen ab Zoom ${OSM_MIN_ZOOM}`, 'muted');
-    if (info && info.status === 'loading') return ui.setOsmStatus('Lade OSM-Strassen…', 'muted');
+    if (info && info.status === 'loading') return ui.setOsmStatus(`Lade OSM-Strassen… (${info.remaining || osm.remaining} Zellen)`, 'muted');
     if (info && info.status === 'error') return ui.setOsmStatus(`OSM-Strassen: ${info.error.message}`, 'error');
     ui.setOsmStatus(`${osm.ways.size} OSM-Strassen geladen`, 'ok');
   }
@@ -638,12 +747,13 @@ async function main() {
   window.addEventListener('beforeunload', saveWorking);
 
   // --- Start ----------------------------------------------------------------------
-  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes };
+  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes, comments: () => state.comments };
   ui.refreshAll();
   if (store.doc.route) {
     ensureRouteNetwork();
     recomputeRoutes();
   }
+  if (state.id) loadComments();
   ui.setStatus(TOOLS[0].hint);
   ui.setCoords(null, map.getZoom());
   ensureOsm();

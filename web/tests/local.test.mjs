@@ -37,3 +37,11 @@ test('kaputter Speicher wird ignoriert', () => {
   const local = new LocalState(backend);
   assert.deepEqual(local.listDrafts(), []);
 });
+
+test('Kommentar-Token werden gemerkt', () => {
+  const local = new LocalState(new MemoryBackend());
+  assert.equal(local.commentToken('abc'), null);
+  local.rememberCommentToken('abc', 'tok');
+  assert.equal(local.commentToken('abc'), 'tok');
+  assert.equal(local.loadSettings().showComments, true);
+});

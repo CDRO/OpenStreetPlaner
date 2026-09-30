@@ -2,13 +2,81 @@
 // Karten-Canvas plus Titel, Legende, Massstab und OSM-Attribution zusammengesetzt;
 // das PDF bettet dieses Bild als JPEG (DCTDecode) in eine A4-Seite ein.
 
-import { LEVELS } from './model.js';
+import { LEVELS, ZONE_KINDS } from './model.js';
 import { formatDuration } from './routing.js';
 
-/** Baut das Exportbild. Liefert ein Canvas in Gerätepixeln. */
-export function composeExport(map, doc, { routes = null, link = '' } = {}) {
-  const src = map.canvas;
-  const dpr = map.dpr || 1;
+/** Papierformate in Millimetern (Querformat). */
+export const PAPER = {
+  a4: { label: 'A4', w: 297, h: 210 },
+  a3: { label: 'A3', w: 420, h: 297 },
+};
+export const DPI = [96, 150, 300];
+const MARGIN_MM = 10;
+
+/** Grösse des Exportbilds für Papier, Ausrichtung und Auflösung (CSS-Pixel und Pixelfaktor). */
+export function exportSize({ paper = 'a4', orientation = 'landscape', dpi = 150 } = {}) {
+  const p = PAPER[paper] || PAPER.a4;
+  const wMm = (orientation === 'portrait' ? p.h : p.w) - 2 * MARGIN_MM;
+  const hMm = (orientation === 'portrait' ? p.w : p.h) - 2 * MARGIN_MM;
+  const pixelRatio = dpi / 96;
+  const width = Math.round((wMm / 25.4) * 96);
+  const height = Math.round((hMm / 25.4) * 96);
+  return { width, height, pixelRatio, pageWmm: wMm + 2 * MARGIN_MM, pageHmm: hMm + 2 * MARGIN_MM };
+}
+
+/** Bereich aller sichtbaren Elemente (und der Route) des Entwurfs, oder null. */
+export function documentBounds(doc) {
+  const lats = [];
+  const lngs = [];
+  const hidden = new Set(doc.layers.filter((l) => l.visible === false).map((l) => l.id));
+  const add = (ll) => { lats.push(ll[0]); lngs.push(ll[1]); };
+  for (const f of doc.features) {
+    if (hidden.has(f.layerId)) continue;
+    if (f.nodes) f.nodes.forEach(add);
+    if (f.at) add(f.at);
+    if (f.center) {
+      const d = f.radius / 111320;
+      add([f.center[0] - d, f.center[1] - d]);
+      add([f.center[0] + d, f.center[1] + d]);
+    }
+  }
+  if (doc.route) {
+    add(doc.route.from);
+    add(doc.route.to);
+  }
+  if (!lats.length) return null;
+  const b = { south: Math.min(...lats), north: Math.max(...lats), west: Math.min(...lngs), east: Math.max(...lngs) };
+  const padLat = Math.max((b.north - b.south) * 0.08, 0.0008);
+  const padLng = Math.max((b.east - b.west) * 0.08, 0.0012);
+  return { south: b.south - padLat, north: b.north + padLat, west: b.west - padLng, east: b.east + padLng };
+}
+
+/**
+ * Rendert die Karte offscreen in Druckqualität und setzt das Exportbild zusammen.
+ * opts: { mode: 'view'|'all', paper, orientation, dpi, routes, link }
+ */
+export async function renderExport(map, doc, opts = {}) {
+  const size = exportSize(opts);
+  const headerCss = 70;
+  const legendRows = 1 + (opts.routes && (opts.routes.current || opts.routes.proposed) ? 1 : 0);
+  const footerCss = 16 + 30 * legendRows + 8;
+  const mapCss = { width: size.width, height: Math.max(200, size.height - headerCss - footerCss) };
+  let view;
+  if (opts.mode === 'all') {
+    const b = documentBounds(doc);
+    view = b ? map.viewForBounds(b, mapCss.width, mapCss.height, { padding: 30, maxZoom: 19 }) : { center: map.getCenter(), zoom: map.getZoom() };
+  } else {
+    view = { center: map.getCenter(), zoom: map.getZoom() };
+  }
+  const full = { ...view, width: mapCss.width, height: mapCss.height, pixelRatio: size.pixelRatio };
+  await map.prefetchTiles(full);
+  const rendered = map.renderOffscreen(full);
+  const mpp = map.withView(full, () => map.metersPerPixel());
+  return { canvas: composeExport(rendered, { dpr: size.pixelRatio, mpp, doc, routes: opts.routes, link: opts.link }), size };
+}
+
+/** Baut das Exportbild aus einer gerenderten Karte. Liefert ein Canvas in Gerätepixeln. */
+export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link = '' }) {
   const W = src.width;
   const mapH = src.height;
   const header = Math.round(70 * dpr);
@@ -46,7 +114,7 @@ export function composeExport(map, doc, { routes = null, link = '' } = {}) {
   ctx.fillRect(W - aw, header + mapH - 18 * dpr, aw, 18 * dpr);
   ctx.fillStyle = '#333';
   ctx.fillText(attr, W - aw + 6 * dpr, header + mapH - 5 * dpr);
-  drawScaleBar(ctx, map, dpr, pad, header + mapH - 12 * dpr);
+  drawScaleBar(ctx, mpp, dpr, pad, header + mapH - 12 * dpr);
 
   // Legende
   let y = header + mapH + 26 * dpr;
@@ -92,6 +160,23 @@ export function composeExport(map, doc, { routes = null, link = '' } = {}) {
   item(LEVELS[1].label, line('#d7263d', 4, [], '#1a1a1a'));
   item(LEVELS[2].label, line('rgba(215,38,61,0.55)', 4, [8, 6]));
   item('Rückbau', line('#c62828', 4, [5, 5]));
+  const zoneKinds = new Set(doc.features.filter((f) => f.type === 'zone').map((f) => f.kind));
+  for (const k of ZONE_KINDS) {
+    if (!zoneKinds.has(k.id)) continue;
+    const color = k.color || '#d7263d';
+    item(k.label, (sx, sy) => {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.25;
+      ctx.fillRect(sx, sy - 6 * dpr, 32 * dpr, 12 * dpr);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.setLineDash([4 * dpr, 3 * dpr]);
+      ctx.strokeRect(sx, sy - 6 * dpr, 32 * dpr, 12 * dpr);
+      ctx.restore();
+    });
+  }
   if (routes && (routes.current || routes.proposed)) {
     y += 30 * dpr;
     x = pad;
@@ -103,8 +188,7 @@ export function composeExport(map, doc, { routes = null, link = '' } = {}) {
   return out;
 }
 
-function drawScaleBar(ctx, map, dpr, x, y) {
-  const mpp = map.metersPerPixel();
+function drawScaleBar(ctx, mpp, dpr, x, y) {
   const maxMeters = 120 * mpp;
   const pow = Math.pow(10, Math.floor(Math.log10(maxMeters)));
   let nice = pow;
@@ -137,13 +221,14 @@ export function canvasToBlob(canvas, type = 'image/png', quality) {
 }
 
 const A4 = { w: 841.89, h: 595.28 };
+const PT_PER_MM = 72 / 25.4;
 
 /** Baut ein einseitiges PDF mit dem JPEG als Bild. Liefert die PDF-Bytes. */
-export function pdfFromJpeg(jpeg, widthPx, heightPx, { title = 'Stadtplaner' } = {}) {
+export function pdfFromJpeg(jpeg, widthPx, heightPx, { title = 'Stadtplaner', pageWmm = null, pageHmm = null } = {}) {
   const landscape = widthPx >= heightPx;
-  const pageW = landscape ? A4.w : A4.h;
-  const pageH = landscape ? A4.h : A4.w;
-  const margin = 24;
+  const pageW = pageWmm ? pageWmm * PT_PER_MM : (landscape ? A4.w : A4.h);
+  const pageH = pageHmm ? pageHmm * PT_PER_MM : (landscape ? A4.h : A4.w);
+  const margin = pageWmm ? MARGIN_MM * PT_PER_MM : 24;
   const scale = Math.min((pageW - 2 * margin) / widthPx, (pageH - 2 * margin) / heightPx);
   const iw = widthPx * scale;
   const ih = heightPx * scale;
@@ -210,14 +295,15 @@ function pdfTextString(s) {
   return `<${hex.toUpperCase()}>`;
 }
 
-export async function exportPng(map, doc, opts) {
-  const canvas = composeExport(map, doc, opts);
+export async function exportPng(map, doc, opts = {}) {
+  const { canvas } = await renderExport(map, doc, opts);
   return canvasToBlob(canvas, 'image/png');
 }
 
-export async function exportPdf(map, doc, opts) {
-  const canvas = composeExport(map, doc, opts);
-  const blob = await canvasToBlob(canvas, 'image/jpeg', 0.92);
+export async function exportPdf(map, doc, opts = {}) {
+  const { canvas, size } = await renderExport(map, doc, opts);
+  const blob = await canvasToBlob(canvas, 'image/jpeg', 0.9);
   const jpeg = new Uint8Array(await blob.arrayBuffer());
-  return new Blob([pdfFromJpeg(jpeg, canvas.width, canvas.height, { title: doc.name })], { type: 'application/pdf' });
+  const pdf = pdfFromJpeg(jpeg, canvas.width, canvas.height, { title: doc.name, pageWmm: size.pageWmm, pageHmm: size.pageHmm });
+  return new Blob([pdf], { type: 'application/pdf' });
 }

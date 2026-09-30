@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pdfFromJpeg } from '../js/export.js';
+import { pdfFromJpeg, exportSize, documentBounds } from '../js/export.js';
+import { createDocument, createRoad, createRoundabout } from '../js/model.js';
 
 const ascii = (bytes, from, len) => new TextDecoder('latin1').decode(bytes.subarray(from, from + len));
 
@@ -27,4 +28,29 @@ test('pdfFromJpeg erzeugt ein strukturell gültiges PDF mit korrekter xref-Tabel
   assert.deepEqual(Array.from(pdf.subarray(streamStart, streamStart + jpeg.length)), Array.from(jpeg), 'JPEG-Bytes unverändert eingebettet');
   const portrait = new TextDecoder('latin1').decode(pdfFromJpeg(jpeg, 600, 800));
   assert.ok(portrait.includes('/MediaBox [0 0 595.28 841.89]'), 'Hochformat für hohes Bild');
+});
+
+test('exportSize rechnet Papier und dpi in Pixel um, PDF übernimmt die Seitengrösse', () => {
+  const a4 = exportSize({ paper: 'a4', orientation: 'landscape', dpi: 300 });
+  assert.equal(a4.width, Math.round(((297 - 20) / 25.4) * 96));
+  assert.equal(a4.height, Math.round(((210 - 20) / 25.4) * 96));
+  assert.ok(Math.abs(a4.pixelRatio - 3.125) < 1e-9);
+  const a3p = exportSize({ paper: 'a3', orientation: 'portrait', dpi: 150 });
+  assert.ok(a3p.height > a3p.width);
+  assert.equal(a3p.pageWmm, 297);
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  const pdf = new TextDecoder('latin1').decode(pdfFromJpeg(jpeg, 100, 50, { pageWmm: 420, pageHmm: 297 }));
+  assert.ok(pdf.includes('/MediaBox [0 0 1190.55 841.89]'), 'A3 quer in Punkt');
+});
+
+test('documentBounds umfasst alle sichtbaren Elemente mit Rand', () => {
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  assert.equal(documentBounds(doc), null);
+  doc.features.push(createRoad({ layerId, nodes: [[47, 8], [47.01, 8.02]] }));
+  doc.features.push(createRoundabout({ layerId, center: [47.02, 8.03], radius: 20 }));
+  const b = documentBounds(doc);
+  assert.ok(b.south < 47 && b.north > 47.02 && b.west < 8 && b.east > 8.03);
+  doc.layers[0].visible = false;
+  assert.equal(documentBounds(doc), null, 'ausgeblendete Ebene zählt nicht');
 });

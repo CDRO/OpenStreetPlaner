@@ -7,7 +7,7 @@
 // eingerastet sind, teilen diesen Abschnitt beim Aufbau des Netzes.
 
 import { closestPointOnSegment, haversine, mercatorScale, project, unproject } from './geometry.js';
-import { roadSpeed } from './model.js';
+import { pointInPolygon, roadSpeed, zoneKind } from './model.js';
 
 const DRIVABLE = new Set([
   'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service',
@@ -25,7 +25,18 @@ const ZONE_SPEED = {
 };
 
 /** Tempo-Zuschlag in Sekunden beim Durchfahren einer gezeichneten Kreuzung. */
-export const JUNCTION_PENALTY = { plain: 0, priority: 3, stop: 8, signals: 20 };
+export const JUNCTION_PENALTY = { plain: 0, priority: 3, stop: 8, signals: 20, crossing: 2, busstop: 0 };
+
+/** Strengstes Zonen-Tempolimit an einem Punkt (null = keine Zone mit Limit). */
+export function zoneSpeedAt(zones, latlng) {
+  let cap = null;
+  for (const z of zones) {
+    const speed = zoneKind(z).speed;
+    if (speed === null || !pointInPolygon(latlng, z.nodes)) continue;
+    cap = cap === null ? speed : Math.min(cap, speed);
+  }
+  return cap;
+}
 
 export const ROUNDABOUT_SPEED = 30;
 
@@ -72,6 +83,7 @@ export class Graph {
     this.nodes = new Map(); // key -> { latlng, edges: [{ to, dist, time }] }
     this.penalty = new Map(); // key -> Sekunden
     this.segments = []; // für die Suche nach dem nächsten Punkt: { a, b, ka, kb, speed, dir }
+    this.speedCap = null; // (latlng) -> km/h oder null; deckelt Abschnitte in Zonen
   }
 
   node(ll) {
@@ -86,6 +98,10 @@ export class Graph {
 
   /** Verbindet a und b; dir 0 = beide Richtungen, 1 = nur a->b, -1 = nur b->a. */
   link(a, b, speedKmh, dir = 0) {
+    if (this.speedCap) {
+      const cap = this.speedCap([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      if (cap !== null) speedKmh = Math.min(speedKmh, cap);
+    }
     if (!(speedKmh > 0)) return;
     const ka = this.node(a);
     const kb = this.node(b);
@@ -146,6 +162,8 @@ export function insertPointsOnLine(points, candidates, toleranceMeters = 1) {
 export function buildGraph({ osmWays = [], doc = null, mode = 'current' }) {
   const g = new Graph();
   const roads = mode === 'proposed' && doc ? doc.features.filter((f) => f.type === 'road') : [];
+  const zones = mode === 'proposed' && doc ? doc.features.filter((f) => f.type === 'zone' && zoneKind(f).speed !== null) : [];
+  if (zones.length) g.speedCap = (ll) => zoneSpeedAt(zones, ll);
   const replaced = new Set(roads.filter((r) => r.osmId).map((r) => r.osmId));
   const draftNodes = [];
   for (const r of roads) {

@@ -11,7 +11,7 @@
   --warn: #e08a00;
   --topbar-h: 52px;
   --statusbar-h: 26px;
-  --sidebar-w: 350px;
+  --sidebar-w: 380px;
   --radius: 8px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 14px;
@@ -95,7 +95,7 @@ textarea { resize: vertical; }
 body.sidebar-hidden .sidebar { margin-left: calc(-1 * var(--sidebar-w)); }
 .tabs { display: flex; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 .tabs button {
-  flex: 1; font: inherit; font-size: 13px; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 2px; cursor: pointer; color: var(--muted);
+  flex: 1; font: inherit; font-size: 12.5px; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 1px; cursor: pointer; color: var(--muted); white-space: nowrap;
 }
 .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab { display: none; padding: 12px 14px; overflow: auto; flex: 1; }
@@ -218,3 +218,20 @@ details.box summary { cursor: pointer; font-weight: 600; }
 .route-table th:first-child, .route-table td:first-child { text-align: left; color: var(--muted); font-weight: normal; }
 .route-table th { font-weight: 600; color: var(--text); white-space: nowrap; }
 .route-table .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+
+/* Flächen und Kommentare */
+.swatch.zone { border: 1.5px dashed #1b6ac9; background: rgba(27,106,201,.2); height: 12px; }
+.swatch.comment { border: 0; width: 14px; height: 14px; border-radius: 50% 50% 50% 0; background: var(--warn); transform: rotate(-45deg); }
+.comment-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--border); }
+.comment-row.active { background: #fff7e6; }
+.comment-row.resolved .c-text { color: var(--muted); text-decoration: line-through; }
+.comment-row .c-text { white-space: pre-wrap; word-break: break-word; font-size: 13px; margin-top: 2px; }
+.c-focus { border: 0; background: none; padding: 0; cursor: pointer; }
+.c-index { display: inline-block; width: 22px; height: 22px; border-radius: 50%; background: var(--warn); color: #fff; font: 700 11px/22px system-ui, sans-serif; text-align: center; }
+.comment-row.resolved .c-index { background: #9aa3ad; }
+.comment-row .icon-btn { width: 26px; height: 26px; font-size: 13px; }
+.comment-form textarea { min-height: 70px; }
+.check.small { font-size: 12px; margin: 0 0 0 auto; }
+
+/* Export-Dialog */
+.export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }

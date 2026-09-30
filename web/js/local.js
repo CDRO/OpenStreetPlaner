@@ -4,6 +4,7 @@
 const KEY_INDEX = 'stadtplaner.drafts';
 const KEY_WORKING = 'stadtplaner.working';
 const KEY_SETTINGS = 'stadtplaner.settings';
+const KEY_COMMENT_TOKENS = 'stadtplaner.commentTokens';
 
 export const DEFAULT_SETTINGS = {
   snapEnabled: true,
@@ -11,6 +12,8 @@ export const DEFAULT_SETTINGS = {
   snapOsm: true,
   showOsm: false,
   snapTolerance: 14,
+  showComments: true,
+  author: '', // Name für Kommentare
 };
 
 export class LocalState {
@@ -80,6 +83,19 @@ export class LocalState {
     } catch {
       // siehe writeJson
     }
+  }
+
+  /** Lösch-Token eigener Kommentare (Kommentar-ID -> Token). */
+  rememberCommentToken(cid, token) {
+    const map = this.readJson(KEY_COMMENT_TOKENS, {});
+    map[cid] = token;
+    const keys = Object.keys(map);
+    if (keys.length > 500) delete map[keys[0]];
+    this.writeJson(KEY_COMMENT_TOKENS, map);
+  }
+
+  commentToken(cid) {
+    return this.readJson(KEY_COMMENT_TOKENS, {})[cid] || null;
   }
 
   loadSettings() {

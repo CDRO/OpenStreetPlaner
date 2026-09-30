@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  zoneSpeedAt,
   parseMaxspeed, isDrivable, waySpeed, wayDirection, buildGraph, attachPoint, shortestPath, computeRoutes,
   insertPointsOnLine, formatDuration, keyOf,
 } from '../js/routing.js';
-import { createDocument, createRoad, createRoundabout, createJunction } from '../js/model.js';
+import { createDocument, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
 import { project as projectLL } from '../js/geometry.js';
 
 test('parseMaxspeed versteht Zahlen, mph, Zonen und Sonderwerte', () => {
@@ -129,3 +130,26 @@ test('attachPoint findet nur Punkte in Reichweite, insertPointsOnLine hält die 
   assert.deepEqual(line, [[47, 8], [47, 8.002], [47, 8.008], [47, 8.01]]);
 });
 
+
+test('Zonen deckeln das Tempo, Fussgängerzonen sperren', () => {
+  const ways = [{ id: 1, tags: { highway: 'residential', maxspeed: '50' }, geometry: [[47, 8], [47, 8.01]] }];
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const from = [47, 8];
+  const to = [47, 8.01];
+  const base = computeRoutes({ osmWays: ways, doc, from, to });
+  const zone = createZone({ layerId, nodes: [[46.999, 8.004], [46.999, 8.006], [47.001, 8.006], [47.001, 8.004]], kind: 'tempo30' });
+  doc.features.push(zone);
+  assert.equal(zoneSpeedAt([zone], [47, 8.005]), 30);
+  assert.equal(zoneSpeedAt([zone], [47, 8.001]), null);
+  // Der OSM-Way hat keinen Knoten in der Zone; Mittelpunkt des einzigen Abschnitts liegt bei 8.005 -> gedeckelt
+  const capped = computeRoutes({ osmWays: ways, doc, from, to });
+  assert.ok(capped.proposed.time > base.proposed.time * 1.5, `Zone verlangsamt: ${capped.proposed.time} vs ${base.proposed.time}`);
+  assert.ok(Math.abs(capped.current.time - base.current.time) < 1e-9, 'heute unverändert');
+  zone.kind = 'pedestrian';
+  const blocked = computeRoutes({ osmWays: ways, doc, from, to });
+  assert.ok(blocked.proposed.error, 'Fussgängerzone sperrt die Strasse');
+  zone.kind = 'parking';
+  const parking = computeRoutes({ osmWays: ways, doc, from, to });
+  assert.ok(Math.abs(parking.proposed.time - base.proposed.time) < 1e-9, 'Parkplatz ohne Tempolimit');
+});

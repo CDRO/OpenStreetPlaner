@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSnapIndex, snapLatLng, excludeFeature } from '../js/snap.js';
-import { createDocument, createLayer, createRoad, createRoundabout } from '../js/model.js';
+import { createDocument, createLayer, createRoad, createRoundabout, createZone } from '../js/model.js';
 
 test('Index enthält nur sichtbare Ebenen und optional OSM', () => {
   const doc = createDocument();
@@ -40,4 +40,17 @@ test('snapLatLng rastet innerhalb der Pixel-Toleranz ein', () => {
   const onNode = snapLatLng([47.00001, 8.00001], index, 18, 14);
   assert.equal(onNode.snap.kind, 'node');
   assert.equal(onNode.snap.ref.index, 0);
+});
+
+test('Zonen liefern Eckpunkte und Kanten inklusive Schlusskante', () => {
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  doc.features.push(createZone({ layerId, nodes: [[47, 8], [47, 8.01], [47.01, 8.01]] }));
+  const index = buildSnapIndex(doc);
+  assert.equal(index.nodes.length, 3);
+  assert.equal(index.segments.length, 3);
+  const onClosing = snapLatLng([47.005, 8.00501], index, 18, 14);
+  assert.equal(onClosing.snap.kind, 'segment');
+  assert.equal(onClosing.snap.ref.type, 'zone');
+  assert.equal(onClosing.snap.ref.index, 2, 'Schlusskante hat Index n-1');
 });

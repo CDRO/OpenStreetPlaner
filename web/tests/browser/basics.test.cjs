@@ -175,6 +175,38 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await editor.context.close();
   console.log('✓ Teilen: Ansicht, Kopie, Bearbeitungslink');
 
+  // Kommentare: Empfänger (nur Ansicht) kommentiert, Besitzer sieht, erledigt und löscht
+  const commenter = await openPage(browser, viewUrl, errors);
+  const ch = helpers(commenter.page);
+  await commenter.page.click('.tabs button[data-tab="comments"]');
+  await commenter.page.click('#comment-add');
+  assert.ok((await commenter.page.locator('.tool.active').textContent()).includes('Kommentar'), 'Kommentar-Werkzeug auch ohne Bearbeitungsrecht');
+  const cbox = await ch.mapBox();
+  await commenter.page.mouse.click(cbox.x + cbox.width * 0.5, cbox.y + cbox.height * 0.5);
+  await commenter.page.waitForSelector('#comment-text');
+  await commenter.page.fill('#comment-author', 'Anna');
+  await commenter.page.fill('#comment-text', 'Hier fehlt ein Fussgängerstreifen.');
+  await commenter.page.click('#comment-send');
+  await commenter.page.waitForSelector('.comment-row');
+  assert.equal(await commenter.page.locator('.comment-row').count(), 1);
+  assert.ok((await commenter.page.textContent('.comment-row')).includes('Anna'));
+  assert.equal(await commenter.page.locator('.comment-row .c-resolve').count(), 1, 'Verfasser darf erledigen');
+  await commenter.page.click('.comment-row .c-resolve');
+  await commenter.page.waitForSelector('.comment-row.resolved');
+  await commenter.context.close();
+  await page.click('.tabs button[data-tab="comments"]');
+  await page.click('#comment-refresh');
+  await page.waitForSelector('.comment-row.resolved');
+  const own = await page.evaluate(() => window.stadtplaner.comments());
+  assert.equal(own.length, 1);
+  assert.equal(own[0].resolved, true);
+  await page.click('.comment-row .c-focus');
+  await h.settle(800);
+  assert.ok((await page.locator('.comment-row.active').count()) === 1, 'Kommentar fokussiert');
+  await page.click('.comment-row .c-delete');
+  await page.waitForFunction(() => window.stadtplaner.comments().length === 0);
+  console.log('✓ Kommentare');
+
   // Reload behält Entwurf und Bindung
   await page.reload({ waitUntil: 'load' });
   await h.settle(800);

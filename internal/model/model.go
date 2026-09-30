@@ -18,6 +18,7 @@ const (
 	MaxLayers    = 100
 	MaxFeatures  = 20000
 	MaxRoadNodes = 5000
+	MaxZoneNodes = 2000
 	MaxNameLen   = 200
 	MaxNoteLen   = 2000
 	MaxRadius    = 500.0
@@ -31,7 +32,8 @@ var (
 	RoadKinds     = []string{"main", "secondary", "residential", "service", "path", "other"}
 	Levels        = []string{"ground", "bridge", "tunnel"}
 	Statuses      = []string{"new", "existing", "remove"}
-	JunctionKinds = []string{"plain", "signals", "priority", "stop"}
+	JunctionKinds = []string{"plain", "signals", "priority", "stop", "crossing", "busstop"}
+	ZoneKinds     = []string{"tempo30", "tempo20", "pedestrian", "parking", "other"}
 	LayerColors   = []string{"#d7263d", "#1b6ac9", "#2a9d3f", "#e08a00", "#7b3fbf", "#0e9aa7", "#c2185b", "#5d4037"}
 )
 
@@ -67,7 +69,7 @@ type Feature struct {
 	OsmID    int64     `json:"osmId,omitempty"`    // OSM-Way, aus dem die Strasse übernommen wurde
 	Nodes    []LatLng  `json:"nodes,omitempty"`
 	Segments []Segment `json:"segments,omitempty"`
-	// Kreuzung
+	// Kreuzung / Punkt-Massnahme
 	At *LatLng `json:"at,omitempty"`
 	// Kreisel
 	Center *LatLng `json:"center,omitempty"`
@@ -97,6 +99,7 @@ type Stats struct {
 	Roads        int     `json:"roads"`
 	Junctions    int     `json:"junctions"`
 	Roundabouts  int     `json:"roundabouts"`
+	Zones        int     `json:"zones"`
 	Bridges      int     `json:"bridges"`
 	Tunnels      int     `json:"tunnels"`
 	LengthMeters float64 `json:"lengthMeters"`
@@ -270,6 +273,22 @@ func Normalize(d *Document) error {
 			f.Radius = math.Round(f.Radius*10) / 10
 			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At = "", "", nil, nil, nil, nil
 			f.Maxspeed, f.OsmID = nil, 0
+		case "zone":
+			if len(f.Nodes) < 3 {
+				return invalid("Zone %s braucht mindestens drei Punkte", f.ID)
+			}
+			if len(f.Nodes) > MaxZoneNodes {
+				return invalid("Zone %s hat zu viele Punkte", f.ID)
+			}
+			for j, n := range f.Nodes {
+				if !validLatLng(n) {
+					return invalid("Zone %s: Punkt %d ungültig", f.ID, j)
+				}
+				f.Nodes[j] = round6(n)
+			}
+			f.Kind = oneOf(ZoneKinds, f.Kind, "other")
+			f.Status, f.Oneway, f.Segments, f.At, f.Center, f.Radius = "", nil, nil, nil, nil, 0
+			f.Maxspeed, f.OsmID = nil, 0
 		default:
 			return invalid("unbekannter Elementtyp %q", f.Type)
 		}
@@ -316,6 +335,8 @@ func Compute(d *Document) Stats {
 			s.Junctions++
 		case "roundabout":
 			s.Roundabouts++
+		case "zone":
+			s.Zones++
 		}
 	}
 	s.LengthMeters = math.Round(s.LengthMeters)

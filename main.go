@@ -40,6 +40,8 @@ func main() {
 	overpassURL := flag.String("overpass-url", env("OVERPASS_URL", osm.DefaultOverpassURL), "Overpass-Endpunkt (env OVERPASS_URL)")
 	userAgent := flag.String("user-agent", env("USER_AGENT", osm.DefaultUserAgent), "User-Agent gegenüber OSM-Diensten (env USER_AGENT)")
 	maxVersions := flag.Int("max-versions", atoi(env("MAX_VERSIONS", "30"), 30), "Versionen pro Entwurf (env MAX_VERSIONS)")
+	writeRate := flag.Float64("write-rate", atof(env("WRITE_RATE", "60"), 60), "Schreibende API-Aufrufe pro Minute und Client, 0 = aus (env WRITE_RATE)")
+	trustProxy := flag.Bool("trust-proxy", env("TRUST_PROXY", "") == "1", "Client-IP aus X-Forwarded-For lesen, hinter einem Reverse-Proxy (env TRUST_PROXY=1)")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
@@ -59,6 +61,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Server: %v", err)
 	}
+	srv.SetRateLimit(server.RateLimit{PerMinute: *writeRate, Burst: 20, TrustProxy: *trustProxy})
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
@@ -81,6 +84,14 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func atof(s string, fallback float64) float64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 func atoi(s string, fallback int) int {

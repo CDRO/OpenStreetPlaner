@@ -3,12 +3,12 @@
 // ebenerdige Abschnitte, Brücken, Kreisel, Kreuzungen, Pfeile, Beschriftung,
 // Bearbeitungsgriffe, Zeichenvorschau, Einrast-Markierung.
 
-import { ROAD_KINDS, getLayer } from './model.js';
+import { ROAD_KINDS, getLayer, zoneKind } from './model.js';
 
 const KIND_WIDTH = Object.fromEntries(ROAD_KINDS.map((k) => [k.id, k.width]));
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -26,6 +26,12 @@ export function drawScene(ctx, map, s) {
     ctx.setLineDash([2, 5]);
     for (const w of osmWays) strokePath(ctx, w.geometry.map(P));
     ctx.restore();
+  }
+
+  // Zonen (Flächen) unter allem anderen
+  for (const f of visible) {
+    if (f.type !== 'zone') continue;
+    drawZone(ctx, P, f, colorOf(f), zoom);
   }
 
   const selected = selection ? visible.find((f) => f.id === selection.featureId) : null;
@@ -87,8 +93,9 @@ export function drawScene(ctx, map, s) {
   for (const f of visible) {
     if (f.type !== 'junction') continue;
     const c = P(f.at);
-    const glyph = { plain: '', signals: 'A', priority: 'V', stop: 'S' }[f.kind] || '';
-    circle(ctx, c, 9, { stroke: colorOf(f), width: 3, fill: '#fff' });
+    const glyph = { plain: '', signals: 'A', priority: 'V', stop: 'S', crossing: '≡', busstop: 'H' }[f.kind] || '';
+    const fill = f.kind === 'busstop' ? '#ffe600' : '#fff';
+    circle(ctx, c, 9, { stroke: colorOf(f), width: 3, fill });
     if (glyph) text(ctx, glyph, c.x, c.y + 0.5, { font: 'bold 11px system-ui, sans-serif', color: '#222', align: 'center', baseline: 'middle' });
   }
   // Einbahn-Pfeile
@@ -112,6 +119,7 @@ export function drawScene(ctx, map, s) {
     }
   }
   drawRoutes(ctx, P, doc.route, routes, routeDraft);
+  drawComments(ctx, P, comments, activeCommentId, commentDraft);
   if (showHandles && selected) drawHandles(ctx, P, selected);
   if (preview) drawPreview(ctx, P, preview, mpp);
   if (snap) {
@@ -142,6 +150,14 @@ export function handlePoints(feature) {
       const b = feature.nodes[i + 1];
       out.push({ kind: 'midpoint', index: i, latlng: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] });
     }
+  } else if (feature.type === 'zone') {
+    const n = feature.nodes.length;
+    feature.nodes.forEach((p, i) => out.push({ kind: 'vertex', index: i, latlng: p }));
+    for (let i = 0; i < n; i++) {
+      const a = feature.nodes[i];
+      const b = feature.nodes[(i + 1) % n];
+      out.push({ kind: 'midpoint', index: i, latlng: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] });
+    }
   } else if (feature.type === 'junction') {
     out.push({ kind: 'vertex', index: 0, latlng: feature.at });
   } else if (feature.type === 'roundabout') {
@@ -149,6 +165,20 @@ export function handlePoints(feature) {
   }
   return out;
 }
+
+/** Kommentar-Marker unter dem Zeiger (Toleranz in Pixeln) oder null. */
+export function hitComment(map, comments, point, tol = 13) {
+  let best = null;
+  for (const c of comments) {
+    const p = map.project([c.lat, c.lng]);
+    const d = Math.hypot(p.x - point.x, p.y - (point.y + 10));
+    if (d <= tol && (!best || d < best.d)) best = { id: c.id, d };
+  }
+  return best ? best.id : null;
+}
+
+export const COMMENT_COLOR = '#e08a00';
+export const COMMENT_RESOLVED_COLOR = '#9aa3ad';
 
 // --- Hilfen ------------------------------------------------------------------
 
@@ -294,6 +324,61 @@ function drawRoutes(ctx, P, query, routes, routeDraft) {
   }
 }
 
+function drawZone(ctx, P, f, layerColor, zoom) {
+  const kind = zoneKind(f);
+  const color = kind.color || layerColor;
+  const pts = f.nodes.map(P);
+  if (pts.length < 3) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = f.kind === 'parking' ? 0.3 : 0.18;
+  ctx.fill();
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.stroke();
+  ctx.restore();
+  if (zoom >= 15) {
+    let cx = 0;
+    let cy = 0;
+    for (const p of pts) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= pts.length;
+    cy /= pts.length;
+    const label = f.name ? `${f.name} · ${kind.label}` : kind.label;
+    text(ctx, label, cx, cy, { font: '600 11px system-ui, sans-serif', color: '#1f2933', halo: 'rgba(255,255,255,0.9)', align: 'center', baseline: 'middle' });
+  }
+}
+
+function drawComments(ctx, P, comments, activeId, draft) {
+  const marker = (ll, color, index, active) => {
+    const c = P(ll);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y);
+    ctx.lineTo(c.x - 8, c.y - 12);
+    ctx.arc(c.x, c.y - 14, 10, Math.PI * 0.85, Math.PI * 2.15);
+    ctx.lineTo(c.x + 8, c.y - 12);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.strokeStyle = active ? '#1f2933' : '#fff';
+    ctx.lineWidth = active ? 3 : 2;
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    if (index !== null) text(ctx, String(index), c.x, c.y - 13.5, { font: 'bold 10px system-ui, sans-serif', color: '#fff', align: 'center', baseline: 'middle' });
+  };
+  comments.forEach((c, i) => marker([c.lat, c.lng], c.resolved ? COMMENT_RESOLVED_COLOR : COMMENT_COLOR, i + 1, c.id === activeId));
+  if (draft && draft.latlng) marker(draft.latlng, '#1b6ac9', null, true);
+}
+
 function drawSelectionHalo(ctx, P, f, selection, mpp, lineScale) {
   ctx.save();
   ctx.globalAlpha = 0.75;
@@ -309,6 +394,10 @@ function drawSelectionHalo(ctx, P, f, selection, mpp, lineScale) {
     circle(ctx, P(f.at), 15, { fill: 'rgba(255,214,0,0.8)' });
   } else if (f.type === 'roundabout') {
     circle(ctx, P(f.center), Math.max(2, f.radius / mpp), { stroke: 'rgba(255,214,0,0.8)', width: 16 });
+  } else if (f.type === 'zone') {
+    const pts = f.nodes.map(P);
+    ctx.lineJoin = 'round';
+    stroke(ctx, [...pts, pts[0]], '#ffd600', 12);
   }
   ctx.restore();
 }
@@ -330,6 +419,21 @@ function drawPreview(ctx, P, preview, mpp) {
     return;
   }
   const pts = (preview.points || []).map(P);
+  if (preview.closed && pts.length >= 3) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    if (preview.cursor) {
+      const c = P(preview.cursor);
+      ctx.lineTo(c.x, c.y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.15;
+    ctx.fill();
+    ctx.restore();
+  }
   if (pts.length >= 2) stroke(ctx, pts, color, 5);
   if (pts.length && preview.cursor) {
     ctx.save();

@@ -1,7 +1,8 @@
 // Seitenleiste, Kopfzeile, Statuszeile, Dialoge. Reine DOM-Arbeit; die Logik
 // steckt in app.js (actions) und den Modulen.
 
-import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, docStats, featureLabel, getFeature, roadSpeed } from './model.js';
+import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, ZONE_KINDS, docStats, featureLabel, getFeature, roadSpeed } from './model.js';
+import { DPI, PAPER } from './export.js';
 import { pathLength } from './geometry.js';
 import { TOOLS } from './tools.js';
 import { formatDuration } from './routing.js';
@@ -57,6 +58,7 @@ export class UI {
       this.refreshRoute();
       if (this.ctx.tools.tool !== 'route') this.ctx.tools.setTool('route');
     }
+    if (name === 'comments') this.refreshComments();
   }
 
   // --- Suche ---------------------------------------------------------------------
@@ -153,6 +155,7 @@ export class UI {
     this.refreshDrafts();
     this.refreshHistory();
     this.refreshRoute();
+    this.refreshComments();
   }
 
   refreshHeader() {
@@ -184,6 +187,9 @@ export class UI {
     const kindSel = this.$('default-kind');
     kindSel.innerHTML = options(ROAD_KINDS, actions.defaultRoadKind());
     kindSel.onchange = () => actions.setDefaultRoadKind(kindSel.value);
+    const zoneSel = this.$('default-zone-kind');
+    zoneSel.innerHTML = options(ZONE_KINDS, actions.defaultZoneKind());
+    zoneSel.onchange = () => actions.setDefaultZoneKind(zoneSel.value);
 
     const snap = this.$('snap-settings');
     snap.innerHTML = `
@@ -253,9 +259,13 @@ export class UI {
       specific = `<label class="field">Art<select id="prop-jkind" ${dis}>${options(JUNCTION_KINDS, f.kind)}</select></label>`;
     } else if (f.type === 'roundabout') {
       specific = `<label class="field">Radius (m)<input type="number" id="prop-radius" min="4" max="200" step="0.5" value="${f.radius}" ${dis}></label>`;
+    } else if (f.type === 'zone') {
+      const k = ZONE_KINDS.find((z) => z.id === f.kind) || ZONE_KINDS[4];
+      specific = `<label class="field">Art der Fläche<select id="prop-zkind" ${dis}>${options(ZONE_KINDS, f.kind)}</select></label>
+        <p class="muted small">${k.speed === 0 ? 'Für Autos gesperrt (Routen-Rechner).' : k.speed ? `Tempolimit ${k.speed} km/h für alle Strassen in der Fläche (Routen-Rechner).` : 'Ohne Wirkung auf den Routen-Rechner.'} ${f.nodes.length} Eckpunkte.</p>`;
     }
     box.innerHTML = `
-      <h3>${{ road: 'Strasse', junction: 'Kreuzung', roundabout: 'Kreisel' }[f.type]} <span class="muted">${esc(featureLabel(f))}</span></h3>
+      <h3>${{ road: 'Strasse', junction: 'Kreuzung / Punkt', roundabout: 'Kreisel', zone: 'Zone / Fläche' }[f.type]} <span class="muted">${esc(featureLabel(f))}</span></h3>
       <label class="field">Name<input type="text" id="prop-name" value="${esc(f.name)}" placeholder="z. B. Hauptstrasse neu" ${dis}></label>
       <label class="field">Ebene<select id="prop-layer" ${dis}>${options(layerOpts, f.layerId)}</select></label>
       ${specific}
@@ -290,6 +300,8 @@ export class UI {
       };
     } else if (f.type === 'junction') {
       this.$('prop-jkind').onchange = (e) => patch('Art ändern', (x) => { x.kind = e.target.value; });
+    } else if (f.type === 'zone') {
+      this.$('prop-zkind').onchange = (e) => patch('Art der Fläche ändern', (x) => { x.kind = e.target.value; });
     } else if (f.type === 'roundabout') {
       this.$('prop-radius').onchange = (e) => {
         const r = Math.max(4, Math.min(200, Number(e.target.value) || 15));
@@ -357,7 +369,7 @@ export class UI {
     else if (saved) badge = '<span class="badge warn">ungespeicherte Änderungen</span>';
     this.$('draft-current').innerHTML = `
       <h3>${esc(store.doc.name)} ${badge}</h3>
-      <p class="muted">${s.roads} Strassen (${fmtLen(s.lengthMeters)}), ${s.junctions} Kreuzungen, ${s.roundabouts} Kreisel${s.bridges ? `, ${s.bridges} Brückenabschnitte` : ''}${s.tunnels ? `, ${s.tunnels} Tunnelabschnitte` : ''}</p>
+      <p class="muted">${s.roads} Strassen (${fmtLen(s.lengthMeters)}), ${s.junctions} Kreuzungen, ${s.roundabouts} Kreisel${s.zones ? `, ${s.zones} Flächen` : ''}${s.bridges ? `, ${s.bridges} Brückenabschnitte` : ''}${s.tunnels ? `, ${s.tunnels} Tunnelabschnitte` : ''}</p>
       ${saved ? `<p class="muted small">Link: <code>${esc(location.origin)}/d/${esc(actions.draftId())}</code></p>` : ''}
       <div class="btn-row">
         <button type="button" id="d-new" class="btn small">Neu</button>
@@ -371,8 +383,7 @@ export class UI {
         <button type="button" id="d-import" class="btn small">JSON importieren</button>
       </div>
       <div class="btn-row">
-        <button type="button" id="d-png" class="btn small">Karte als PNG</button>
-        <button type="button" id="d-pdf" class="btn small">Karte als PDF</button>
+        <button type="button" id="d-export-map" class="btn small">Karte als PNG / PDF exportieren…</button>
       </div>`;
     this.$('d-new').onclick = () => actions.newDraft();
     if (this.$('d-save')) this.$('d-save').onclick = () => actions.saveDraft();
@@ -382,8 +393,7 @@ export class UI {
     this.$('d-export').onclick = () => actions.exportJson();
     this.$('d-geojson').onclick = () => actions.exportGeoJson();
     this.$('d-import').onclick = () => this.$('import-file').click();
-    this.$('d-png').onclick = () => actions.exportPng();
-    this.$('d-pdf').onclick = () => actions.exportPdf();
+    this.$('d-export-map').onclick = () => this.openExport();
 
     const drafts = local.listDrafts();
     const list = this.$('draft-list');
@@ -524,8 +534,7 @@ export class UI {
         <a class="btn" href="mailto:?subject=${subject}&body=${body}">Per E-Mail senden</a>
         <button type="button" id="share-json" class="btn">JSON herunterladen</button>
         <button type="button" id="share-geojson" class="btn">GeoJSON herunterladen</button>
-        <button type="button" id="share-png" class="btn">Karte als PNG</button>
-        <button type="button" id="share-pdf" class="btn">Karte als PDF</button>
+        <button type="button" id="share-export" class="btn">Karte als PNG / PDF…</button>
         <button type="button" class="btn" data-close>Schliessen</button>
       </div>`);
     document.querySelectorAll('[data-copy]').forEach((b) => {
@@ -542,8 +551,118 @@ export class UI {
     });
     this.$('share-json').onclick = () => this.ctx.actions.exportJson();
     this.$('share-geojson').onclick = () => this.ctx.actions.exportGeoJson();
-    this.$('share-png').onclick = () => this.ctx.actions.exportPng();
-    this.$('share-pdf').onclick = () => this.ctx.actions.exportPdf();
+    this.$('share-export').onclick = () => this.openExport();
+  }
+
+  // --- Export-Dialog ---------------------------------------------------------------
+
+  openExport() {
+    const hasFeatures = this.ctx.store.doc.features.length > 0;
+    this.openModal(`
+      <h2>Karte exportieren</h2>
+      <p class="muted small">Die Karte wird für den Export neu in der gewählten Auflösung gezeichnet, mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution.</p>
+      <div class="export-grid">
+        <label class="field">Ausschnitt<select id="export-mode">
+          <option value="view">Aktuelle Ansicht (Mitte und Zoom)</option>
+          <option value="all" ${hasFeatures ? '' : 'disabled'}>Ganzer Entwurf</option>
+        </select></label>
+        <label class="field">Papier<select id="export-paper">${Object.entries(PAPER).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
+        <label class="field">Ausrichtung<select id="export-orientation"><option value="landscape">Querformat</option><option value="portrait">Hochformat</option></select></label>
+        <label class="field">Auflösung<select id="export-dpi">${DPI.map((d) => `<option value="${d}" ${d === 150 ? 'selected' : ''}>${d} dpi${d === 96 ? ' (Bildschirm)' : d === 300 ? ' (Druck)' : ''}</option>`).join('')}</select></label>
+      </div>
+      <p class="muted small" id="export-status"></p>
+      <div class="btn-row">
+        <button type="button" id="export-png" class="btn primary">PNG herunterladen</button>
+        <button type="button" id="export-pdf" class="btn primary">PDF herunterladen</button>
+        <button type="button" class="btn" data-close>Schliessen</button>
+      </div>`);
+    const opts = () => ({
+      mode: this.$('export-mode').value,
+      paper: this.$('export-paper').value,
+      orientation: this.$('export-orientation').value,
+      dpi: Number(this.$('export-dpi').value),
+    });
+    const run = async (format) => {
+      const status = this.$('export-status');
+      const buttons = [this.$('export-png'), this.$('export-pdf')];
+      buttons.forEach((b) => { b.disabled = true; });
+      status.textContent = 'Kacheln werden geladen und die Karte gezeichnet…';
+      try {
+        await this.ctx.actions.runExport({ format, ...opts() });
+        status.textContent = 'Export erstellt.';
+      } catch (e) {
+        status.textContent = `Export fehlgeschlagen: ${e.message}`;
+      } finally {
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    };
+    this.$('export-png').onclick = () => run('png');
+    this.$('export-pdf').onclick = () => run('pdf');
+  }
+
+  // --- Kommentare ------------------------------------------------------------------
+
+  refreshComments() {
+    const { actions, tools, settings } = this.ctx;
+    const el = this.$('comments-panel');
+    if (!el) return;
+    const comments = actions.comments();
+    const draft = tools.commentDraft;
+    const saved = actions.isSaved();
+    const active = actions.activeCommentId();
+    const fmt = (c) => `${esc(c.author)} · ${fmtDate(c.at)}`;
+    let form = '';
+    if (draft) {
+      form = `
+        <div class="box comment-form">
+          <h3>Neuer Kommentar</h3>
+          <label class="field">Name<input type="text" id="comment-author" value="${esc(settings.author)}" placeholder="Dein Name" maxlength="80"></label>
+          <label class="field">Kommentar<textarea id="comment-text" rows="3" placeholder="Was soll hier anders sein?" maxlength="2000"></textarea></label>
+          <div class="btn-row">
+            <button type="button" id="comment-send" class="btn small primary">Senden</button>
+            <button type="button" id="comment-cancel" class="btn small">Abbrechen</button>
+          </div>
+        </div>`;
+    }
+    const list = comments.length
+      ? comments.map((c, i) => `
+        <div class="comment-row${c.resolved ? ' resolved' : ''}${c.id === active ? ' active' : ''}" data-id="${c.id}">
+          <button type="button" class="c-focus" title="Auf der Karte zeigen"><span class="c-index">${i + 1}</span></button>
+          <div class="grow">
+            <div class="muted small">${fmt(c)}${c.resolved ? ' · erledigt' : ''}</div>
+            <div class="c-text">${esc(c.text)}</div>
+          </div>
+          ${actions.canManageComment(c) ? `<button type="button" class="icon-btn c-resolve" title="${c.resolved ? 'Wieder öffnen' : 'Als erledigt markieren'}">${c.resolved ? '↺' : '✓'}</button><button type="button" class="icon-btn c-delete" title="Löschen">✕</button>` : ''}
+        </div>`).join('')
+      : `<p class="muted">${saved ? 'Noch keine Kommentare. Mit „Kommentar setzen“ einen Punkt auf der Karte anklicken.' : 'Kommentare gibt es, sobald der Entwurf gespeichert ist und einen Link hat.'}</p>`;
+    el.innerHTML = `
+      <p class="muted small">Wer den Ansichtslink hat, kann Kommentare an eine Stelle der Karte heften. Der Besitzer des Entwurfs kann sie als erledigt markieren oder löschen, Verfasser ihre eigenen.</p>
+      <div class="btn-row">
+        <button type="button" id="comment-add" class="btn small ${tools.tool === 'comment' ? 'primary' : ''}" ${saved ? '' : 'disabled'}>Kommentar setzen</button>
+        <button type="button" id="comment-refresh" class="btn small" ${saved ? '' : 'disabled'}>Aktualisieren</button>
+        <label class="check small"><input type="checkbox" id="comment-show" ${settings.showComments ? 'checked' : ''}> Auf der Karte zeigen</label>
+      </div>
+      ${form}
+      <div id="comment-list">${list}</div>`;
+    this.$('comment-add').onclick = () => tools.setTool('comment');
+    this.$('comment-refresh').onclick = () => actions.refreshComments();
+    this.$('comment-show').onchange = (e) => actions.updateSettings({ showComments: e.target.checked });
+    if (draft) {
+      this.$('comment-send').onclick = () => actions.submitComment({ author: this.$('comment-author').value, text: this.$('comment-text').value });
+      this.$('comment-cancel').onclick = () => actions.cancelComment();
+      this.$('comment-text').onkeydown = (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this.$('comment-send').click();
+      };
+      setTimeout(() => this.$('comment-text') && this.$('comment-text').focus(), 50);
+    }
+    el.querySelectorAll('.comment-row').forEach((row) => {
+      const id = row.dataset.id;
+      row.querySelector('.c-focus').onclick = () => actions.focusComment(id);
+      const resolve = row.querySelector('.c-resolve');
+      if (resolve) resolve.onclick = () => actions.resolveComment(id, !comments.find((c) => c.id === id).resolved);
+      const del = row.querySelector('.c-delete');
+      if (del) del.onclick = () => actions.deleteComment(id);
+    });
   }
 
   // --- Routen-Rechner --------------------------------------------------------------
