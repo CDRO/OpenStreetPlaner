@@ -119,6 +119,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/search", s.search)
 	m.HandleFunc("GET /api/roads", s.roads)
 	m.HandleFunc("GET /tiles/{z}/{x}/{y}", s.tile)
+	m.HandleFunc("GET /tiles/{source}/{z}/{x}/{y}", s.tileFrom)
+	m.HandleFunc("GET /api/tiles/sources", s.tileSources)
 	m.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		s.static.ServeHTTP(w, r)
@@ -652,15 +654,43 @@ func (s *Server) roads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ways)
 }
 
-func (s *Server) tile(w http.ResponseWriter, r *http.Request) {
+func (s *Server) tileSources(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	writeJSON(w, http.StatusOK, s.osm.Sources())
+}
+
+func tileCoords(r *http.Request) (int, int, int, bool) {
 	z, errZ := strconv.Atoi(r.PathValue("z"))
 	x, errX := strconv.Atoi(r.PathValue("x"))
-	y, errY := strconv.Atoi(strings.TrimSuffix(r.PathValue("y"), ".png"))
-	if errZ != nil || errX != nil || errY != nil {
+	y := r.PathValue("y")
+	if i := strings.LastIndexByte(y, '.'); i > 0 {
+		y = y[:i]
+	}
+	yy, errY := strconv.Atoi(y)
+	return z, x, yy, errZ == nil && errX == nil && errY == nil
+}
+
+func (s *Server) tileFrom(w http.ResponseWriter, r *http.Request) {
+	z, x, y, ok := tileCoords(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	data, ctype, err := s.osm.TileFrom(r.Context(), r.PathValue("source"), z, x, y)
+	s.writeTile(w, r, data, ctype, err)
+}
+
+func (s *Server) tile(w http.ResponseWriter, r *http.Request) {
+	z, x, y, ok := tileCoords(r)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	data, ctype, err := s.osm.Tile(r.Context(), z, x, y)
+	s.writeTile(w, r, data, ctype, err)
+}
+
+func (s *Server) writeTile(w http.ResponseWriter, r *http.Request, data []byte, ctype string, err error) {
 	if err != nil {
 		if errors.Is(err, osm.ErrBadRequest) {
 			http.NotFound(w, r)

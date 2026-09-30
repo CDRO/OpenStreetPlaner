@@ -204,6 +204,23 @@ export class UI {
       <label class="check"><input type="checkbox" id="set-show-osm" ${settings.showOsm ? 'checked' : ''}> Geladene OSM-Strassen anzeigen</label>
       <label class="field">Toleranz: <span id="set-tol-val">${settings.snapTolerance}</span> px
         <input type="range" id="set-tol" min="4" max="40" value="${settings.snapTolerance}"></label>`;
+    const sources = actions.tileSources();
+    const bases = sources.filter((t) => !t.overlay);
+    const overlays = sources.filter((t) => t.overlay);
+    const mapBox = this.$('map-settings');
+    mapBox.innerHTML = `
+      <label class="field">Grundkarte<select id="set-basemap">${bases.map((t) => `<option value="${esc(t.id)}"${t.id === settings.basemap ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></label>
+      ${overlays.map((t) => `<label class="check"><input type="checkbox" class="set-overlay" data-id="${esc(t.id)}" ${settings.overlays.includes(t.id) ? 'checked' : ''}> ${esc(t.label)}${t.minZoom ? ` <span class="muted small">(ab Zoom ${t.minZoom})</span>` : ''}</label>`).join('')}
+      ${bases.length <= 1 ? '<p class="muted small">Weitere Kartenquellen lassen sich auf dem Server über TILE_SOURCES einrichten.</p>' : ''}`;
+    this.$('set-basemap').onchange = (e) => actions.updateSettings({ basemap: e.target.value });
+    mapBox.querySelectorAll('.set-overlay').forEach((cb) => {
+      cb.onchange = () => {
+        const on = new Set(settings.overlays);
+        if (cb.checked) on.add(cb.dataset.id);
+        else on.delete(cb.dataset.id);
+        actions.updateSettings({ overlays: Array.from(on) });
+      };
+    });
     this.$('set-snap').onchange = (e) => actions.updateSettings({ snapEnabled: e.target.checked });
     this.$('set-modifier').onchange = (e) => actions.updateSettings({ snapModifier: e.target.value });
     this.$('set-snap-osm').onchange = (e) => actions.updateSettings({ snapOsm: e.target.checked });

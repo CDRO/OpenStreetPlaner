@@ -68,6 +68,7 @@ async function main() {
     pendingComment: loc.comment,
     push: { serverEnabled: false, publicKey: '', subscribed: false, role: null },
     clientId: local.clientId(),
+    tileSources: [{ id: 'osm', label: 'OpenStreetMap', attribution: '© OpenStreetMap-Mitwirkende', maxZoom: 19, minZoom: 0, overlay: false }],
   };
 
   // --- Entwurf bestimmen: Link (/d/<id>) > Arbeitskopie > neuer Entwurf --------
@@ -372,10 +373,12 @@ async function main() {
       const blob = format === 'pdf' ? await exportPdf(map, store.doc, opts) : await exportPng(map, store.doc, opts);
       download(`${safeFilename(store.doc.name)}.${format}`, blob);
     },
+    tileSources: () => state.tileSources,
     updateSettings(patch) {
       Object.assign(settings, patch);
       local.saveSettings(settings);
       state.snapDirty = true;
+      if ('basemap' in patch || 'overlays' in patch) applyTileLayers();
       if ('showOsm' in patch || 'snapOsm' in patch) ensureOsm();
       map.requestRender();
       ui.refreshTools();
@@ -758,6 +761,34 @@ async function main() {
   }
 
 
+  // --- Kartenquellen --------------------------------------------------------------
+  function applyTileLayers() {
+    const sources = state.tileSources;
+    const base = sources.find((t) => t.id === settings.basemap && !t.overlay) || sources.find((t) => !t.overlay);
+    if (!base) return;
+    if (base.id !== settings.basemap) settings.basemap = base.id;
+    map.setBaseLayer({ url: `/tiles/${base.id}/{z}/{x}/{y}.png`, maxNativeZoom: base.maxZoom || 19 });
+    const active = [];
+    for (const t of sources.filter((x) => x.overlay)) {
+      const on = settings.overlays.includes(t.id);
+      map.setTileOverlay(t.id, on ? { url: `/tiles/${t.id}/{z}/{x}/{y}.png`, maxNativeZoom: t.maxZoom || 19, minZoom: t.minZoom || 0, opacity: 0.9 } : null);
+      if (on) active.push(t);
+    }
+    const attributions = [base, ...active].map((t) => t.attribution).filter((a, i, arr) => a && arr.indexOf(a) === i);
+    map.setAttribution(attributions.map((a) => (a.includes('OpenStreetMap') ? '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende' : a)).join(' · '));
+  }
+
+  async function initTileSources() {
+    try {
+      const list = await api.tileSources();
+      if (Array.isArray(list) && list.length) state.tileSources = list;
+    } catch {
+      // Standardquelle bleibt
+    }
+    applyTileLayers();
+    ui.refreshTools();
+  }
+
   function bind(id, token) {
     state.id = id;
     state.token = token;
@@ -892,6 +923,7 @@ async function main() {
   }
   if (state.id) loadComments({ quiet: true });
   initPush();
+  initTileSources();
   schedulePoll();
   window.addEventListener('hashchange', () => {
     const m = /#comment=([0-9a-z]+)/.exec(location.hash);

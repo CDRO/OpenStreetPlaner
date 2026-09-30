@@ -194,6 +194,30 @@ const C = [47.05, 8.3];
   void beforeZone;
   console.log('✓ Zonen');
 
+  // Kartenquellen: Grundkarte wechseln und Parzellen-Overlay einschalten -> Kacheln der Quellen werden angefragt
+  const tileHits = { swisstopo: 0, cadastre: 0, osm: 0 };
+  await page.route(/\/tiles\/(\w[\w-]*\/)?\d+\/\d+\/\d+/, (route) => {
+    const u = route.request().url();
+    for (const k of Object.keys(tileHits)) if (u.includes(`/tiles/${k}/`)) tileHits[k]++;
+    route.abort();
+  });
+  await page.click('.tabs button[data-tab="draw"]');
+  await page.waitForFunction(() => document.querySelectorAll('#set-basemap option').length >= 4);
+  await page.selectOption('#set-basemap', 'swisstopo');
+  await h.settle(500);
+  assert.ok(tileHits.swisstopo > 0, `swisstopo-Kacheln angefragt (${tileHits.swisstopo})`);
+  await page.check('.set-overlay[data-id="cadastre"]');
+  await h.settle(500);
+  assert.ok(tileHits.cadastre > 0, `Parzellen-Overlay angefragt (${tileHits.cadastre})`);
+  assert.ok((await page.textContent('.smap-attribution')).includes('swisstopo'));
+  const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('stadtplaner.settings')));
+  assert.equal(persisted.basemap, 'swisstopo');
+  assert.deepEqual(persisted.overlays, ['cadastre']);
+  await page.uncheck('.set-overlay[data-id="cadastre"]');
+  await page.selectOption('#set-basemap', 'osm');
+  await h.settle(300);
+  console.log('✓ Kartenquellen');
+
   // Kachelweises Laden: grosser Bereich -> mehrere Zellen, jede einmal
   const before = roadsCalls;
   await page.evaluate(() => window.stadtplaner.osm.ensureArea({ south: 47.03, west: 8.28, north: 47.08, east: 8.36 }));

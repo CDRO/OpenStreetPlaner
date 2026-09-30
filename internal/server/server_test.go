@@ -235,6 +235,23 @@ func TestOsmProxiesAndStatic(t *testing.T) {
 	if res.StatusCode != 404 {
 		t.Fatalf("tile zoom 25: %d", res.StatusCode)
 	}
+	client.SetSources([]osm.TileSource{{ID: "alt", Label: "Alt", URL: up.URL + "/alt/{z}/{x}/{y}.png", MaxZoom: 19, Ext: "png"}})
+	res, _ = http.Get(ts.URL + "/tiles/alt/16/34000/23001.png")
+	data, _ = io.ReadAll(res.Body)
+	if res.StatusCode != 200 || string(data) != "PNG" {
+		t.Fatalf("benannte Quelle: %d %q", res.StatusCode, data)
+	}
+	res, _ = http.Get(ts.URL + "/tiles/nope/16/1/1.png")
+	if res.StatusCode != 404 {
+		t.Fatalf("unbekannte Quelle: %d", res.StatusCode)
+	}
+	req, _ = http.NewRequest("GET", ts.URL+"/api/tiles/sources", nil)
+	res, _ = http.DefaultClient.Do(req)
+	var sources []map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&sources)
+	if len(sources) != 1 || sources[0]["id"] != "alt" || sources[0]["url"] != nil {
+		t.Fatalf("Quellenliste: %+v", sources)
+	}
 
 	for _, path := range []string{"/", "/d/abcdefghjkmn"} {
 		res, _ = http.Get(ts.URL + path)

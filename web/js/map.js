@@ -12,10 +12,10 @@ const D2R = Math.PI / 180;
 export class SlippyMap {
   constructor(container, opts = {}) {
     this.container = container;
-    this.tileUrl = opts.tileUrl || '/tiles/{z}/{x}/{y}.png';
     this.minZoom = opts.minZoom ?? 2;
     this.maxZoom = opts.maxZoom ?? 20;
-    this.maxNativeZoom = opts.maxNativeZoom ?? 19;
+    // Kachel-Ebenen: [0] ist die Grundkarte, danach Overlays (z. B. Parzellen).
+    this.layers = [{ id: 'base', url: opts.tileUrl || '/tiles/{z}/{x}/{y}.png', maxNativeZoom: opts.maxNativeZoom ?? 19, minZoom: 0, opacity: 1 }];
     this.center = project(opts.center || [46.8, 8.23]);
     this.zoom = this.clampZoom(opts.zoom ?? 8);
     this.listeners = new Map();
@@ -232,7 +232,10 @@ export class SlippyMap {
   prefetchTiles(view, timeoutMs = 20000) {
     const tiles = this.withView(view, () => {
       const list = [];
-      this.eachVisibleTile((z, x, y, key) => list.push(this.getTile(z, x, y, key)));
+      for (const layer of this.layers) {
+        if (this.zoom < layer.minZoom) continue;
+        this.eachVisibleTile((z, x, y, key) => list.push(this.getTile(layer, z, x, y, key)), layer);
+      }
       return list;
     });
     const all = Promise.all(tiles.map((t) => t.done));
@@ -278,6 +281,39 @@ export class SlippyMap {
   setOverlay(fn) {
     this.overlay = fn;
     this.requestRender();
+  }
+
+  /** Grundkarte wechseln: { url, maxNativeZoom }. */
+  setBaseLayer({ url, maxNativeZoom = 19 }) {
+    const base = this.layers[0];
+    if (base.url === url && base.maxNativeZoom === maxNativeZoom) return;
+    this.layers[0] = { id: 'base', url, maxNativeZoom, minZoom: 0, opacity: 1 };
+    this.dropTiles('base');
+    this.requestRender();
+  }
+
+  /** Overlay-Kachelebene setzen (config null entfernt sie). config: { url, maxNativeZoom, minZoom, opacity }. */
+  setTileOverlay(id, config) {
+    this.layers = this.layers.filter((l) => l.id !== id);
+    this.dropTiles(id);
+    if (config) this.layers.push({ id, url: config.url, maxNativeZoom: config.maxNativeZoom ?? 19, minZoom: config.minZoom ?? 0, opacity: config.opacity ?? 1 });
+    this.requestRender();
+  }
+
+  dropTiles(layerId) {
+    for (const [k, t] of this.tiles) {
+      if (k.startsWith(layerId + '|')) {
+        if (!t.ok && !t.err) {
+          t.err = true;
+          t.img.src = '';
+        }
+        this.tiles.delete(k);
+      }
+    }
+  }
+
+  setAttribution(html) {
+    if (this.attributionEl) this.attributionEl.innerHTML = html;
   }
 
   // --- Zeichnen --------------------------------------------------------------
@@ -326,8 +362,8 @@ export class SlippyMap {
   }
 
   /** Ruft fn(z, x, y, key, sx, sy, size) für jede sichtbare Kachel der aktuellen Ansicht auf. */
-  eachVisibleTile(fn) {
-    const z = Math.max(0, Math.min(this.maxNativeZoom, Math.round(this.zoom)));
+  eachVisibleTile(fn, layer = this.layers[0]) {
+    const z = Math.max(0, Math.min(layer.maxNativeZoom, Math.round(this.zoom)));
     const scale = Math.pow(2, this.zoom - z);
     const n = 1 << z;
     const worldPx = TILE * n;
@@ -343,7 +379,7 @@ export class SlippyMap {
         const sx = this.width / 2 + (tx * TILE - cx) * scale;
         const sy = this.height / 2 + (ty * TILE - cy) * scale;
         const wx = ((tx % n) + n) % n;
-        fn(z, wx, ty, `${z}/${wx}/${ty}`, sx, sy, tileSize);
+        fn(z, wx, ty, `${layer.id}|${z}/${wx}/${ty}`, sx, sy, tileSize);
       }
     }
   }
@@ -351,28 +387,34 @@ export class SlippyMap {
   drawTiles(ctx) {
     const visible = new Set();
     ctx.imageSmoothingEnabled = true;
-    this.eachVisibleTile((z, x, y, key, sx, sy, tileSize) => {
-      visible.add(key);
-      const t = this.getTile(z, x, y, key);
-      const dx = Math.round(sx);
-      const dy = Math.round(sy);
-      const dw = Math.round(sx + tileSize) - dx;
-      const dh = Math.round(sy + tileSize) - dy;
-      if (t.ok) {
-        ctx.drawImage(t.img, dx, dy, dw, dh);
-      } else {
-        this.drawFallback(ctx, z, x, y, dx, dy, dw, dh);
-      }
-    });
+    for (const layer of this.layers) {
+      if (this.zoom < layer.minZoom) continue;
+      ctx.save();
+      ctx.globalAlpha = layer.opacity;
+      this.eachVisibleTile((z, x, y, key, sx, sy, tileSize) => {
+        visible.add(key);
+        const t = this.getTile(layer, z, x, y, key);
+        const dx = Math.round(sx);
+        const dy = Math.round(sy);
+        const dw = Math.round(sx + tileSize) - dx;
+        const dh = Math.round(sy + tileSize) - dy;
+        if (t.ok) {
+          ctx.drawImage(t.img, dx, dy, dw, dh);
+        } else if (layer === this.layers[0]) {
+          this.drawFallback(ctx, layer, z, x, y, dx, dy, dw, dh);
+        }
+      }, layer);
+      ctx.restore();
+    }
     this.pruneTiles(visible);
   }
 
-  drawFallback(ctx, z, x, y, dx, dy, dw, dh) {
+  drawFallback(ctx, layer, z, x, y, dx, dy, dw, dh) {
     for (let d = 1; d <= 5 && z - d >= 0; d++) {
       const f = 1 << d;
       const px = Math.floor(x / f);
       const py = Math.floor(y / f);
-      const t = this.tiles.get(`${z - d}/${px}/${py}`);
+      const t = this.tiles.get(`${layer.id}|${z - d}/${px}/${py}`);
       if (t && t.ok) {
         const sub = TILE / f;
         ctx.drawImage(t.img, (x - px * f) * sub, (y - py * f) * sub, sub, sub, dx, dy, dw, dh);
@@ -383,7 +425,7 @@ export class SlippyMap {
     ctx.fillRect(dx, dy, dw, dh);
   }
 
-  getTile(z, x, y, key) {
+  getTile(layer, z, x, y, key) {
     let t = this.tiles.get(key);
     if (!t) {
       const img = new Image();
@@ -399,7 +441,7 @@ export class SlippyMap {
           resolve();
         };
       });
-      img.src = this.tileUrl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+      img.src = layer.url.replace('{z}', z).replace('{x}', x).replace('{y}', y);
       this.tiles.set(key, t);
     }
     t.seq = ++this.tileSeq;
@@ -448,6 +490,7 @@ export class SlippyMap {
     attr.className = 'smap-attribution';
     attr.innerHTML = attribution;
     this.container.appendChild(attr);
+    this.attributionEl = attr;
   }
 
   updateScale() {

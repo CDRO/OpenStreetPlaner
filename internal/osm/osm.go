@@ -132,6 +132,8 @@ type Client struct {
 	nomLast     time.Time
 	tileMu      sync.Mutex
 	tileInFly   map[string]chan struct{}
+	sources     map[string]TileSource
+	sourceOrder []string
 }
 
 func New(tileDir string) *Client {
@@ -301,18 +303,44 @@ func (c *Client) Roads(ctx context.Context, b BBox) ([]Way, error) {
 	return out, nil
 }
 
-// Tile liefert eine Kachel aus dem Platten-Cache oder vom Kachel-Server.
+// Tile liefert eine Kachel der Standardquelle (TileURL) aus dem Platten-Cache oder vom Kachel-Server.
 func (c *Client) Tile(ctx context.Context, z, x, y int) ([]byte, string, error) {
-	if z < 0 || z > MaxTileZoom {
+	return c.tile(ctx, TileSource{ID: "", URL: c.TileURL, MaxZoom: MaxTileZoom, Ext: "png"}, z, x, y)
+}
+
+// TileFrom liefert eine Kachel einer benannten Quelle.
+func (c *Client) TileFrom(ctx context.Context, sourceID string, z, x, y int) ([]byte, string, error) {
+	src, ok := c.source(sourceID)
+	if !ok {
+		return nil, "", fmt.Errorf("%w: unbekannte Kartenquelle %q", ErrBadRequest, sourceID)
+	}
+	return c.tile(ctx, src, z, x, y)
+}
+
+func (c *Client) tile(ctx context.Context, src TileSource, z, x, y int) ([]byte, string, error) {
+	maxZoom := src.MaxZoom
+	if maxZoom <= 0 || maxZoom > 22 {
+		maxZoom = MaxTileZoom
+	}
+	if z < 0 || z > maxZoom {
 		return nil, "", fmt.Errorf("%w: Zoom %d", ErrBadRequest, z)
 	}
 	n := 1 << uint(z)
 	if x < 0 || x >= n || y < 0 || y >= n {
 		return nil, "", fmt.Errorf("%w: Kachel ausserhalb", ErrBadRequest)
 	}
-	path := filepath.Join(c.TileDir, strconv.Itoa(z), strconv.Itoa(x), strconv.Itoa(y)+".png")
+	ext := src.Ext
+	if ext == "" {
+		ext = "png"
+	}
+	ctype := "image/" + ext
+	dir := c.TileDir
+	if src.ID != "" && dir != "" {
+		dir = filepath.Join(dir, src.ID)
+	}
+	path := filepath.Join(dir, strconv.Itoa(z), strconv.Itoa(x), strconv.Itoa(y)+"."+ext)
 	if data, ok := c.readTileCache(path); ok {
-		return data, "image/png", nil
+		return data, ctype, nil
 	}
 	key := path
 	// Gleichzeitige Anfragen derselben Kachel nur einmal nach oben schicken.
@@ -325,7 +353,7 @@ func (c *Client) Tile(ctx context.Context, z, x, y int) ([]byte, string, error) 
 			return nil, "", ctx.Err()
 		}
 		if data, ok := c.readTileCache(path); ok {
-			return data, "image/png", nil
+			return data, ctype, nil
 		}
 	} else {
 		ch := make(chan struct{})
@@ -338,17 +366,17 @@ func (c *Client) Tile(ctx context.Context, z, x, y int) ([]byte, string, error) 
 			close(ch)
 		}()
 	}
-	u := strings.NewReplacer("{z}", strconv.Itoa(z), "{x}", strconv.Itoa(x), "{y}", strconv.Itoa(y)).Replace(c.TileURL)
+	u := expandTileURL(src.URL, z, x, y)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	data, ctype, err := c.do(req)
+	data, upstreamType, err := c.do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("Kachel laden: %w", err)
 	}
-	if ctype == "" {
-		ctype = "image/png"
+	if strings.HasPrefix(upstreamType, "image/") {
+		ctype = upstreamType
 	}
 	if c.TileDir != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {

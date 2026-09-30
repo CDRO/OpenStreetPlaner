@@ -40,6 +40,7 @@ export const api = {
   resolveComment: (id, cid, resolved, { token, commentToken } = {}) => request('PATCH', `/api/drafts/${encodeURIComponent(id)}/comments/${encodeURIComponent(cid)}`, { body: { resolved }, token, commentToken }),
   deleteComment: (id, cid, { token, commentToken } = {}) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/comments/${encodeURIComponent(cid)}`, { token, commentToken }),
   pushKey: () => request('GET', '/api/push/key'),
+  tileSources: () => request('GET', '/api/tiles/sources'),
   setPushSub: (id, body, token) => request('PUT', `/api/drafts/${encodeURIComponent(id)}/push`, { body, token }),
   deletePushSub: (id, clientId) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/push?clientId=${encodeURIComponent(clientId)}`),
   search: (q) => request('GET', `/api/search?q=${encodeURIComponent(q)}&limit=8`),

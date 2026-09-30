@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -111,5 +112,59 @@ func TestTileProxyCachesOnDisk(t *testing.T) {
 	}
 	if _, _, err := c.Tile(ctx, 3, 8, 0); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("x ausserhalb sollte abgelehnt werden: %v", err)
+	}
+}
+
+func TestTileSourcesAndWMSBBox(t *testing.T) {
+	minx, miny, maxx, maxy := TileBBox3857(0, 0, 0)
+	if minx != -mercatorHalf || maxx != mercatorHalf || miny != -mercatorHalf || maxy != mercatorHalf {
+		t.Fatalf("Weltkachel: %v %v %v %v", minx, miny, maxx, maxy)
+	}
+	minx, miny, maxx, maxy = TileBBox3857(1, 1, 0)
+	if minx != 0 || maxx != mercatorHalf || miny != 0 || maxy != mercatorHalf {
+		t.Fatalf("Kachel 1/1/0: %v %v %v %v", minx, miny, maxx, maxy)
+	}
+	var gotURL string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("JPG"))
+	}))
+	defer up.Close()
+	c := New(t.TempDir())
+	c.SetSources(DefaultTileSources())
+	c.SetSources([]TileSource{
+		{ID: "wms", Label: "WMS", URL: up.URL + "/wms?BBOX={bbox}&SIZE=256", MaxZoom: 20, Overlay: true, Ext: "png"},
+		{ID: "osm", Label: "OSM lokal", URL: up.URL + "/{z}/{x}/{y}.jpeg", MaxZoom: 19, Ext: "jpeg"},
+	})
+	srcs := c.Sources()
+	if len(srcs) != 6 || srcs[0].ID != "osm" || srcs[0].Label != "OSM lokal" || srcs[0].URL != "" || !srcs[5].Overlay {
+		t.Fatalf("Quellen: %+v", srcs)
+	}
+	data, ctype, err := c.TileFrom(context.Background(), "wms", 1, 1, 0)
+	if err != nil || string(data) != "JPG" || ctype != "image/jpeg" {
+		t.Fatalf("WMS-Kachel: %v %q %s", err, data, ctype)
+	}
+	if !strings.Contains(gotURL, "BBOX=0.0000,0.0000,20037508.3428,20037508.3428") {
+		t.Fatalf("BBOX nicht eingesetzt: %s", gotURL)
+	}
+	if _, _, err := c.TileFrom(context.Background(), "osm", 5, 3, 4); err != nil || !strings.HasSuffix(gotURL, "/5/3/4.jpeg") {
+		t.Fatalf("z/x/y-Vorlage: %v %s", err, gotURL)
+	}
+	if _, _, err := c.TileFrom(context.Background(), "nope", 1, 0, 0); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("unbekannte Quelle: %v", err)
+	}
+	if _, _, err := c.TileFrom(context.Background(), "osm", 20, 0, 0); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("Zoom über MaxZoom der Quelle: %v", err)
+	}
+	if _, err := filepath.Glob(filepath.Join(c.TileDir, "osm", "5", "3", "4.jpeg")); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseTileSources(`[{"id":"x","label":"X","url":"https://t/{z}/{x}/{y}.png"}]`)
+	if err != nil || parsed[0].MaxZoom != 19 || parsed[0].Ext != "png" {
+		t.Fatalf("ParseTileSources: %v %+v", err, parsed)
+	}
+	if _, err := ParseTileSources(`[{"id":"x"}]`); err == nil {
+		t.Fatalf("Quelle ohne URL akzeptiert")
 	}
 }

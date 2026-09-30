@@ -16,6 +16,8 @@ export const DEFAULT_SETTINGS = {
   snapTolerance: 14,
   showComments: true,
   author: '', // Name für Kommentare
+  basemap: 'osm',
+  overlays: [], // IDs eingeschalteter Kachel-Overlays (z. B. Parzellen)
 };
 
 export class LocalState {

@@ -9,7 +9,7 @@ async function openPage(browser, url, errors, { width = 1400, height = 900 } = {
     if (m.type() === 'error' && !/net::|Failed to load resource|ERR_|502|404/.test(m.text())) errors.push('console: ' + m.text());
   });
   page.on('dialog', async (d) => { await d.accept(d.defaultValue() || ''); });
-  await page.route('**/tiles/**', (route) => route.abort());
+  await page.route(/\/tiles\/(\w[\w-]*\/)?\d+\/\d+\/\d+/, (route) => route.abort()); // Kacheln, nicht /api/tiles/sources
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForSelector('.smap-canvas');
   await page.waitForTimeout(300);

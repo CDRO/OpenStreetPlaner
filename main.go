@@ -56,6 +56,16 @@ func main() {
 
 	client := osm.New(filepath.Join(*dataDir, "tiles"))
 	client.TileURL = *tileURL
+	sources := osm.DefaultTileSources()
+	sources[0].URL = *tileURL // TILE_URL bleibt die Standardquelle "osm"
+	client.SetSources(sources)
+	if extra := os.Getenv("TILE_SOURCES"); extra != "" {
+		list, err := osm.ParseTileSources(extra)
+		if err != nil {
+			logger.Fatalf("%v", err)
+		}
+		client.SetSources(list)
+	}
 	client.NominatimURL = *nominatimURL
 	client.OverpassURL = *overpassURL
 	client.UserAgent = *userAgent

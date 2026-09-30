@@ -30,7 +30,7 @@ go run . -data ./data
 
 | Bereich | Was geht |
 |---|---|
-| Karte | OSM-Kacheln über den eigenen Proxy, Massstab, Zoom 2–20, Maus, Touch (Pinch), Tastatur |
+| Karte | Kacheln über den eigenen Proxy: OpenStreetMap, swisstopo Landeskarte (farbig, grau), Luftbild, dazu das Parzellen-Overlay der amtlichen Vermessung (WMS, ab Zoom 15). Eigene Quellen über `TILE_SOURCES`. Massstab, Zoom 2–20, Maus, Touch (Pinch), Tastatur |
 | Suche | Ort/Adresse wie in einer Karten-App, oder direkt `lat, lng`; Button „Mein Standort“ |
 | Ebenen | Beliebig viele, ein-/ausblenden, umbenennen, einfärben, sortieren; jedes Element gehört zu einer Ebene |
 | Strassen | Linienzug zeichnen (Klick für Punkte, Doppelklick/Enter/Rechtsklick beendet), Strassentyp, Status *Neu / Bestehend / Rückbau*, Einbahn mit Pfeilen, Beschriftung ab Zoom 16 |
@@ -65,7 +65,8 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 |---|---|---|
 | `ADDR` | `:8080` | Adresse, auf der der Server lauscht |
 | `DATA_DIR` | `/data` (Docker) bzw. `./data` | Entwürfe (`drafts/`) und Kachel-Cache (`tiles/`) |
-| `TILE_URL` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Kachel-Vorlage, z. B. eigener Tile-Server |
+| `TILE_URL` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Kachel-Vorlage der Standardquelle `osm`, z. B. eigener Tile-Server |
+| `TILE_SOURCES` | leer | JSON-Liste weiterer oder ersetzender Kartenquellen: `[{"id":"…","label":"…","url":"…{z}/{x}/{y}… oder …{bbox}…","attribution":"…","maxZoom":19,"minZoom":0,"overlay":false}]`. `{bbox}` wird zur EPSG:3857-Box der Kachel (für WMS) |
 | `NOMINATIM_URL` | `https://nominatim.openstreetmap.org/search` | Geocoder |
 | `OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Strassengeometrie |
 | `USER_AGENT` | `Stadtplaner/1.0 (+…)` | User-Agent gegenüber den OSM-Diensten – bitte auf die eigene Installation anpassen |
@@ -107,7 +108,9 @@ speichert nur einen Hash davon).
 | `GET` | `/sw.js` | Service Worker (Push-Empfang, Klick öffnet den Kommentar) |
 | `GET` | `/api/search?q=` | Ortssuche |
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
-| `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache |
+| `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache (Standardquelle) |
+| `GET` | `/tiles/{source}/{z}/{x}/{y}.png` | Kachel einer benannten Quelle |
+| `GET` | `/api/tiles/sources` | Verfügbare Kartenquellen (ohne Upstream-URLs) |
 | `GET` | `/healthz` | Lebenszeichen |
 
 Der Server prüft eingehende Entwürfe (Struktur, Grenzen, Aufzählungswerte)
@@ -198,6 +201,11 @@ Die CI (`.github/workflows/ci.yml`) führt gofmt, vet, Go-Tests, die
 Frontend-Unit-Tests und einen Docker-Build mit Smoke-Test aus.
 
 ## Grenzen
+
+- Die swisstopo-Dienste (WMTS `wmts.geo.admin.ch`, WMS `wms.geo.admin.ch`)
+  sind frei nutzbar, ihre Ebenennamen stammen aus der Dokumentation von
+  api3.geo.admin.ch und sollten beim Ausrollen einmal geprüft werden; sie
+  decken nur die Schweiz ab.
 
 - Web-Push braucht HTTPS (oder localhost) und einen Browser mit Push-
   Unterstützung; auf iOS erst, wenn die Seite zum Home-Bildschirm hinzugefügt
