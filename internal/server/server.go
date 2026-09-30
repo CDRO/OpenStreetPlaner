@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"stadtplaner/internal/model"
 	"stadtplaner/internal/osm"
+	"stadtplaner/internal/push"
 	"stadtplaner/internal/store"
 )
 
@@ -29,10 +31,14 @@ type Server struct {
 	store   *store.Store
 	osm     *osm.Client
 	index   []byte
+	sw      []byte
 	static  http.Handler
 	mux     *http.ServeMux
 	logger  *log.Logger
 	limiter *limiter
+	push    *push.Sender
+	pushKey string
+	pushWG  sync.WaitGroup
 }
 
 // RateLimit konfiguriert die Drosselung schreibender API-Aufrufe pro Client.
@@ -52,13 +58,29 @@ func New(st *store.Store, osmClient *osm.Client, webFS fs.FS, logger *log.Logger
 	if err != nil {
 		return nil, err
 	}
+	sw, _ := fs.ReadFile(sub, "sw.js") // optional: ohne Service Worker kein Push
 	if logger == nil {
 		logger = log.Default()
 	}
-	s := &Server{store: st, osm: osmClient, index: index, logger: logger, mux: http.NewServeMux()}
+	s := &Server{store: st, osm: osmClient, index: index, sw: sw, logger: logger, mux: http.NewServeMux()}
 	s.static = http.StripPrefix("/static/", http.FileServerFS(sub))
 	s.routes()
 	return s, nil
+}
+
+// SetPush aktiviert Web-Push-Benachrichtigungen (nil schaltet sie aus).
+func (s *Server) SetPush(sender *push.Sender) {
+	s.push = sender
+	if sender != nil {
+		s.pushKey = sender.Keys.PublicKey
+	} else {
+		s.pushKey = ""
+	}
+}
+
+// WaitPush wartet auf laufende Zustellungen (für Tests und sauberes Beenden).
+func (s *Server) WaitPush() {
+	s.pushWG.Wait()
 }
 
 // SetRateLimit aktiviert die Drosselung; PerMinute <= 0 schaltet sie aus.
@@ -90,6 +112,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/drafts/{id}/comments", s.addComment)
 	m.HandleFunc("PATCH /api/drafts/{id}/comments/{cid}", s.resolveComment)
 	m.HandleFunc("DELETE /api/drafts/{id}/comments/{cid}", s.deleteComment)
+	m.HandleFunc("GET /api/push/key", s.pushKeyHandler)
+	m.HandleFunc("PUT /api/drafts/{id}/push", s.setPushSub)
+	m.HandleFunc("DELETE /api/drafts/{id}/push", s.deletePushSub)
+	m.HandleFunc("GET /sw.js", s.serveWorker)
 	m.HandleFunc("GET /api/search", s.search)
 	m.HandleFunc("GET /api/roads", s.roads)
 	m.HandleFunc("GET /tiles/{z}/{x}/{y}", s.tile)
@@ -388,21 +414,171 @@ func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var in struct {
-		Lat    float64 `json:"lat"`
-		Lng    float64 `json:"lng"`
-		Author string  `json:"author"`
-		Text   string  `json:"text"`
+		Lat      float64 `json:"lat"`
+		Lng      float64 `json:"lng"`
+		Author   string  `json:"author"`
+		Text     string  `json:"text"`
+		ParentID string  `json:"parentId"`
+		ClientID string  `json:"clientId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, errors.Join(store.ErrBadComment, errors.New("kein gültiges JSON")))
 		return
 	}
-	c, token, err := s.store.AddComment(id, store.Comment{Lat: in.Lat, Lng: in.Lng, Author: in.Author, Text: in.Text})
+	if in.ParentID != "" && !store.ValidID(in.ParentID) {
+		writeError(w, store.ErrBadComment)
+		return
+	}
+	c, token, parent, err := s.store.AddComment(id, store.Comment{Lat: in.Lat, Lng: in.Lng, Author: in.Author, Text: in.Text, ParentID: in.ParentID, ClientID: in.ClientID})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	s.notifyComment(id, c, parent, in.ClientID)
 	writeJSON(w, http.StatusCreated, map[string]any{"comment": c, "commentToken": token})
+}
+
+// --- Push-Benachrichtigungen -------------------------------------------------------
+
+func (s *Server) pushKeyHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": s.push != nil, "publicKey": s.pushKey})
+}
+
+func (s *Server) setPushSub(w http.ResponseWriter, r *http.Request) {
+	id, err := draftID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if s.push == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "Push-Benachrichtigungen sind auf diesem Server nicht aktiviert"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	var in struct {
+		ClientID     string            `json:"clientId"`
+		Subscription push.Subscription `json:"subscription"`
+		Role         string            `json:"role"`
+		Threads      []string          `json:"threads"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || !push.ValidSubscription(in.Subscription) {
+		writeError(w, errors.Join(store.ErrBadComment, errors.New("Abonnement unvollständig")))
+		return
+	}
+	role := "replies"
+	if in.Role == "all" {
+		if err := s.store.Authorize(id, r.Header.Get(editTokenHeader)); err != nil {
+			writeError(w, err)
+			return
+		}
+		role = "all"
+	}
+	threads := make([]string, 0, len(in.Threads))
+	for _, t := range in.Threads {
+		if store.ValidID(t) {
+			threads = append(threads, t)
+		}
+	}
+	sub := store.PushSub{ClientID: in.ClientID, Endpoint: in.Subscription.Endpoint, P256dh: in.Subscription.Keys.P256dh, Auth: in.Subscription.Keys.Auth, Role: role, Threads: threads}
+	if err := s.store.SetPushSub(id, sub); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"role": role, "threads": threads})
+}
+
+func (s *Server) deletePushSub(w http.ResponseWriter, r *http.Request) {
+	id, err := draftID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	clientID := r.URL.Query().Get("clientId")
+	if clientID == "" {
+		writeError(w, errors.Join(store.ErrBadComment, errors.New("clientId fehlt")))
+		return
+	}
+	if err := s.store.DeletePushSub(id, clientID, ""); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) serveWorker(w http.ResponseWriter, r *http.Request) {
+	if s.sw == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(s.sw)
+}
+
+// notifyComment schickt Push-Nachrichten an die Abonnenten des Entwurfs (asynchron).
+func (s *Server) notifyComment(draftID string, c store.Comment, parent *store.Comment, clientID string) {
+	if s.push == nil {
+		return
+	}
+	subs, err := s.store.PushSubs(draftID)
+	if err != nil || len(subs) == 0 {
+		return
+	}
+	_, meta, err := s.store.Get(draftID)
+	if err != nil {
+		return
+	}
+	topID := c.ID
+	title := "Neuer Kommentar: " + meta.Name
+	if parent != nil {
+		topID = parent.ID
+		title = "Antwort zu einem Kommentar: " + meta.Name
+	}
+	text := c.Text
+	if len(text) > 160 {
+		text = text[:160] + "…"
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"title": title,
+		"body":  c.Author + ": " + text,
+		"url":   "/d/" + draftID + "#comment=" + topID,
+		"tag":   "comment-" + c.ID,
+	})
+	for _, sub := range subs {
+		if clientID != "" && sub.ClientID == clientID {
+			continue
+		}
+		wanted := sub.Role == "all"
+		if !wanted && parent != nil {
+			for _, t := range sub.Threads {
+				if t == parent.ID {
+					wanted = true
+					break
+				}
+			}
+		}
+		if !wanted {
+			continue
+		}
+		s.pushWG.Add(1)
+		go func(sub store.PushSub) {
+			defer s.pushWG.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			var ps push.Subscription
+			ps.Endpoint = sub.Endpoint
+			ps.Keys.P256dh = sub.P256dh
+			ps.Keys.Auth = sub.Auth
+			err := s.push.Send(ctx, ps, payload)
+			switch {
+			case err == nil:
+			case errors.Is(err, push.ErrGone), errors.Is(err, push.ErrBadSub):
+				_ = s.store.DeletePushSub(draftID, "", sub.Endpoint)
+			default:
+				s.logger.Printf("push an %s fehlgeschlagen: %v", sub.Endpoint, err)
+			}
+		}(sub)
+	}
 }
 
 func (s *Server) resolveComment(w http.ResponseWriter, r *http.Request) {

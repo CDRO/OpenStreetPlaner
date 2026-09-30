@@ -14,6 +14,9 @@ import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
 import { computeRoutes } from './routing.js';
 import { exportPdf, exportPng } from './export.js';
+import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
+
+const POLL_INTERVAL_MS = 45000;
 
 const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features });
 
@@ -35,12 +38,14 @@ function parseLocation() {
   const m = /^\/d\/([0-9a-z]{6,32})\/?$/.exec(location.pathname);
   const id = m ? m[1] : null;
   const t = /(?:^#|&)edit=([0-9a-f]{16,128})/.exec(location.hash);
-  return { id, token: t ? t[1] : null };
+  const c = /(?:^#|&)comment=([0-9a-z]{6,32})/.exec(location.hash);
+  return { id, token: t ? t[1] : null, comment: c ? c[1] : null };
 }
 
 async function main() {
   const local = new LocalState();
   const settings = local.loadSettings();
+  const loc = parseLocation();
   const state = {
     id: null,
     token: null,
@@ -58,13 +63,17 @@ async function main() {
     comments: [],
     activeCommentId: null,
     commentsLoadedFor: null,
+    knownCommentIds: null,
+    replyTo: null,
+    pendingComment: loc.comment,
+    push: { serverEnabled: false, publicKey: '', subscribed: false, role: null },
+    clientId: local.clientId(),
   };
 
   // --- Entwurf bestimmen: Link (/d/<id>) > Arbeitskopie > neuer Entwurf --------
   let doc = null;
   let openedFromLink = false;
   let loadError = null;
-  const loc = parseLocation();
   if (loc.id) {
     try {
       const res = await api.getDraft(loc.id);
@@ -78,6 +87,8 @@ async function main() {
         } catch {
           loadError = 'Der Bearbeitungs-Link ist ungültig; der Entwurf wird nur angezeigt.';
         }
+        history.replaceState(null, '', `/d/${loc.id}`);
+      } else if (loc.comment) {
         history.replaceState(null, '', `/d/${loc.id}`);
       }
       state.token = local.tokenFor(loc.id);
@@ -195,24 +206,6 @@ async function main() {
     commentDraft: tools.commentDraft,
   }));
 
-  // --- Kommentare ---------------------------------------------------------------
-  async function loadComments() {
-    if (!state.id) {
-      state.comments = [];
-      state.commentsLoadedFor = null;
-      return;
-    }
-    try {
-      state.comments = await api.comments(state.id);
-      state.commentsLoadedFor = state.id;
-    } catch (e) {
-      if (e.status !== 404) ui.toast(`Kommentare: ${e.message}`, 'error');
-      state.comments = [];
-    }
-    map.requestRender();
-    ui.refreshComments();
-  }
-
   // --- Routen-Rechner ----------------------------------------------------------
   function recomputeRoutes() {
     clearTimeout(state.routeTimer);
@@ -266,24 +259,82 @@ async function main() {
     },
     comments: () => state.comments,
     activeCommentId: () => state.activeCommentId,
+    replyTo: () => state.replyTo,
     canManageComment: (c) => !!state.token || !!local.commentToken(c.id),
     refreshComments: () => loadComments(),
-    async submitComment({ author, text }) {
+    startReply(id) {
+      state.replyTo = id;
+      state.activeCommentId = id;
+      ui.refreshComments();
+      map.requestRender();
+    },
+    cancelReply() {
+      state.replyTo = null;
+      ui.refreshComments();
+    },
+    async submitComment({ author, text, parentId = null }) {
       const draft = tools.commentDraft;
-      if (!draft || !state.id) return;
+      if (!state.id || (!parentId && !draft)) return;
       const clean = text.trim();
       if (!clean) return ui.toast('Bitte einen Text eingeben.', 'error');
       if (author.trim() !== settings.author) actions.updateSettings({ author: author.trim() });
       try {
-        const res = await api.addComment(state.id, { lat: draft.latlng[0], lng: draft.latlng[1], author: author.trim(), text: clean });
+        const body = { author: author.trim(), text: clean, clientId: state.clientId };
+        if (parentId) body.parentId = parentId;
+        else {
+          body.lat = draft.latlng[0];
+          body.lng = draft.latlng[1];
+        }
+        const res = await api.addComment(state.id, body);
         local.rememberCommentToken(res.comment.id, res.commentToken);
-        tools.clearCommentDraft();
-        state.activeCommentId = res.comment.id;
-        await loadComments();
-        ui.toast('Kommentar gespeichert.', 'ok');
+        if (parentId) state.replyTo = null;
+        else tools.clearCommentDraft();
+        state.activeCommentId = parentId || res.comment.id;
+        if (state.knownCommentIds) state.knownCommentIds.add(res.comment.id);
+        await loadComments({ quiet: true });
+        ui.toast(parentId ? 'Antwort gespeichert.' : 'Kommentar gespeichert.', 'ok');
+        if (!parentId && state.push.subscribed && state.push.role === 'replies') actions.enablePush({ silent: true });
       } catch (e) {
-        ui.toast(`Kommentar fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${parentId ? 'Antwort' : 'Kommentar'} fehlgeschlagen: ${e.message}`, 'error', 6000);
       }
+    },
+    pushStatus: () => ({ ...state.push, supported: pushSupported(), permission: permissionState() }),
+    async enablePush({ silent = false } = {}) {
+      if (!state.id || !state.push.serverEnabled) return;
+      try {
+        const subscription = await pushSubscribe(state.push.publicKey);
+        const role = state.token ? 'all' : 'replies';
+        const res = await api.setPushSub(state.id, { clientId: state.clientId, subscription, role, threads: local.ownCommentIds() }, state.token);
+        local.setPushState(state.id, { role: res.role });
+        state.push.subscribed = true;
+        state.push.role = res.role;
+        if (!silent) ui.toast(res.role === 'all' ? 'Du wirst bei neuen Kommentaren benachrichtigt.' : 'Du wirst bei Antworten auf deine Kommentare benachrichtigt.', 'ok', 5000);
+      } catch (e) {
+        state.push.subscribed = false;
+        if (!silent) ui.toast(`Benachrichtigungen: ${e.message}`, 'error', 7000);
+      }
+      ui.refreshComments();
+    },
+    async disablePush() {
+      if (!state.id) return;
+      try {
+        await api.deletePushSub(state.id, state.clientId);
+      } catch {
+        // Server-Abo fehlt schon, egal
+      }
+      local.setPushState(state.id, null);
+      state.push.subscribed = false;
+      state.push.role = null;
+      // Das Browser-Abo bleibt für andere Entwürfe bestehen; ohne Server-Eintrag kommt nichts mehr an.
+      const others = local.listDrafts().some((d) => d.id !== state.id && local.pushState(d.id));
+      if (!others) {
+        try {
+          await pushUnsubscribe();
+        } catch {
+          // egal
+        }
+      }
+      ui.refreshComments();
     },
     cancelComment() {
       tools.clearCommentDraft();
@@ -624,14 +675,96 @@ async function main() {
 
   tools.onCommentSelect = (id) => actions.focusComment(id);
 
+  // --- Kommentare ---------------------------------------------------------------
+  async function loadComments({ quiet = false } = {}) {
+    if (!state.id) {
+      state.comments = [];
+      state.commentsLoadedFor = null;
+      state.knownCommentIds = null;
+      return;
+    }
+    try {
+      const list = await api.comments(state.id);
+      if (state.knownCommentIds && state.commentsLoadedFor === state.id) {
+        const fresh = list.filter((c) => !state.knownCommentIds.has(c.id) && !local.commentToken(c.id));
+        if (fresh.length && !quiet) {
+          const c = fresh[fresh.length - 1];
+          ui.toast(`${fresh.length === 1 ? 'Neuer Kommentar' : `${fresh.length} neue Kommentare`}: ${c.author}: ${c.text.slice(0, 60)}${c.text.length > 60 ? '…' : ''}`, 'info', 6000);
+        }
+      }
+      state.comments = list;
+      state.knownCommentIds = new Set(list.map((c) => c.id));
+      state.commentsLoadedFor = state.id;
+    } catch (e) {
+      if (e.status !== 404 && !quiet) ui.toast(`Kommentare: ${e.message}`, 'error');
+      state.comments = [];
+    }
+    map.requestRender();
+    ui.refreshComments();
+    if (state.pendingComment) {
+      const id = state.pendingComment;
+      state.pendingComment = null;
+      if (state.comments.some((c) => c.id === id)) actions.focusComment(id);
+    }
+  }
+
+  let pollTimer = null;
+  function schedulePoll() {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(async () => {
+      if (state.id && document.visibilityState === 'visible') await loadComments({ quiet: false });
+      schedulePoll();
+    }, POLL_INTERVAL_MS);
+  }
+
+  // --- Push -----------------------------------------------------------------------
+  async function initPush() {
+    try {
+      const info = await api.pushKey();
+      state.push.serverEnabled = !!info.enabled;
+      state.push.publicKey = info.publicKey || '';
+    } catch {
+      state.push.serverEnabled = false;
+    }
+    if (pushSupported()) {
+      registerWorker();
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data && e.data.type === 'open-comment') {
+          const m = /#comment=([0-9a-z]+)/.exec(e.data.url || '');
+          if (m) actions.focusComment(m[1]);
+        }
+      });
+    }
+    await refreshPushState();
+  }
+
+  async function refreshPushState() {
+    const saved = state.id ? local.pushState(state.id) : null;
+    let sub = null;
+    if (pushSupported()) {
+      try {
+        sub = await currentSubscription();
+      } catch {
+        sub = null;
+      }
+    }
+    state.push.subscribed = !!(saved && sub);
+    state.push.role = saved ? saved.role : null;
+    ui.refreshComments();
+  }
+
+
   function bind(id, token) {
     state.id = id;
     state.token = token;
     state.serverUpdatedAt = null;
     state.comments = [];
     state.activeCommentId = null;
+    state.knownCommentIds = null;
+    state.replyTo = null;
     tools.commentDraft = null;
-    if (id) loadComments();
+    if (id) loadComments({ quiet: true });
+    refreshPushState();
   }
 
   function currentView() {
@@ -747,13 +880,22 @@ async function main() {
   window.addEventListener('beforeunload', saveWorking);
 
   // --- Start ----------------------------------------------------------------------
-  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes, comments: () => state.comments };
+  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes, comments: () => state.comments, pollComments: () => loadComments() };
   ui.refreshAll();
   if (store.doc.route) {
     ensureRouteNetwork();
     recomputeRoutes();
   }
-  if (state.id) loadComments();
+  if (state.id) loadComments({ quiet: true });
+  initPush();
+  schedulePoll();
+  window.addEventListener('hashchange', () => {
+    const m = /#comment=([0-9a-z]+)/.exec(location.hash);
+    if (m) {
+      history.replaceState(null, '', location.pathname);
+      actions.focusComment(m[1]);
+    }
+  });
   ui.setStatus(TOOLS[0].hint);
   ui.setCoords(null, map.getZoom());
   ensureOsm();

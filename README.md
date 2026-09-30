@@ -40,7 +40,8 @@ go run . -data ./data
 | Abschnitte | Jeder Abschnitt zwischen zwei Punkten hat seine eigene Führung: **Ebenerdig, Brücke oder Tunnel** |
 | Kreuzungen / Punkte | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop, Fussgängerstreifen, Bushaltestelle) |
 | Flächen | Polygone als Tempo-30-Zone, Begegnungszone (20), Fussgängerzone, Parkplatz oder sonstige Fläche; Eckpunkte ziehen, einfügen, löschen. Zonen mit Tempolimit deckeln im Routen-Rechner alle Strassen darin, Fussgängerzonen sperren sie |
-| Kommentare | Wer den Ansichtslink hat, heftet Kommentare an Kartenpunkte; Besitzer und Verfasser können sie erledigen oder löschen. Kommentare liegen getrennt vom Entwurf auf dem Server |
+| Kommentare | Wer den Ansichtslink hat, heftet Kommentare an Kartenpunkte und antwortet auf Kommentare (eine Ebene). Besitzer und Verfasser können erledigen oder löschen; Löschen eines Kommentars nimmt seine Antworten mit. Kommentare liegen getrennt vom Entwurf auf dem Server |
+| Benachrichtigungen | Web-Push ohne Fremdbibliothek (RFC 8291 aes128gcm, RFC 8292 VAPID): der Besitzer abonniert alle neuen Kommentare und Antworten, andere Antworten auf ihre eigenen Kommentare. Klick auf die Benachrichtigung öffnet den Entwurf beim Kommentar. Bei offener Seite prüft die App zusätzlich alle 45 s auf neue Kommentare |
 | Kreisel | Zentrum klicken, Radius mit der Maus wählen; später in Metern editierbar |
 | Einrasten | Beim Zeichnen und Verschieben rastet der Cursor an eigene Punkte, Abschnitte, Kreisel-Ringe und – ab Zoom 16 – an OSM-Strassen. Wird auf einen eigenen Abschnitt eingerastet, wird dieser dort geteilt, damit das Netz verbunden ist. **Shift** (einstellbar: Shift/Ctrl/Alt) gedrückt halten setzt das Einrasten für die aktuelle Aktion aus. |
 | OSM übernehmen | Bestehende OSM-Strasse anklicken und als bearbeitbare Kopie holen (Name, Typ, Brücke/Tunnel, Einbahn, Tempolimit werden übernommen; die Kopie merkt sich den OSM-Way, damit der Routen-Rechner ihn ersetzt) |
@@ -71,6 +72,8 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 | `MAX_VERSIONS` | `30` | Versionen pro Entwurf |
 | `WRITE_RATE` | `60` | Schreibende API-Aufrufe pro Minute und Client-IP (Burst 20); `0` schaltet die Drosselung aus |
 | `TRUST_PROXY` | leer | `1`, wenn die Client-IP aus `X-Forwarded-For` gelesen werden soll (hinter einem Reverse-Proxy) |
+| `PUSH` | `1` | `0` schaltet Web-Push ab. Das VAPID-Schlüsselpaar entsteht beim ersten Start in `DATA_DIR/vapid.json` |
+| `VAPID_SUBJECT` | Repo-URL | Kontakt für die Push-Dienste, z. B. `mailto:du@example.org` |
 
 Die öffentlichen OSM-Dienste haben Nutzungsbedingungen (Kacheln, Nominatim,
 Overpass). Der Server drosselt Nominatim auf eine Anfrage pro Sekunde, cacht
@@ -95,9 +98,13 @@ speichert nur einen Hash davon).
 | `GET` | `/api/drafts/{id}/versions` | Versionsliste (neueste zuerst) |
 | `GET` | `/api/drafts/{id}/versions/{n}` | Eine Version samt Inhalt |
 | `GET` | `/api/drafts/{id}/comments` | Kommentare (älteste zuerst) |
-| `POST` | `/api/drafts/{id}/comments` | Kommentar anlegen: `{lat, lng, author?, text}` → `{comment, commentToken}` (kein Edit-Token nötig) |
+| `POST` | `/api/drafts/{id}/comments` | Kommentar anlegen: `{lat, lng, author?, text, clientId?}` oder Antwort `{parentId, author?, text}` → `{comment, commentToken}` (kein Edit-Token nötig) |
 | `PATCH` | `/api/drafts/{id}/comments/{cid}` | `{resolved}`; Header `X-Edit-Token` (Besitzer) oder `X-Comment-Token` (Verfasser) |
-| `DELETE` | `/api/drafts/{id}/comments/{cid}` | Kommentar löschen; gleiche Berechtigung |
+| `DELETE` | `/api/drafts/{id}/comments/{cid}` | Kommentar löschen (samt Antworten); gleiche Berechtigung |
+| `GET` | `/api/push/key` | `{enabled, publicKey}` für `PushManager.subscribe` |
+| `PUT` | `/api/drafts/{id}/push` | Abonnement `{clientId, subscription, role, threads}`; `role: all` braucht das Edit-Token, sonst `replies` |
+| `DELETE` | `/api/drafts/{id}/push?clientId=` | Abonnement lösen |
+| `GET` | `/sw.js` | Service Worker (Push-Empfang, Klick öffnet den Kommentar) |
 | `GET` | `/api/search?q=` | Ortssuche |
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
 | `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache |
@@ -114,6 +121,7 @@ main.go                  Konfiguration, HTTP-Server, eingebettetes web/
 internal/model/          Entwurfsmodell, Validierung, Kennzahlen
 internal/store/          Datei-Store: drafts/<id>/{meta,current,versions/*}.json
 internal/osm/            Nominatim, Overpass, Kachel-Proxy (Drosselung, Caches)
+internal/push/           Web-Push: aes128gcm-Verschlüsselung, VAPID-JWT, Versand, Schlüsseldatei
 internal/server/         Routen, JSON-API, Sicherheits-Header, statische Dateien
 web/index.html           Seitengerüst
 web/css/app.css          Gestaltung
@@ -128,7 +136,9 @@ web/js/osm.js            Strassen-Cache, Tag-Zuordnung
 web/js/routing.js        Routen-Rechner: Netz aus OSM + Entwurf, Dijkstra, maxspeed-Parser
 web/js/export.js         PNG/PDF-Export (Bildkomposition, handgeschriebener PDF-Writer)
 web/js/api.js            Aufrufe ans Backend
-web/js/local.js          Browser-lokal: eigene Entwürfe, Arbeitskopie, Einstellungen
+web/js/local.js          Browser-lokal: eigene Entwürfe, Arbeitskopie, Einstellungen, Browser-Kennung
+web/js/push.js           Service Worker registrieren, Push-Abonnement anlegen/lösen
+web/sw.js                Service Worker: Benachrichtigung anzeigen, Klick öffnet den Kommentar
 web/js/ui.js             Seitenleiste, Dialoge, Statuszeile
 web/js/app.js            Verdrahtung
 web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwright)
@@ -188,6 +198,10 @@ Die CI (`.github/workflows/ci.yml`) führt gofmt, vet, Go-Tests, die
 Frontend-Unit-Tests und einen Docker-Build mit Smoke-Test aus.
 
 ## Grenzen
+
+- Web-Push braucht HTTPS (oder localhost) und einen Browser mit Push-
+  Unterstützung; auf iOS erst, wenn die Seite zum Home-Bildschirm hinzugefügt
+  ist. Ohne Push bleibt die Abfrage bei offener Seite.
 
 - Kein Benutzerkonto: Wer den Bearbeitungslink hat, kann alles ändern. Der
   Ansichtslink ist ungefährlich, weil Empfänger nur Kopien bearbeiten.

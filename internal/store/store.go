@@ -28,6 +28,7 @@ const (
 	MaxComments        = 500
 	MaxCommentText     = 2000
 	MaxCommentAuthor   = 80
+	MaxPushSubs        = 200
 	idAlphabet         = "0123456789abcdefghjkmnpqrstvwxyz"
 	idLength           = 12
 )
@@ -323,6 +324,7 @@ func (s *Store) Version(id string, n int) (*model.Document, *VersionInfo, error)
 
 type Comment struct {
 	ID        string    `json:"id"`
+	ParentID  string    `json:"parentId,omitempty"` // gesetzt bei Antworten
 	At        time.Time `json:"at"`
 	Lat       float64   `json:"lat"`
 	Lng       float64   `json:"lng"`
@@ -330,6 +332,18 @@ type Comment struct {
 	Text      string    `json:"text"`
 	Resolved  bool      `json:"resolved"`
 	TokenHash string    `json:"tokenHash,omitempty"`
+	ClientID  string    `json:"clientId,omitempty"` // Browser-Kennung, damit Verfasser keine eigene Push-Nachricht bekommen
+}
+
+// PushSub ist ein Web-Push-Abonnement eines Browsers für einen Entwurf.
+type PushSub struct {
+	ClientID  string    `json:"clientId"`
+	Endpoint  string    `json:"endpoint"`
+	P256dh    string    `json:"p256dh"`
+	Auth      string    `json:"auth"`
+	Role      string    `json:"role"` // "all" (Besitzer) oder "replies" (Antworten auf eigene Kommentare)
+	Threads   []string  `json:"threads"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 func (s *Store) commentsPath(id string) string { return filepath.Join(s.draftDir(id), "comments.json") }
@@ -349,6 +363,7 @@ func stripTokens(list []Comment) []Comment {
 	out := make([]Comment, len(list))
 	for i, c := range list {
 		c.TokenHash = ""
+		c.ClientID = ""
 		out[i] = c
 	}
 	return out
@@ -368,13 +383,16 @@ func (s *Store) Comments(id string) ([]Comment, error) {
 	return stripTokens(list), nil
 }
 
-// AddComment legt einen Kommentar an und liefert ihn samt Lösch-Token.
-func (s *Store) AddComment(id string, c Comment) (Comment, string, error) {
+// AddComment legt einen Kommentar oder eine Antwort (ParentID gesetzt) an und
+// liefert ihn samt Lösch-Token und, bei Antworten, den Elternkommentar.
+func (s *Store) AddComment(id string, c Comment) (Comment, string, *Comment, error) {
 	c.Text = strings.TrimSpace(c.Text)
 	c.Author = strings.TrimSpace(c.Author)
-	if c.Text == "" || len(c.Text) > MaxCommentText || len(c.Author) > MaxCommentAuthor ||
-		c.Lat < -90 || c.Lat > 90 || c.Lng < -180 || c.Lng > 180 {
-		return Comment{}, "", ErrBadComment
+	if c.Text == "" || len(c.Text) > MaxCommentText || len(c.Author) > MaxCommentAuthor || len(c.ClientID) > 64 {
+		return Comment{}, "", nil, ErrBadComment
+	}
+	if c.ParentID == "" && (c.Lat < -90 || c.Lat > 90 || c.Lng < -180 || c.Lng > 180) {
+		return Comment{}, "", nil, ErrBadComment
 	}
 	if c.Author == "" {
 		c.Author = "Anonym"
@@ -382,22 +400,35 @@ func (s *Store) AddComment(id string, c Comment) (Comment, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.readMeta(id); err != nil {
-		return Comment{}, "", err
+		return Comment{}, "", nil, err
 	}
 	list, err := s.readComments(id)
 	if err != nil {
-		return Comment{}, "", err
+		return Comment{}, "", nil, err
 	}
 	if len(list) >= MaxComments {
-		return Comment{}, "", ErrCommentLimit
+		return Comment{}, "", nil, ErrCommentLimit
+	}
+	var parent *Comment
+	if c.ParentID != "" {
+		for i := range list {
+			if list[i].ID == c.ParentID {
+				parent = &list[i]
+				break
+			}
+		}
+		if parent == nil || parent.ParentID != "" {
+			return Comment{}, "", nil, fmt.Errorf("%w: Antworten gehen nur auf einen Hauptkommentar", ErrBadComment)
+		}
+		c.Lat, c.Lng = parent.Lat, parent.Lng
 	}
 	cid, err := newID()
 	if err != nil {
-		return Comment{}, "", err
+		return Comment{}, "", nil, err
 	}
 	token, err := newToken()
 	if err != nil {
-		return Comment{}, "", err
+		return Comment{}, "", nil, err
 	}
 	c.ID = cid
 	c.At = time.Now().UTC()
@@ -405,10 +436,15 @@ func (s *Store) AddComment(id string, c Comment) (Comment, string, error) {
 	c.TokenHash = hashToken(token)
 	list = append(list, c)
 	if err := writeJSONAtomic(s.commentsPath(id), list); err != nil {
-		return Comment{}, "", err
+		return Comment{}, "", nil, err
 	}
 	c.TokenHash = ""
-	return c, token, nil
+	if parent != nil {
+		p := *parent
+		p.TokenHash = ""
+		parent = &p
+	}
+	return c, token, parent, nil
 }
 
 func (s *Store) updateComment(id, cid, editToken, commentToken string, fn func(*Comment) bool) error {
@@ -439,7 +475,14 @@ func (s *Store) updateComment(id, cid, editToken, commentToken string, fn func(*
 	}
 	keep := fn(&list[idx])
 	if !keep {
-		list = append(list[:idx], list[idx+1:]...)
+		removed := list[idx].ID
+		kept := list[:0]
+		for _, c := range list {
+			if c.ID != removed && c.ParentID != removed {
+				kept = append(kept, c)
+			}
+		}
+		list = kept
 	}
 	return writeJSONAtomic(s.commentsPath(id), list)
 }
@@ -449,10 +492,89 @@ func (s *Store) DeleteComment(id, cid, editToken, commentToken string) error {
 	return s.updateComment(id, cid, editToken, commentToken, func(*Comment) bool { return false })
 }
 
-// ResolveComment markiert einen Kommentar als erledigt (Besitzer oder Verfasser).
+// ResolveComment markiert einen Hauptkommentar als erledigt (Besitzer oder Verfasser).
 func (s *Store) ResolveComment(id, cid, editToken, commentToken string, resolved bool) error {
 	return s.updateComment(id, cid, editToken, commentToken, func(c *Comment) bool {
-		c.Resolved = resolved
+		if c.ParentID == "" {
+			c.Resolved = resolved
+		}
 		return true
 	})
+}
+
+// --- Push-Abonnements ----------------------------------------------------------
+
+func (s *Store) pushPath(id string) string { return filepath.Join(s.draftDir(id), "push.json") }
+
+func (s *Store) readPush(id string) ([]PushSub, error) {
+	var list []PushSub
+	if err := readJSON(s.pushPath(id), &list); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []PushSub{}, nil
+		}
+		return nil, err
+	}
+	return list, nil
+}
+
+// PushSubs liefert alle Abonnements eines Entwurfs.
+func (s *Store) PushSubs(id string) ([]PushSub, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, err := s.readMeta(id); err != nil {
+		return nil, err
+	}
+	return s.readPush(id)
+}
+
+// SetPushSub legt ein Abonnement an oder ersetzt das des gleichen Browsers.
+func (s *Store) SetPushSub(id string, sub PushSub) error {
+	if sub.ClientID == "" || len(sub.ClientID) > 64 || sub.Endpoint == "" || (sub.Role != "all" && sub.Role != "replies") {
+		return ErrBadComment
+	}
+	if len(sub.Threads) > 200 {
+		sub.Threads = sub.Threads[:200]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.readMeta(id); err != nil {
+		return err
+	}
+	list, err := s.readPush(id)
+	if err != nil {
+		return err
+	}
+	out := list[:0]
+	for _, x := range list {
+		if x.ClientID != sub.ClientID && x.Endpoint != sub.Endpoint {
+			out = append(out, x)
+		}
+	}
+	if len(out) >= MaxPushSubs {
+		return ErrCommentLimit
+	}
+	sub.CreatedAt = time.Now().UTC()
+	out = append(out, sub)
+	return writeJSONAtomic(s.pushPath(id), out)
+}
+
+// DeletePushSub entfernt Abonnements nach Browser-Kennung oder Endpunkt (beides optional).
+func (s *Store) DeletePushSub(id, clientID, endpoint string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.readMeta(id); err != nil {
+		return err
+	}
+	list, err := s.readPush(id)
+	if err != nil {
+		return err
+	}
+	out := list[:0]
+	for _, x := range list {
+		if (clientID != "" && x.ClientID == clientID) || (endpoint != "" && x.Endpoint == endpoint) {
+			continue
+		}
+		out = append(out, x)
+	}
+	return writeJSONAtomic(s.pushPath(id), out)
 }

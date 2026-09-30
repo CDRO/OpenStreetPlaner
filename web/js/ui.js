@@ -610,7 +610,31 @@ export class UI {
     const draft = tools.commentDraft;
     const saved = actions.isSaved();
     const active = actions.activeCommentId();
+    const replyTo = actions.replyTo();
     const fmt = (c) => `${esc(c.author)} · ${fmtDate(c.at)}`;
+    const tops = comments.filter((c) => !c.parentId);
+    const repliesOf = (id) => comments.filter((c) => c.parentId === id);
+
+    // Benachrichtigungen
+    const ps = actions.pushStatus();
+    let pushText;
+    let toggle = '';
+    if (!saved) pushText = 'Benachrichtigungen gibt es, sobald der Entwurf gespeichert ist.';
+    else if (!ps.serverEnabled) pushText = 'Push-Benachrichtigungen sind auf diesem Server nicht aktiviert.';
+    else if (!ps.supported) pushText = 'Dieser Browser unterstützt keine Push-Benachrichtigungen (HTTPS und Service Worker nötig).';
+    else if (ps.permission === 'denied') pushText = 'Benachrichtigungen sind in den Browser-Einstellungen für diese Seite blockiert.';
+    else {
+      const what = actions.canEdit() ? 'bei jedem neuen Kommentar oder jeder Antwort' : 'bei Antworten auf meine Kommentare';
+      toggle = `<label class="check"><input type="checkbox" id="push-toggle" ${ps.subscribed ? 'checked' : ''}> Push-Benachrichtigung ${what}</label>`;
+      pushText = ps.subscribed ? 'Aktiv auf diesem Gerät. Nachrichten kommen auch, wenn die Seite geschlossen ist.' : 'Aus. Nach dem Einschalten fragt der Browser einmal um Erlaubnis.';
+    }
+    const notify = `
+      <div class="box notify">
+        <h3>Benachrichtigungen</h3>
+        ${toggle}
+        <p class="muted small">${esc(pushText)} ${saved ? 'Solange der Entwurf offen ist, prüft die Seite ausserdem regelmässig auf neue Kommentare.' : ''}</p>
+      </div>`;
+
     let form = '';
     if (draft) {
       form = `
@@ -624,29 +648,59 @@ export class UI {
           </div>
         </div>`;
     }
-    const list = comments.length
-      ? comments.map((c, i) => `
-        <div class="comment-row${c.resolved ? ' resolved' : ''}${c.id === active ? ' active' : ''}" data-id="${c.id}">
-          <button type="button" class="c-focus" title="Auf der Karte zeigen"><span class="c-index">${i + 1}</span></button>
-          <div class="grow">
-            <div class="muted small">${fmt(c)}${c.resolved ? ' · erledigt' : ''}</div>
-            <div class="c-text">${esc(c.text)}</div>
+    const replyForm = (top) => `
+      <div class="reply-form" data-parent="${top.id}">
+        <input type="text" class="reply-author" value="${esc(settings.author)}" placeholder="Dein Name" maxlength="80">
+        <textarea class="reply-text" rows="2" placeholder="Antwort…" maxlength="2000"></textarea>
+        <div class="btn-row">
+          <button type="button" class="btn small primary reply-send">Antworten</button>
+          <button type="button" class="btn small reply-cancel">Abbrechen</button>
+        </div>
+      </div>`;
+    const renderReply = (r) => `
+      <div class="comment-row reply" data-id="${r.id}">
+        <div class="grow">
+          <div class="muted small">${fmt(r)}</div>
+          <div class="c-text">${esc(r.text)}</div>
+        </div>
+        ${actions.canManageComment(r) ? `<button type="button" class="icon-btn c-delete" title="Antwort löschen">✕</button>` : ''}
+      </div>`;
+    const list = tops.length
+      ? tops.map((c, i) => {
+        const replies = repliesOf(c.id);
+        return `
+        <div class="thread${c.resolved ? ' resolved' : ''}${c.id === active ? ' active' : ''}" data-id="${c.id}">
+          <div class="comment-row" data-id="${c.id}">
+            <button type="button" class="c-focus" title="Auf der Karte zeigen"><span class="c-index">${i + 1}</span></button>
+            <div class="grow">
+              <div class="muted small">${fmt(c)}${c.resolved ? ' · erledigt' : ''}</div>
+              <div class="c-text">${esc(c.text)}</div>
+              <div class="thread-actions">
+                <button type="button" class="link c-reply" ${saved ? '' : 'disabled'}>Antworten${replies.length ? ` (${replies.length})` : ''}</button>
+              </div>
+            </div>
+            ${actions.canManageComment(c) ? `<button type="button" class="icon-btn c-resolve" title="${c.resolved ? 'Wieder öffnen' : 'Als erledigt markieren'}">${c.resolved ? '↺' : '✓'}</button><button type="button" class="icon-btn c-delete" title="Kommentar samt Antworten löschen">✕</button>` : ''}
           </div>
-          ${actions.canManageComment(c) ? `<button type="button" class="icon-btn c-resolve" title="${c.resolved ? 'Wieder öffnen' : 'Als erledigt markieren'}">${c.resolved ? '↺' : '✓'}</button><button type="button" class="icon-btn c-delete" title="Löschen">✕</button>` : ''}
-        </div>`).join('')
+          ${replies.map(renderReply).join('')}
+          ${replyTo === c.id ? replyForm(c) : ''}
+        </div>`;
+      }).join('')
       : `<p class="muted">${saved ? 'Noch keine Kommentare. Mit „Kommentar setzen“ einen Punkt auf der Karte anklicken.' : 'Kommentare gibt es, sobald der Entwurf gespeichert ist und einen Link hat.'}</p>`;
     el.innerHTML = `
-      <p class="muted small">Wer den Ansichtslink hat, kann Kommentare an eine Stelle der Karte heften. Der Besitzer des Entwurfs kann sie als erledigt markieren oder löschen, Verfasser ihre eigenen.</p>
+      <p class="muted small">Wer den Ansichtslink hat, kann Kommentare an eine Stelle der Karte heften und auf Kommentare antworten. Der Besitzer des Entwurfs kann Kommentare erledigen oder löschen, Verfasser ihre eigenen.</p>
       <div class="btn-row">
         <button type="button" id="comment-add" class="btn small ${tools.tool === 'comment' ? 'primary' : ''}" ${saved ? '' : 'disabled'}>Kommentar setzen</button>
         <button type="button" id="comment-refresh" class="btn small" ${saved ? '' : 'disabled'}>Aktualisieren</button>
         <label class="check small"><input type="checkbox" id="comment-show" ${settings.showComments ? 'checked' : ''}> Auf der Karte zeigen</label>
       </div>
       ${form}
+      ${notify}
       <div id="comment-list">${list}</div>`;
     this.$('comment-add').onclick = () => tools.setTool('comment');
     this.$('comment-refresh').onclick = () => actions.refreshComments();
     this.$('comment-show').onchange = (e) => actions.updateSettings({ showComments: e.target.checked });
+    const pushToggle = this.$('push-toggle');
+    if (pushToggle) pushToggle.onchange = (e) => (e.target.checked ? actions.enablePush() : actions.disablePush());
     if (draft) {
       this.$('comment-send').onclick = () => actions.submitComment({ author: this.$('comment-author').value, text: this.$('comment-text').value });
       this.$('comment-cancel').onclick = () => actions.cancelComment();
@@ -655,13 +709,25 @@ export class UI {
       };
       setTimeout(() => this.$('comment-text') && this.$('comment-text').focus(), 50);
     }
-    el.querySelectorAll('.comment-row').forEach((row) => {
-      const id = row.dataset.id;
-      row.querySelector('.c-focus').onclick = () => actions.focusComment(id);
-      const resolve = row.querySelector('.c-resolve');
+    el.querySelectorAll('.thread').forEach((thread) => {
+      const id = thread.dataset.id;
+      thread.querySelector('.c-focus').onclick = () => actions.focusComment(id);
+      thread.querySelector('.c-reply').onclick = () => actions.startReply(id);
+      const resolve = thread.querySelector('.comment-row:not(.reply) .c-resolve');
       if (resolve) resolve.onclick = () => actions.resolveComment(id, !comments.find((c) => c.id === id).resolved);
-      const del = row.querySelector('.c-delete');
-      if (del) del.onclick = () => actions.deleteComment(id);
+      thread.querySelectorAll('.comment-row').forEach((row) => {
+        const del = row.querySelector('.c-delete');
+        if (del) del.onclick = () => actions.deleteComment(row.dataset.id);
+      });
+      const rf = thread.querySelector('.reply-form');
+      if (rf) {
+        rf.querySelector('.reply-send').onclick = () => actions.submitComment({ author: rf.querySelector('.reply-author').value, text: rf.querySelector('.reply-text').value, parentId: id });
+        rf.querySelector('.reply-cancel').onclick = () => actions.cancelReply();
+        rf.querySelector('.reply-text').onkeydown = (e) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) rf.querySelector('.reply-send').click();
+        };
+        setTimeout(() => rf.querySelector('.reply-text').focus(), 50);
+      }
     });
   }
 
@@ -701,7 +767,7 @@ export class UI {
         ${routes.proposed && routes.proposed.error ? `<p class="muted small">Neu: ${esc(routes.proposed.error)}</p>` : ''}`;
     }
     el.innerHTML = `
-      <p class="muted small">Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s.</p>
+      <p class="muted small">Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.</p>
       ${body}
       <div class="btn-row">
         <button type="button" id="route-tool" class="btn small ${tools.tool === 'route' ? 'primary' : ''}">Punkte setzen</button>

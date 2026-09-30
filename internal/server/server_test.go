@@ -2,16 +2,21 @@ package server
 
 import (
 	"bytes"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
 	"stadtplaner/internal/osm"
+	"stadtplaner/internal/push"
 	"stadtplaner/internal/store"
 )
 
@@ -24,16 +29,20 @@ func newTestServer(t *testing.T) (*httptest.Server, *osm.Client) {
 	web := fstest.MapFS{
 		"web/index.html":  {Data: []byte("<!doctype html><title>Stadtplaner</title>")},
 		"web/css/app.css": {Data: []byte("body{}")},
+		"web/sw.js":       {Data: []byte("self.addEventListener('push', () => {});")},
 	}
 	client := osm.New(t.TempDir())
 	s, err := New(st, client, web, log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
+	lastServer = s
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts, client
 }
+
+var lastServer *Server
 
 func call(t *testing.T, method, url string, body any, headers map[string]string) (*http.Response, map[string]any) {
 	t.Helper()
@@ -313,5 +322,128 @@ func TestCommentsAPIAndRateLimit(t *testing.T) {
 	r, _ := http.Get(lts.URL + "/healthz")
 	if r.StatusCode != 200 {
 		t.Fatalf("GET wird nicht gedrosselt: %d", r.StatusCode)
+	}
+}
+
+func TestRepliesAndPushNotifications(t *testing.T) {
+	ts, _ := newTestServer(t)
+	srv := lastServer
+	keys, _ := push.GenerateKeys()
+	sender := push.NewSender(keys, "mailto:test@example.org")
+	srv.SetPush(sender)
+
+	// Fake-Push-Dienst zählt Zustellungen und entschlüsselt sie
+	uaPriv, _ := ecdh.P256().GenerateKey(rand.Reader)
+	auth := []byte("0123456789abcdef")
+	var mu sync.Mutex
+	var delivered []string
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		plain, err := push.Decrypt(buf, uaPriv, auth)
+		if err != nil {
+			t.Errorf("Entschlüsseln: %v", err)
+		}
+		mu.Lock()
+		delivered = append(delivered, r.URL.Path+" "+string(plain))
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/gone") {
+			w.WriteHeader(410)
+			return
+		}
+		w.WriteHeader(201)
+	}))
+	defer svc.Close()
+	b64 := base64.RawURLEncoding
+	subJSON := func(endpoint string) map[string]any {
+		return map[string]any{"endpoint": endpoint, "keys": map[string]string{"p256dh": b64.EncodeToString(uaPriv.PublicKey().Bytes()), "auth": b64.EncodeToString(auth)}}
+	}
+
+	res, out := call(t, "GET", ts.URL+"/api/push/key", nil, nil)
+	if res.StatusCode != 200 || out["enabled"] != true || out["publicKey"] != keys.PublicKey {
+		t.Fatalf("push key: %d %+v", res.StatusCode, out)
+	}
+	res, _ = http.Get(ts.URL + "/sw.js")
+	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
+		t.Fatalf("sw.js: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+
+	_, out = call(t, "POST", ts.URL+"/api/drafts", map[string]any{"doc": sampleDoc()}, nil)
+	id := out["id"].(string)
+	editToken := out["editToken"].(string)
+
+	// Besitzer abonniert alles (braucht Edit-Token), Anna nur Antworten auf ihre Kommentare
+	res, out = call(t, "PUT", ts.URL+"/api/drafts/"+id+"/push", map[string]any{"clientId": "owner", "subscription": subJSON(svc.URL + "/owner"), "role": "all"}, nil)
+	if res.StatusCode != 403 {
+		t.Fatalf("Rolle all ohne Token: %d %+v", res.StatusCode, out)
+	}
+	res, out = call(t, "PUT", ts.URL+"/api/drafts/"+id+"/push", map[string]any{"clientId": "owner", "subscription": subJSON(svc.URL + "/owner"), "role": "all"}, map[string]string{"X-Edit-Token": editToken})
+	if res.StatusCode != 200 || out["role"] != "all" {
+		t.Fatalf("Besitzer-Abo: %d %+v", res.StatusCode, out)
+	}
+	res, _ = call(t, "PUT", ts.URL+"/api/drafts/"+id+"/push", map[string]any{"clientId": "anna", "subscription": map[string]any{"endpoint": "x"}, "role": "replies"}, nil)
+	if res.StatusCode != 400 {
+		t.Fatalf("kaputtes Abo: %d", res.StatusCode)
+	}
+
+	// Anna kommentiert: nur der Besitzer wird benachrichtigt
+	res, out = call(t, "POST", ts.URL+"/api/drafts/"+id+"/comments", map[string]any{"lat": 47, "lng": 8, "author": "Anna", "text": "Frage?", "clientId": "anna"}, nil)
+	if res.StatusCode != 201 {
+		t.Fatalf("Kommentar: %d %+v", res.StatusCode, out)
+	}
+	annaComment := out["comment"].(map[string]any)["id"].(string)
+	srv.WaitPush()
+	mu.Lock()
+	n := len(delivered)
+	mu.Unlock()
+	if n != 1 || !strings.Contains(delivered[0], "/owner ") || !strings.Contains(delivered[0], "Neuer Kommentar") || !strings.Contains(delivered[0], "#comment="+annaComment) {
+		t.Fatalf("Besitzer-Benachrichtigung: %+v", delivered)
+	}
+
+	// Anna abonniert Antworten auf ihren Kommentar; Besitzer antwortet -> Anna bekommt Push, Besitzer (Verfasser) nicht
+	res, out = call(t, "PUT", ts.URL+"/api/drafts/"+id+"/push", map[string]any{"clientId": "anna", "subscription": subJSON(svc.URL + "/anna"), "role": "all", "threads": []string{annaComment}}, nil)
+	if res.StatusCode != 403 {
+		t.Fatalf("Anna darf nicht alles abonnieren: %d", res.StatusCode)
+	}
+	res, out = call(t, "PUT", ts.URL+"/api/drafts/"+id+"/push", map[string]any{"clientId": "anna", "subscription": subJSON(svc.URL + "/anna"), "role": "replies", "threads": []string{annaComment}}, nil)
+	if res.StatusCode != 200 || out["role"] != "replies" {
+		t.Fatalf("Anna-Abo: %d %+v", res.StatusCode, out)
+	}
+	res, out = call(t, "POST", ts.URL+"/api/drafts/"+id+"/comments", map[string]any{"parentId": annaComment, "author": "Gemeinde", "text": "Antwort", "clientId": "owner"}, nil)
+	if res.StatusCode != 201 || out["comment"].(map[string]any)["parentId"] != annaComment {
+		t.Fatalf("Antwort: %d %+v", res.StatusCode, out)
+	}
+	srv.WaitPush()
+	mu.Lock()
+	n = len(delivered)
+	last := delivered[len(delivered)-1]
+	mu.Unlock()
+	if n != 2 || !strings.Contains(last, "/anna ") || !strings.Contains(last, "Antwort zu") {
+		t.Fatalf("Antwort-Benachrichtigung: %+v", delivered)
+	}
+
+	// Antwort auf eine Antwort ist nicht erlaubt
+	replyID := out["comment"].(map[string]any)["id"].(string)
+	res, _ = call(t, "POST", ts.URL+"/api/drafts/"+id+"/comments", map[string]any{"parentId": replyID, "text": "verschachtelt"}, nil)
+	if res.StatusCode != 400 {
+		t.Fatalf("verschachtelte Antwort: %d", res.StatusCode)
+	}
+
+	// Abgelaufenes Abo (410) wird entfernt
+	_, _ = call(t, "PUT", ts.URL+"/api/drafts/"+id+"/push", map[string]any{"clientId": "old", "subscription": subJSON(svc.URL + "/gone"), "role": "all"}, map[string]string{"X-Edit-Token": editToken})
+	_, _ = call(t, "POST", ts.URL+"/api/drafts/"+id+"/comments", map[string]any{"lat": 47, "lng": 8, "text": "noch einer", "clientId": "someone"}, nil)
+	srv.WaitPush()
+	subs, _ := srv.store.PushSubs(id)
+	for _, sub := range subs {
+		if sub.ClientID == "old" {
+			t.Fatalf("410-Abo nicht entfernt: %+v", subs)
+		}
+	}
+	res, _ = call(t, "DELETE", ts.URL+"/api/drafts/"+id+"/push?clientId=owner", nil, nil)
+	if res.StatusCode != 204 {
+		t.Fatalf("Abo löschen: %d", res.StatusCode)
+	}
+	subs, _ = srv.store.PushSubs(id)
+	if len(subs) != 1 || subs[0].ClientID != "anna" {
+		t.Fatalf("nach Löschen: %+v", subs)
 	}
 }

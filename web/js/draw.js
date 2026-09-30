@@ -170,6 +170,7 @@ export function handlePoints(feature) {
 export function hitComment(map, comments, point, tol = 13) {
   let best = null;
   for (const c of comments) {
+    if (c.parentId) continue;
     const p = map.project([c.lat, c.lng]);
     const d = Math.hypot(p.x - point.x, p.y - (point.y + 10));
     if (d <= tol && (!best || d < best.d)) best = { id: c.id, d };
@@ -375,7 +376,7 @@ function drawComments(ctx, P, comments, activeId, draft) {
     ctx.restore();
     if (index !== null) text(ctx, String(index), c.x, c.y - 13.5, { font: 'bold 10px system-ui, sans-serif', color: '#fff', align: 'center', baseline: 'middle' });
   };
-  comments.forEach((c, i) => marker([c.lat, c.lng], c.resolved ? COMMENT_RESOLVED_COLOR : COMMENT_COLOR, i + 1, c.id === activeId));
+  comments.filter((c) => !c.parentId).forEach((c, i) => marker([c.lat, c.lng], c.resolved ? COMMENT_RESOLVED_COLOR : COMMENT_COLOR, i + 1, c.id === activeId));
   if (draft && draft.latlng) marker(draft.latlng, '#1b6ac9', null, true);
 }
 

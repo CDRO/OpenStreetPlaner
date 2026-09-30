@@ -192,20 +192,50 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok((await commenter.page.textContent('.comment-row')).includes('Anna'));
   assert.equal(await commenter.page.locator('.comment-row .c-resolve').count(), 1, 'Verfasser darf erledigen');
   await commenter.page.click('.comment-row .c-resolve');
-  await commenter.page.waitForSelector('.comment-row.resolved');
-  await commenter.context.close();
+  await commenter.page.waitForSelector('.thread.resolved');
+  // Benachrichtigungs-Bereich ist da; Service Worker registriert sich (Push selbst braucht einen echten Push-Dienst)
+  assert.ok((await commenter.page.textContent('#comments-panel')).includes('Benachrichtigungen'));
+  const swReady = await commenter.page.evaluate(async () => {
+    if (!('serviceWorker' in navigator)) return 'unsupported';
+    const reg = await navigator.serviceWorker.getRegistration('/');
+    return reg ? 'registered' : 'none';
+  });
+  assert.ok(swReady === 'registered' || swReady === 'unsupported', `Service Worker: ${swReady}`);
+
+  // Besitzer: die Abfrage bei offener Seite meldet den neuen Kommentar, dann Antwort
   await page.click('.tabs button[data-tab="comments"]');
-  await page.click('#comment-refresh');
-  await page.waitForSelector('.comment-row.resolved');
+  await page.evaluate(() => window.stadtplaner.pollComments());
+  await page.waitForSelector('.thread.resolved');
+  assert.ok((await page.locator('.toast').allTextContents()).some((t) => t.includes('Neuer Kommentar')), 'Hinweis auf neuen Kommentar');
   const own = await page.evaluate(() => window.stadtplaner.comments());
   assert.equal(own.length, 1);
   assert.equal(own[0].resolved, true);
-  await page.click('.comment-row .c-focus');
+  await page.click('.thread .c-reply');
+  await page.waitForSelector('.reply-form');
+  await page.fill('.reply-form .reply-author', 'Gemeinde');
+  await page.fill('.reply-form .reply-text', 'Nehmen wir auf.');
+  await page.click('.reply-form .reply-send');
+  await page.waitForSelector('.comment-row.reply');
+  assert.ok((await page.textContent('.comment-row.reply')).includes('Gemeinde'));
+  assert.ok((await page.textContent('.thread .c-reply')).includes('(1)'));
+  const withReply = await page.evaluate(() => window.stadtplaner.comments());
+  assert.equal(withReply.length, 2);
+  assert.equal(withReply[1].parentId, withReply[0].id);
+
+  // Empfängerin sieht die Antwort verschachtelt; Deep-Link #comment= fokussiert den Thread
+  const viewer2 = await openPage(browser, `${viewUrl}#comment=${withReply[0].id}`, errors);
+  await viewer2.page.waitForSelector('.comment-row.reply');
+  assert.equal(await viewer2.page.locator('.thread.active').count(), 1, 'Deep-Link fokussiert den Kommentar');
+  assert.ok((await viewer2.page.textContent('.comment-row.reply')).includes('Nehmen wir auf.'));
+  assert.equal(await viewer2.page.locator('.comment-row.reply .c-delete').count(), 0, 'fremde Antwort nicht löschbar');
+  await viewer2.context.close();
+
+  await page.click('.thread .c-focus');
   await h.settle(800);
-  assert.ok((await page.locator('.comment-row.active').count()) === 1, 'Kommentar fokussiert');
-  await page.click('.comment-row .c-delete');
+  assert.ok((await page.locator('.thread.active').count()) === 1, 'Kommentar fokussiert');
+  await page.click('.thread > .comment-row .c-delete');
   await page.waitForFunction(() => window.stadtplaner.comments().length === 0);
-  console.log('✓ Kommentare');
+  console.log('✓ Kommentare mit Antworten');
 
   // Reload behält Entwurf und Bindung
   await page.reload({ waitUntil: 'load' });

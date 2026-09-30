@@ -45,3 +45,17 @@ test('Kommentar-Token werden gemerkt', () => {
   assert.equal(local.commentToken('abc'), 'tok');
   assert.equal(local.loadSettings().showComments, true);
 });
+
+test('Browser-Kennung ist stabil, Push-Zustand pro Entwurf', () => {
+  const local = new LocalState(new MemoryBackend());
+  const id = local.clientId();
+  assert.equal(id.length, 24);
+  assert.equal(local.clientId(), id);
+  assert.equal(local.pushState('d1'), null);
+  local.setPushState('d1', { role: 'replies' });
+  assert.deepEqual(local.pushState('d1'), { role: 'replies' });
+  local.setPushState('d1', null);
+  assert.equal(local.pushState('d1'), null);
+  local.rememberCommentToken('c1', 't');
+  assert.deepEqual(local.ownCommentIds(), ['c1']);
+});

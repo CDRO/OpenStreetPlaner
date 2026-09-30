@@ -5,6 +5,8 @@ const KEY_INDEX = 'stadtplaner.drafts';
 const KEY_WORKING = 'stadtplaner.working';
 const KEY_SETTINGS = 'stadtplaner.settings';
 const KEY_COMMENT_TOKENS = 'stadtplaner.commentTokens';
+const KEY_CLIENT_ID = 'stadtplaner.clientId';
+const KEY_PUSH = 'stadtplaner.push'; // Entwurfs-ID -> { role, threads }
 
 export const DEFAULT_SETTINGS = {
   snapEnabled: true,
@@ -96,6 +98,43 @@ export class LocalState {
 
   commentToken(cid) {
     return this.readJson(KEY_COMMENT_TOKENS, {})[cid] || null;
+  }
+
+  /** Zufällige Kennung dieses Browsers (für Push-Abonnements und eigene Kommentare). */
+  clientId() {
+    let id = null;
+    try {
+      id = this.backend.getItem(KEY_CLIENT_ID);
+    } catch {
+      id = null;
+    }
+    if (!id) {
+      const bytes = new Uint8Array(12);
+      (globalThis.crypto || {}).getRandomValues ? globalThis.crypto.getRandomValues(bytes) : bytes.forEach((_, i) => { bytes[i] = Math.floor(Math.random() * 256); });
+      id = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+      try {
+        this.backend.setItem(KEY_CLIENT_ID, id);
+      } catch {
+        // egal
+      }
+    }
+    return id;
+  }
+
+  /** Meine Kommentar-IDs (Hauptkommentare), für Antwort-Benachrichtigungen. */
+  ownCommentIds() {
+    return Object.keys(this.readJson(KEY_COMMENT_TOKENS, {}));
+  }
+
+  pushState(draftId) {
+    return this.readJson(KEY_PUSH, {})[draftId] || null;
+  }
+
+  setPushState(draftId, state) {
+    const all = this.readJson(KEY_PUSH, {});
+    if (state) all[draftId] = state;
+    else delete all[draftId];
+    this.writeJson(KEY_PUSH, all);
   }
 
   loadSettings() {

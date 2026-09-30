@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"stadtplaner/internal/osm"
+	"stadtplaner/internal/push"
 	"stadtplaner/internal/server"
 	"stadtplaner/internal/store"
 )
@@ -42,6 +43,8 @@ func main() {
 	maxVersions := flag.Int("max-versions", atoi(env("MAX_VERSIONS", "30"), 30), "Versionen pro Entwurf (env MAX_VERSIONS)")
 	writeRate := flag.Float64("write-rate", atof(env("WRITE_RATE", "60"), 60), "Schreibende API-Aufrufe pro Minute und Client, 0 = aus (env WRITE_RATE)")
 	trustProxy := flag.Bool("trust-proxy", env("TRUST_PROXY", "") == "1", "Client-IP aus X-Forwarded-For lesen, hinter einem Reverse-Proxy (env TRUST_PROXY=1)")
+	pushEnabled := flag.Bool("push", env("PUSH", "1") != "0", "Web-Push-Benachrichtigungen (env PUSH=0 schaltet ab)")
+	vapidSubject := flag.String("vapid-subject", env("VAPID_SUBJECT", ""), "Kontakt für Push-Dienste, z. B. mailto:… (env VAPID_SUBJECT)")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
@@ -62,6 +65,14 @@ func main() {
 		logger.Fatalf("Server: %v", err)
 	}
 	srv.SetRateLimit(server.RateLimit{PerMinute: *writeRate, Burst: 20, TrustProxy: *trustProxy})
+	if *pushEnabled {
+		keys, err := push.LoadOrCreateKeys(filepath.Join(*dataDir, "vapid.json"))
+		if err != nil {
+			logger.Printf("Push deaktiviert, VAPID-Schlüssel: %v", err)
+		} else {
+			srv.SetPush(push.NewSender(keys, *vapidSubject))
+		}
+	}
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
@@ -84,6 +95,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+	srv.WaitPush()
 }
 
 func atof(s string, fallback float64) float64 {

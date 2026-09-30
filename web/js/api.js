@@ -39,6 +39,9 @@ export const api = {
   addComment: (id, comment) => request('POST', `/api/drafts/${encodeURIComponent(id)}/comments`, { body: comment }),
   resolveComment: (id, cid, resolved, { token, commentToken } = {}) => request('PATCH', `/api/drafts/${encodeURIComponent(id)}/comments/${encodeURIComponent(cid)}`, { body: { resolved }, token, commentToken }),
   deleteComment: (id, cid, { token, commentToken } = {}) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/comments/${encodeURIComponent(cid)}`, { token, commentToken }),
+  pushKey: () => request('GET', '/api/push/key'),
+  setPushSub: (id, body, token) => request('PUT', `/api/drafts/${encodeURIComponent(id)}/push`, { body, token }),
+  deletePushSub: (id, clientId) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/push?clientId=${encodeURIComponent(clientId)}`),
   search: (q) => request('GET', `/api/search?q=${encodeURIComponent(q)}&limit=8`),
   roads: (b) => request('GET', `/api/roads?bbox=${[b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',')}`),
 };

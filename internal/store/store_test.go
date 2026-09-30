@@ -114,25 +114,25 @@ func TestComments(t *testing.T) {
 	if err != nil || len(list) != 0 {
 		t.Fatalf("leer erwartet: %v %+v", err, list)
 	}
-	c, ctoken, err := s.AddComment(id, Comment{Lat: 47, Lng: 8, Author: "  Anna ", Text: " Hier fehlt ein Fussgängerstreifen "})
-	if err != nil || c.ID == "" || ctoken == "" || c.Author != "Anna" || c.TokenHash != "" {
+	c, ctoken, parent, err := s.AddComment(id, Comment{Lat: 47, Lng: 8, Author: "  Anna ", Text: " Hier fehlt ein Fussgängerstreifen ", ClientID: "browser-a"})
+	if err != nil || c.ID == "" || ctoken == "" || c.Author != "Anna" || c.TokenHash != "" || parent != nil {
 		t.Fatalf("AddComment: %v %+v", err, c)
 	}
-	c2, _, _ := s.AddComment(id, Comment{Lat: 47, Lng: 8, Text: "zweiter"})
+	c2, _, _, _ := s.AddComment(id, Comment{Lat: 47, Lng: 8, Text: "zweiter"})
 	if c2.Author != "Anonym" {
 		t.Fatalf("Anonym erwartet: %+v", c2)
 	}
-	if _, _, err := s.AddComment(id, Comment{Lat: 47, Lng: 8, Text: "   "}); !errors.Is(err, ErrBadComment) {
+	if _, _, _, err := s.AddComment(id, Comment{Lat: 47, Lng: 8, Text: "   "}); !errors.Is(err, ErrBadComment) {
 		t.Fatalf("leerer Text akzeptiert: %v", err)
 	}
-	if _, _, err := s.AddComment(id, Comment{Lat: 99, Lng: 8, Text: "x"}); !errors.Is(err, ErrBadComment) {
+	if _, _, _, err := s.AddComment(id, Comment{Lat: 99, Lng: 8, Text: "x"}); !errors.Is(err, ErrBadComment) {
 		t.Fatalf("ungültige Position akzeptiert: %v", err)
 	}
-	if _, _, err := s.AddComment("doesnotexist1", Comment{Lat: 1, Lng: 1, Text: "x"}); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.AddComment("doesnotexist1", Comment{Lat: 1, Lng: 1, Text: "x"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unbekannter Entwurf: %v", err)
 	}
 	list, _ = s.Comments(id)
-	if len(list) != 2 || list[0].TokenHash != "" {
+	if len(list) != 2 || list[0].TokenHash != "" || list[0].ClientID != "" {
 		t.Fatalf("Liste: %+v", list)
 	}
 	if err := s.ResolveComment(id, c.ID, "", "falsch", true); !errors.Is(err, ErrUnauthorized) {
@@ -159,5 +159,65 @@ func TestComments(t *testing.T) {
 	flist, _ := s.Comments(fid)
 	if len(flist) != 0 {
 		t.Fatalf("Fork darf keine Kommentare kopieren")
+	}
+}
+
+func TestRepliesAndPushSubs(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	id, editToken, _ := s.Create(doc("A"), "1")
+	top, _, _, err := s.AddComment(id, Comment{Lat: 47, Lng: 8, Author: "Anna", Text: "Frage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, rtoken, parent, err := s.AddComment(id, Comment{ParentID: top.ID, Author: "Besitzer", Text: "Antwort", ClientID: "browser-b"})
+	if err != nil || parent == nil || parent.ID != top.ID || reply.Lat != 47 || reply.Lng != 8 || parent.TokenHash != "" {
+		t.Fatalf("Antwort: %v %+v %+v", err, reply, parent)
+	}
+	if _, _, _, err := s.AddComment(id, Comment{ParentID: reply.ID, Text: "verschachtelt"}); !errors.Is(err, ErrBadComment) {
+		t.Fatalf("Antwort auf Antwort akzeptiert: %v", err)
+	}
+	if _, _, _, err := s.AddComment(id, Comment{ParentID: "doesnotexist1", Text: "x"}); !errors.Is(err, ErrBadComment) {
+		t.Fatalf("Antwort auf Unbekanntes akzeptiert: %v", err)
+	}
+	if err := s.ResolveComment(id, reply.ID, "", rtoken, true); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.Comments(id)
+	if len(list) != 2 || list[1].Resolved {
+		t.Fatalf("Antworten haben keinen Erledigt-Status: %+v", list)
+	}
+	if err := s.DeleteComment(id, top.ID, editToken, ""); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.Comments(id)
+	if len(list) != 0 {
+		t.Fatalf("Antworten müssen mit dem Hauptkommentar verschwinden: %+v", list)
+	}
+
+	sub := PushSub{ClientID: "browser-a", Endpoint: "https://push.example/1", P256dh: "p", Auth: "a", Role: "replies", Threads: []string{"c1"}}
+	if err := s.SetPushSub(id, sub); err != nil {
+		t.Fatal(err)
+	}
+	sub.Role = "all"
+	if err := s.SetPushSub(id, sub); err != nil {
+		t.Fatal(err)
+	}
+	subs, _ := s.PushSubs(id)
+	if len(subs) != 1 || subs[0].Role != "all" {
+		t.Fatalf("Upsert nach ClientID: %+v", subs)
+	}
+	if err := s.SetPushSub(id, PushSub{ClientID: "browser-c", Endpoint: "https://push.example/2", Role: "weird"}); !errors.Is(err, ErrBadComment) {
+		t.Fatalf("ungültige Rolle akzeptiert: %v", err)
+	}
+	_ = s.SetPushSub(id, PushSub{ClientID: "browser-c", Endpoint: "https://push.example/2", Role: "replies"})
+	if err := s.DeletePushSub(id, "", "https://push.example/2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeletePushSub(id, "browser-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	subs, _ = s.PushSubs(id)
+	if len(subs) != 0 {
+		t.Fatalf("nach Löschen: %+v", subs)
 	}
 }
