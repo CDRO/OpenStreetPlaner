@@ -5,7 +5,7 @@ import {
   parseMaxspeed, isDrivable, waySpeed, wayDirection, buildGraph, attachPoint, shortestPath, computeRoutes,
   insertPointsOnLine, formatDuration, keyOf,
 } from '../js/routing.js';
-import { createDocument, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
+import { createDocument, createLayer, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
 import { project as projectLL } from '../js/geometry.js';
 
 test('parseMaxspeed versteht Zahlen, mph, Zonen und Sonderwerte', () => {
@@ -152,4 +152,25 @@ test('Zonen deckeln das Tempo, Fussgängerzonen sperren', () => {
   zone.kind = 'parking';
   const parking = computeRoutes({ osmWays: ways, doc, from, to });
   assert.ok(Math.abs(parking.proposed.time - base.proposed.time) < 1e-9, 'Parkplatz ohne Tempolimit');
+});
+
+test('Ausgeblendete Ebenen zählen nicht; Abschnitts-Tempolimit wirkt', () => {
+  const ways = detourWays();
+  const doc = createDocument();
+  const variant = createLayer(doc, 'Variante B');
+  const from = [47, 8];
+  const to = [47.01, 8.01];
+  doc.features.push(createRoad({ layerId: variant.id, nodes: [from, to], kind: 'main', maxspeed: 50 }));
+  const shown = computeRoutes({ osmWays: ways, doc, from, to });
+  assert.ok(shown.proposed.dist < shown.current.dist * 0.8, 'sichtbar: Abkürzung zählt');
+  variant.visible = false;
+  const hiddenRes = computeRoutes({ osmWays: ways, doc, from, to });
+  assert.ok(Math.abs(hiddenRes.proposed.dist - hiddenRes.current.dist) < 1e-6, 'ausgeblendet: wie heute');
+  variant.visible = true;
+  const road = doc.features[0];
+  const t50 = computeRoutes({ osmWays: ways, doc, from, to }).proposed.time;
+  road.segments[0].maxspeed = 20;
+  const r20 = computeRoutes({ osmWays: ways, doc, from, to });
+  assert.ok(r20.proposed.time > t50, `Abschnittslimit wirkt: ${r20.proposed.time} vs ${t50}`);
+  assert.ok(Math.abs(r20.proposed.dist - r20.current.dist) < 1e-6, 'bei Tempo 20 lohnt sich wieder der Umweg');
 });

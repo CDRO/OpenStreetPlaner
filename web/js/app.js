@@ -403,6 +403,10 @@ async function main() {
       const label = store.redo();
       if (label) ui.toast(`Wiederholt: ${label}`);
     },
+    commitDoc(label, fn) {
+      if (!actions.requireEdit()) return;
+      store.commit(label, fn);
+    },
     patchFeature(id, label, fn) {
       if (!actions.requireEdit()) return;
       store.commit(label, (d) => {

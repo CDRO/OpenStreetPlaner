@@ -80,7 +80,7 @@ func TestJSONRoundTripKeepsShape(t *testing.T) {
 	}
 	raw, _ := json.Marshal(d)
 	s := string(raw)
-	for _, want := range []string{`"segments":[{"level":"bridge"},{"level":"ground"}]`, `"oneway":false`, `"visible":true`, `"at":[47,8]`} {
+	for _, want := range []string{`"segments":[{"level":"bridge","maxspeed":null},{"level":"ground","maxspeed":null}]`, `"oneway":false`, `"visible":true`, `"at":[47,8]`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("JSON enthält %s nicht: %s", want, s)
 		}
@@ -157,5 +157,30 @@ func TestZones(t *testing.T) {
 	_ = Normalize(d)
 	if d.Features[1].Kind != "crossing" {
 		t.Fatalf("Fussgängerstreifen nicht akzeptiert")
+	}
+}
+
+func TestSegmentSpeedAndWidth(t *testing.T) {
+	d := sample()
+	bad := 999.0
+	ok := 29.6
+	w := 6.55
+	d.Features[0].Segments = []Segment{{Level: "ground", Maxspeed: &bad}, {Level: "ground", Maxspeed: &ok}}
+	d.Features[0].Width = &w
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	segs := d.Features[0].Segments
+	if segs[0].Maxspeed != nil || segs[1].Maxspeed == nil || *segs[1].Maxspeed != 30 {
+		t.Fatalf("Abschnitts-Tempolimit: %+v", segs)
+	}
+	if d.Features[0].Width == nil || *d.Features[0].Width != 6.6 {
+		t.Fatalf("Breite: %+v", d.Features[0].Width)
+	}
+	huge := 100.0
+	d.Features[0].Width = &huge
+	_ = Normalize(d)
+	if d.Features[0].Width != nil {
+		t.Fatalf("zu grosse Breite nicht verworfen")
 	}
 }

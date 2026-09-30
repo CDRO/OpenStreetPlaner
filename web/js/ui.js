@@ -1,7 +1,7 @@
 // Seitenleiste, Kopfzeile, Statuszeile, Dialoge. Reine DOM-Arbeit; die Logik
 // steckt in app.js (actions) und den Modulen.
 
-import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, ZONE_KINDS, docStats, featureLabel, getFeature, roadSpeed } from './model.js';
+import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, ZONE_KINDS, docStats, featureLabel, getFeature, roadSpeed, roadWidthMeters, segmentSpeed, splitRoadAtNode } from './model.js';
 import { DPI, PAPER } from './export.js';
 import { pathLength } from './geometry.js';
 import { TOOLS } from './tools.js';
@@ -242,6 +242,7 @@ export class UI {
             <button type="button" class="speed${f.maxspeed ? '' : ' active'}" data-speed="" title="Standard je Strassentyp" ${dis}>Std.</button>
           </div>
         </label>
+        <label class="field">Breite (m)<input type="number" id="prop-width" min="1" max="60" step="0.5" value="${f.width ?? ''}" placeholder="Standard ${roadWidthMeters({ ...f, width: null })} m" ${dis}></label>
         <div class="segments">
           <div class="seg-head">Abschnitte <span class="muted">(${f.segments.length}, ${fmtLen(pathLength(f.nodes))})</span></div>
           <div class="seg-chips">${chips}</div>
@@ -254,6 +255,11 @@ export class UI {
             ${LEVELS.map((l) => `<label class="radio"><input type="radio" name="seg-level" value="${l.id}"${seg.level === l.id ? ' checked' : ''} ${dis}> ${esc(l.label)}</label>`).join('')}
           </div>
           <button type="button" id="seg-apply-all" class="btn small" ${dis}>Diese Führung auf alle Abschnitte anwenden</button>
+          <label class="field">Tempolimit dieses Abschnitts (km/h)<input type="number" id="seg-maxspeed" min="5" max="200" step="5" value="${seg.maxspeed ?? ''}" placeholder="wie Strasse (${segmentSpeed({ ...f, segments: [{ level: 'ground', maxspeed: null }] }, 0) || '–'})" ${dis}></label>
+          <div class="btn-row">
+            <button type="button" id="seg-split-before" class="btn small" ${dis || segIndex < 1 ? 'disabled' : ''} title="Strasse am Anfang dieses Abschnitts in zwei Strassen teilen">Vor Abschnitt teilen</button>
+            <button type="button" id="seg-split-after" class="btn small" ${dis || segIndex > f.segments.length - 2 ? 'disabled' : ''} title="Strasse am Ende dieses Abschnitts in zwei Strassen teilen">Nach Abschnitt teilen</button>
+          </div>
         </div>`;
     } else if (f.type === 'junction') {
       specific = `<label class="field">Art<select id="prop-jkind" ${dis}>${options(JUNCTION_KINDS, f.kind)}</select></label>`;
@@ -298,6 +304,15 @@ export class UI {
         const level = f.segments[segIndex].level;
         patch('Führung auf alle Abschnitte', (x) => x.segments.forEach((s) => { s.level = level; }));
       };
+      this.$('prop-width').onchange = (e) => patch('Breite ändern', (x) => { x.width = e.target.value === '' ? null : Math.max(1, Math.min(60, Math.round(Number(e.target.value) * 2) / 2)); });
+      this.$('seg-maxspeed').onchange = (e) => patch('Abschnitts-Tempolimit ändern', (x) => { x.segments[segIndex].maxspeed = e.target.value === '' ? null : Math.max(5, Math.min(200, Math.round(Number(e.target.value) / 5) * 5)); });
+      const split = (nodeIndex) => {
+        let newId = null;
+        actions.commitDoc('Strasse teilen', (d) => { newId = splitRoadAtNode(d, f.id, nodeIndex); });
+        if (newId) tools.setSelection({ featureId: newId, segIndex: 0 });
+      };
+      this.$('seg-split-before').onclick = () => split(segIndex);
+      this.$('seg-split-after').onclick = () => split(segIndex + 1);
     } else if (f.type === 'junction') {
       this.$('prop-jkind').onchange = (e) => patch('Art ändern', (x) => { x.kind = e.target.value; });
     } else if (f.type === 'zone') {

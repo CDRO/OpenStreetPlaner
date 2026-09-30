@@ -23,6 +23,7 @@ const (
 	MaxNoteLen   = 2000
 	MaxRadius    = 500.0
 	MaxSpeed     = 200.0
+	MaxWidth     = 60.0
 )
 
 var (
@@ -52,7 +53,8 @@ type Layer struct {
 }
 
 type Segment struct {
-	Level string `json:"level"`
+	Level    string   `json:"level"`
+	Maxspeed *float64 `json:"maxspeed"` // km/h; nil = wie die Strasse
 }
 
 type Feature struct {
@@ -66,6 +68,7 @@ type Feature struct {
 	Status   string    `json:"status,omitempty"`
 	Oneway   *bool     `json:"oneway,omitempty"`
 	Maxspeed *float64  `json:"maxspeed,omitempty"` // km/h; nil = Standard je Strassentyp
+	Width    *float64  `json:"width,omitempty"`    // Meter; nil = Standard je Strassentyp
 	OsmID    int64     `json:"osmId,omitempty"`    // OSM-Way, aus dem die Strasse übernommen wurde
 	Nodes    []LatLng  `json:"nodes,omitempty"`
 	Segments []Segment `json:"segments,omitempty"`
@@ -227,10 +230,16 @@ func Normalize(d *Document) error {
 			segs := make([]Segment, len(f.Nodes)-1)
 			for j := range segs {
 				level := "ground"
+				var ms *float64
 				if j < len(f.Segments) {
 					level = f.Segments[j].Level
+					ms = f.Segments[j].Maxspeed
 				}
 				segs[j].Level = oneOf(Levels, level, "ground")
+				if ms != nil && !math.IsNaN(*ms) && *ms > 0 && *ms <= MaxSpeed {
+					v := math.Round(*ms)
+					segs[j].Maxspeed = &v
+				}
 			}
 			f.Segments = segs
 			f.Kind = oneOf(RoadKinds, f.Kind, "other")
@@ -248,6 +257,13 @@ func Normalize(d *Document) error {
 			if f.OsmID < 0 {
 				f.OsmID = 0
 			}
+			if f.Width != nil && (math.IsNaN(*f.Width) || *f.Width <= 0 || *f.Width > MaxWidth) {
+				f.Width = nil
+			}
+			if f.Width != nil {
+				v := math.Round(*f.Width*10) / 10
+				f.Width = &v
+			}
 			f.At, f.Center, f.Radius = nil, nil, 0
 		case "junction":
 			if f.At == nil || !validLatLng(*f.At) {
@@ -257,7 +273,7 @@ func Normalize(d *Document) error {
 			f.At = &p
 			f.Kind = oneOf(JunctionKinds, f.Kind, "plain")
 			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius = "", nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID = nil, 0
+			f.Maxspeed, f.OsmID, f.Width = nil, 0, nil
 		case "roundabout":
 			if f.Center == nil || !validLatLng(*f.Center) {
 				return invalid("Kreisel %s hat kein gültiges Zentrum", f.ID)
@@ -272,7 +288,7 @@ func Normalize(d *Document) error {
 			}
 			f.Radius = math.Round(f.Radius*10) / 10
 			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At = "", "", nil, nil, nil, nil
-			f.Maxspeed, f.OsmID = nil, 0
+			f.Maxspeed, f.OsmID, f.Width = nil, 0, nil
 		case "zone":
 			if len(f.Nodes) < 3 {
 				return invalid("Zone %s braucht mindestens drei Punkte", f.ID)
@@ -288,7 +304,7 @@ func Normalize(d *Document) error {
 			}
 			f.Kind = oneOf(ZoneKinds, f.Kind, "other")
 			f.Status, f.Oneway, f.Segments, f.At, f.Center, f.Radius = "", nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID = nil, 0
+			f.Maxspeed, f.OsmID, f.Width = nil, 0, nil
 		default:
 			return invalid("unbekannter Elementtyp %q", f.Type)
 		}

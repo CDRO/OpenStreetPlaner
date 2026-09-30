@@ -49,6 +49,37 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.equal(doc.features[0].nodes.length, 4, 'mit Shift keine Teilung');
   console.log('✓ Shift setzt Einrasten aus');
 
+  // Strasse 1 am Endpunkt verlängern (erster Klick auf den Endpunkt), dann teilen
+  const endBefore = (await h.doc()).features[0].nodes.length;
+  await page.mouse.click(p3.x + 1, p3.y - 1);
+  await h.settle(150);
+  await page.mouse.click(p3.x + 60, p3.y - 80);
+  await h.settle(80);
+  await page.keyboard.press('Enter');
+  await h.settle();
+  doc = await h.doc();
+  assert.equal(doc.features.length, 3, 'keine neue Strasse, sondern Verlängerung');
+  assert.equal(doc.features[0].nodes.length, endBefore + 1, 'Strasse 1 hat einen Punkt mehr');
+  await page.keyboard.press('v');
+  await page.evaluate((id) => window.stadtplaner.tools.setSelection({ featureId: id, segIndex: 1 }), doc.features[0].id);
+  await h.settle(300);
+  await page.fill('#seg-maxspeed', '30');
+  await page.press('#seg-maxspeed', 'Tab');
+  await h.settle();
+  assert.equal((await h.doc()).features[0].segments[1].maxspeed, 30, 'Tempolimit pro Abschnitt');
+  await page.fill('#prop-width', '6.5');
+  await page.press('#prop-width', 'Tab');
+  await h.settle();
+  assert.equal((await h.doc()).features[0].width, 6.5, 'Breite in Metern');
+  await page.click('#seg-split-before');
+  await h.settle();
+  doc = await h.doc();
+  assert.equal(doc.features.length, 4, 'Teilen ergibt eine zweite Strasse');
+  assert.equal(doc.features[0].segments.length, 1);
+  assert.equal(doc.features[1].width, 6.5, 'zweite Hälfte erbt Eigenschaften');
+  assert.equal(doc.features[1].segments[0].maxspeed, 30);
+  console.log('✓ Verlängern, Abschnitts-Tempo, Breite, Teilen');
+
   // Auswahl per Klick auf die Linie, Brücke/Tunnel
   await page.keyboard.press('v');
   await page.mouse.move(p2.x + 60, p2.y);
@@ -60,12 +91,13 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await page.check('input[name="seg-level"][value="bridge"]');
   await h.settle();
   doc = await h.doc();
-  assert.ok(doc.features[0].segments.some((s) => s.level === 'bridge'));
+  const mainRoad = doc.features[1];
+  assert.ok(mainRoad.segments.some((s) => s.level === 'bridge'));
   await page.check('input[name="seg-level"][value="tunnel"]');
   await page.click('#seg-apply-all');
   await h.settle();
   doc = await h.doc();
-  assert.ok(doc.features[0].segments.every((s) => s.level === 'tunnel'));
+  assert.ok(doc.features[1].segments.every((s) => s.level === 'tunnel'));
   console.log('✓ Brücke/Tunnel pro Abschnitt');
 
   // Kreisel + Kreuzung (rastet auf Endpunkt)
@@ -81,7 +113,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   doc = await h.doc();
   assert.equal(doc.features.filter((f) => f.type === 'roundabout').length, 1);
   const j = doc.features.find((f) => f.type === 'junction');
-  assert.deepEqual(j.at, doc.features[0].nodes[3], 'Kreuzung rastet auf Strassenendpunkt');
+  assert.deepEqual(j.at, doc.features[1].nodes[2], 'Kreuzung rastet auf Strassenpunkt p3');
   console.log('✓ Kreisel + Kreuzung');
 
   // Undo/Redo

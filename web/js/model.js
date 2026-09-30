@@ -5,15 +5,41 @@ import { circleRing, pathLength } from './geometry.js';
 
 export const DOC_VERSION = 1;
 
+// width: Bildschirmbreite in Pixeln (kleine Zoomstufen); widthM: reale Breite in Metern (grosse Zoomstufen);
 // speed: Standard-Tempolimit in km/h für den Routen-Rechner, wenn keines gesetzt ist (0 = nicht befahrbar).
 export const ROAD_KINDS = [
-  { id: 'main', label: 'Hauptstrasse', width: 7, speed: 50 },
-  { id: 'secondary', label: 'Nebenstrasse', width: 5.5, speed: 50 },
-  { id: 'residential', label: 'Quartierstrasse', width: 4.5, speed: 30 },
-  { id: 'service', label: 'Zufahrt / Erschliessung', width: 3.5, speed: 20 },
-  { id: 'path', label: 'Fuss- / Veloweg', width: 2.5, speed: 0 },
-  { id: 'other', label: 'Sonstiges', width: 4, speed: 50 },
+  { id: 'main', label: 'Hauptstrasse', width: 7, widthM: 7, speed: 50 },
+  { id: 'secondary', label: 'Nebenstrasse', width: 5.5, widthM: 6, speed: 50 },
+  { id: 'residential', label: 'Quartierstrasse', width: 4.5, widthM: 5, speed: 30 },
+  { id: 'service', label: 'Zufahrt / Erschliessung', width: 3.5, widthM: 3.5, speed: 20 },
+  { id: 'path', label: 'Fuss- / Veloweg', width: 2.5, widthM: 2.5, speed: 0 },
+  { id: 'other', label: 'Sonstiges', width: 4, widthM: 5, speed: 50 },
 ];
+
+export const MAX_WIDTH_M = 60;
+
+export function roadKind(road) {
+  return ROAD_KINDS.find((k) => k.id === road.kind) || ROAD_KINDS[ROAD_KINDS.length - 1];
+}
+
+/** Reale Breite in Metern: gesetzter Wert oder Standard je Typ. */
+export function roadWidthMeters(road) {
+  if (Number.isFinite(road.width) && road.width > 0) return road.width;
+  return roadKind(road).widthM;
+}
+
+export function normalizeWidth(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > MAX_WIDTH_M) return null;
+  return Math.round(n * 10) / 10;
+}
+
+/** Tempolimit eines Abschnitts: Abschnitt, sonst Strasse, sonst Standard je Typ. */
+export function segmentSpeed(road, i) {
+  const seg = road.segments && road.segments[i];
+  if (seg && Number.isFinite(seg.maxspeed) && seg.maxspeed > 0) return seg.maxspeed;
+  return roadSpeed(road);
+}
 
 export const MAX_SPEED = 200;
 
@@ -147,7 +173,7 @@ export function moveLayer(doc, id, delta) {
   doc.layers.splice(j, 0, layer);
 }
 
-export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false, maxspeed = null, osmId = null }) {
+export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false, maxspeed = null, osmId = null, width = null }) {
   const pts = nodes.map(roundCoord);
   return {
     id: newId('r'),
@@ -158,11 +184,47 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     status,
     oneway,
     maxspeed: normalizeMaxspeed(maxspeed),
+    width: normalizeWidth(width),
     osmId: Number.isInteger(osmId) && osmId > 0 ? osmId : null,
     nodes: pts,
-    segments: pts.slice(1).map(() => ({ level })),
+    segments: pts.slice(1).map(() => ({ level, maxspeed: null })),
     note: '',
   };
+}
+
+/**
+ * Teilt eine Strasse am Knoten nodeIndex in zwei Strassen (1 <= nodeIndex <= n-2).
+ * Die zweite Hälfte wird als neue Strasse mit denselben Eigenschaften angelegt; liefert deren ID.
+ */
+export function splitRoadAtNode(doc, roadId, nodeIndex) {
+  const road = getFeature(doc, roadId);
+  if (!road || road.type !== 'road' || nodeIndex < 1 || nodeIndex > road.nodes.length - 2) return null;
+  const second = {
+    ...road,
+    id: newId('r'),
+    nodes: road.nodes.slice(nodeIndex),
+    segments: road.segments.slice(nodeIndex).map((s) => ({ ...s })),
+  };
+  road.nodes = road.nodes.slice(0, nodeIndex + 1);
+  road.segments = road.segments.slice(0, nodeIndex);
+  doc.features.splice(doc.features.indexOf(road) + 1, 0, second);
+  return second.id;
+}
+
+/** Hängt Punkte an das Ende (atEnd) oder den Anfang einer Strasse an; neue Abschnitte erben die Führung des Nachbarabschnitts. */
+export function extendRoad(doc, roadId, latlngs, atEnd = true) {
+  const road = getFeature(doc, roadId);
+  if (!road || road.type !== 'road' || !latlngs.length) return;
+  const pts = latlngs.map(roundCoord);
+  if (atEnd) {
+    const last = road.segments[road.segments.length - 1] || { level: 'ground', maxspeed: null };
+    road.nodes.push(...pts);
+    road.segments.push(...pts.map(() => ({ level: last.level, maxspeed: null })));
+  } else {
+    const first = road.segments[0] || { level: 'ground', maxspeed: null };
+    road.nodes.unshift(...pts);
+    road.segments.unshift(...pts.map(() => ({ level: first.level, maxspeed: null })));
+  }
 }
 
 export function createJunction({ layerId, at, kind = 'plain', name = '' }) {
@@ -347,6 +409,7 @@ export function normalizeDocument(raw) {
       const segs = Array.isArray(f.segments) ? f.segments : [];
       const segments = nodes.slice(1).map((_, i) => ({
         level: idIn(LEVELS, segs[i] && segs[i].level, 'ground'),
+        maxspeed: normalizeMaxspeed(segs[i] && segs[i].maxspeed),
       }));
       doc.features.push({
         ...base,
@@ -355,6 +418,7 @@ export function normalizeDocument(raw) {
         status: idIn(STATUSES, f.status, 'new'),
         oneway: f.oneway === true,
         maxspeed: normalizeMaxspeed(f.maxspeed),
+        width: normalizeWidth(f.width),
         osmId: Number.isInteger(f.osmId) && f.osmId > 0 ? f.osmId : null,
         nodes,
         segments,
@@ -423,7 +487,7 @@ export function toGeoJSON(doc) {
       f.segments.forEach((seg, i) => {
         features.push({
           type: 'Feature',
-          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, maxspeed: f.maxspeed, osmId: f.osmId, segment: i, level: seg.level },
+          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, maxspeed: segmentSpeed(f, i), width: roadWidthMeters(f), osmId: f.osmId, segment: i, level: seg.level },
           geometry: {
             type: 'LineString',
             coordinates: [f.nodes[i], f.nodes[i + 1]].map(([lat, lng]) => [lng, lat]),

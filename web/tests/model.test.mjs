@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  roadSpeed, normalizeMaxspeed, createZone, pointInPolygon, ringArea, insertZoneNode, removeZoneNode, moveFeatureNode, zoneKind,
+  roadSpeed, normalizeMaxspeed, segmentSpeed, roadWidthMeters, splitRoadAtNode, extendRoad, createZone, pointInPolygon, ringArea, insertZoneNode, removeZoneNode, moveFeatureNode, zoneKind,
   createDocument, createLayer, createRoad, createJunction, createRoundabout, splitRoadSegment,
   applySnapSplits, removeRoadNode, normalizeDocument, deserialize, serialize, toGeoJSON, docStats,
   removeLayer, moveLayer, featureLabel,
@@ -171,4 +171,38 @@ test('Zonen: anlegen, Punkt-in-Polygon, Punkte einfügen/entfernen, GeoJSON, Nor
   assert.equal(other.features[0].kind, 'other');
   assert.equal(featureLabel({ type: 'zone', kind: 'pedestrian' }), 'Fussgängerzone');
   assert.equal(featureLabel({ type: 'junction', kind: 'crossing', name: '' }), 'Fussgängerstreifen');
+});
+
+test('Tempolimit pro Abschnitt, Breite in Metern, teilen und verlängern', () => {
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const r = createRoad({ layerId, nodes: [[47, 8], [47, 8.001], [47, 8.002], [47, 8.003]], kind: 'main', maxspeed: 50 });
+  doc.features.push(r);
+  r.segments[1].maxspeed = 30;
+  assert.equal(segmentSpeed(r, 0), 50);
+  assert.equal(segmentSpeed(r, 1), 30);
+  assert.equal(roadWidthMeters(r), 7);
+  r.width = 6.5;
+  assert.equal(roadWidthMeters(r), 6.5);
+  const back = deserialize(serialize(doc));
+  assert.equal(back.features[0].segments[1].maxspeed, 30);
+  assert.equal(back.features[0].width, 6.5);
+  assert.equal(splitRoadAtNode(doc, r.id, 0), null);
+  assert.equal(splitRoadAtNode(doc, r.id, 3), null);
+  const secondId = splitRoadAtNode(doc, r.id, 2);
+  const second = doc.features.find((f) => f.id === secondId);
+  assert.deepEqual(r.nodes, [[47, 8], [47, 8.001], [47, 8.002]]);
+  assert.equal(r.segments.length, 2);
+  assert.deepEqual(second.nodes, [[47, 8.002], [47, 8.003]]);
+  assert.equal(second.segments.length, 1);
+  assert.equal(second.maxspeed, 50);
+  assert.equal(second.width, 6.5);
+  assert.equal(doc.features.indexOf(second), 1, 'direkt hinter dem Original');
+  r.segments[1].level = 'bridge';
+  extendRoad(doc, r.id, [[47, 8.0025], [47, 8.003]], true);
+  assert.equal(r.nodes.length, 5);
+  assert.deepEqual(r.segments.map((s) => s.level), ['ground', 'bridge', 'bridge', 'bridge']);
+  extendRoad(doc, r.id, [[47, 7.999]], false);
+  assert.deepEqual(r.nodes[0], [47, 7.999]);
+  assert.equal(r.segments[0].level, 'ground');
 });

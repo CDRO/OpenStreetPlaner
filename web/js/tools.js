@@ -3,7 +3,7 @@
 // den draw.js auf das Canvas bringt.
 
 import {
-  applySnapSplits, createJunction, createRoad, createRoundabout, createZone, getFeature, getLayer,
+  applySnapSplits, createJunction, createRoad, createRoundabout, createZone, extendRoad, featureLabel, getFeature, getLayer,
   insertZoneNode, moveFeatureNode, pointInPolygon, removeFeature, removeRoadNode, removeZoneNode, ringArea,
   splitRoadSegment, roundCoord,
 } from './model.js';
@@ -15,7 +15,7 @@ import { parseMaxspeed } from './routing.js';
 
 export const TOOLS = [
   { id: 'select', label: 'Auswählen', key: 'V', hint: 'Element anklicken zum Auswählen. Griffe ziehen zum Verschieben, Rechtsklick auf einen Griff löscht den Punkt, Klick auf einen Zwischenpunkt fügt einen ein.' },
-  { id: 'road', label: 'Strasse', key: 'S', hint: 'Klicken setzt Punkte. Doppelklick, Enter oder Rechtsklick beendet, Esc bricht ab, Backspace entfernt den letzten Punkt.' },
+  { id: 'road', label: 'Strasse', key: 'S', hint: 'Klicken setzt Punkte. Doppelklick, Enter oder Rechtsklick beendet, Esc bricht ab, Backspace entfernt den letzten Punkt. Erster Klick auf einen Strassen-Endpunkt verlängert diese Strasse.' },
   { id: 'junction', label: 'Kreuzung / Punkt', key: 'K', hint: 'Klicken platziert eine Kreuzung oder Punkt-Massnahme (Ampel, Stop, Fussgängerstreifen, Bushaltestelle), am besten auf einen Strassenpunkt.' },
   { id: 'zone', label: 'Zone / Fläche', key: 'F', hint: 'Klicken setzt Eckpunkte. Doppelklick, Enter oder Rechtsklick schliesst die Fläche (mindestens drei Punkte), Esc bricht ab.' },
   { id: 'roundabout', label: 'Kreisel', key: 'R', hint: 'Klicken setzt das Zentrum, Maus bewegen wählt den Radius, erneut klicken bestätigt.' },
@@ -425,10 +425,24 @@ export class ToolController {
 
   roadClick(e, type = 'road') {
     const r = this.snap(e);
-    if (!this.draft) this.draft = { type, vertices: [] };
+    if (!this.draft) {
+      this.draft = { type, vertices: [] };
+      // Erster Klick auf den Endpunkt einer eigenen Strasse: diese Strasse verlängern.
+      const ref = r.snap && r.snap.kind === 'node' ? r.snap.ref : null;
+      if (type === 'road' && ref && ref.source === 'draft' && ref.type === 'road') {
+        const road = getFeature(this.store.doc, ref.featureId);
+        if (road && (ref.index === 0 || ref.index === road.nodes.length - 1)) {
+          this.draft.extend = { roadId: road.id, atEnd: ref.index === road.nodes.length - 1, from: road.nodes[ref.index] };
+          this.previewRoad(r.latlng);
+          this.onStatus(`Verlängere „${featureLabel(road)}“ – weitere Punkte setzen, Enter oder Doppelklick beendet.`);
+          return;
+        }
+      }
+    }
     const v = this.draft.vertices;
-    if (v.length) {
-      const a = this.map.project(v[v.length - 1].latlng);
+    const lastPoint = v.length ? v[v.length - 1].latlng : (this.draft.extend ? this.draft.extend.from : null);
+    if (lastPoint) {
+      const a = this.map.project(lastPoint);
       const b = this.map.project(r.latlng);
       if (Math.hypot(a.x - b.x, a.y - b.y) < 3) return;
     }
@@ -474,7 +488,9 @@ export class ToolController {
 
   previewRoad(cursor) {
     if (!this.draft) return;
-    this.setPreview({ points: this.draft.vertices.map((v) => v.latlng), cursor, color: this.activeColor(), closed: this.draft.type === 'zone' });
+    const points = this.draft.vertices.map((v) => v.latlng);
+    if (this.draft.extend) points.unshift(this.draft.extend.from);
+    this.setPreview({ points, cursor, color: this.activeColor(), closed: this.draft.type === 'zone' });
   }
 
   finishRoad() {
@@ -482,6 +498,21 @@ export class ToolController {
     this.draft = null;
     this.setPreview(null);
     this.setSnap(null);
+    if (draft && draft.extend) {
+      if (!draft.vertices.length) {
+        this.onStatus('Verlängerung verworfen (kein neuer Punkt).');
+        return;
+      }
+      this.store.commit('Strasse verlängern', (doc) => {
+        const splits = applySnapSplits(doc, draft.vertices.filter((v) => !(v.snap && v.snap.ref && v.snap.ref.featureId === draft.extend.roadId)));
+        const pts = draft.vertices.map((v) => v.latlng);
+        extendRoad(doc, draft.extend.roadId, draft.extend.atEnd ? pts : pts.slice().reverse(), draft.extend.atEnd);
+        if (splits) this.toast(`Strasse verlängert, ${splits} bestehende${splits === 1 ? 'r' : ''} Abschnitt${splits === 1 ? '' : 'e'} geteilt.`);
+      });
+      this.setSelection({ featureId: draft.extend.roadId, segIndex: null });
+      this.onStatus(this.toolInfo().hint);
+      return;
+    }
     if (!draft || draft.vertices.length < 2) {
       this.onStatus('Strasse verworfen (mindestens zwei Punkte nötig).');
       return;

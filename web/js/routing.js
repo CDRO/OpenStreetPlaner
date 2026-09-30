@@ -7,7 +7,7 @@
 // eingerastet sind, teilen diesen Abschnitt beim Aufbau des Netzes.
 
 import { closestPointOnSegment, haversine, mercatorScale, project, unproject } from './geometry.js';
-import { pointInPolygon, roadSpeed, zoneKind } from './model.js';
+import { pointInPolygon, segmentSpeed, zoneKind } from './model.js';
 
 const DRIVABLE = new Set([
   'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service',
@@ -161,8 +161,11 @@ export function insertPointsOnLine(points, candidates, toleranceMeters = 1) {
  */
 export function buildGraph({ osmWays = [], doc = null, mode = 'current' }) {
   const g = new Graph();
-  const roads = mode === 'proposed' && doc ? doc.features.filter((f) => f.type === 'road') : [];
-  const zones = mode === 'proposed' && doc ? doc.features.filter((f) => f.type === 'zone' && zoneKind(f).speed !== null) : [];
+  // Nur sichtbare Ebenen zählen: Ebenen ein- und ausblenden ist der Variantenvergleich.
+  const hidden = doc ? new Set(doc.layers.filter((l) => l.visible === false).map((l) => l.id)) : new Set();
+  const visible = mode === 'proposed' && doc ? doc.features.filter((f) => !hidden.has(f.layerId)) : [];
+  const roads = visible.filter((f) => f.type === 'road');
+  const zones = visible.filter((f) => f.type === 'zone' && zoneKind(f).speed !== null);
   if (zones.length) g.speedCap = (ll) => zoneSpeedAt(zones, ll);
   const replaced = new Set(roads.filter((r) => r.osmId).map((r) => r.osmId));
   const draftNodes = [];
@@ -176,10 +179,10 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current' }) {
     g.addPolyline(pts, waySpeed(w.tags), wayDirection(w.tags));
   }
   if (mode === 'proposed' && doc) {
-    const roundabouts = doc.features.filter((f) => f.type === 'roundabout');
+    const roundabouts = visible.filter((f) => f.type === 'roundabout');
     for (const r of roads) {
       if (r.status === 'remove') continue;
-      g.addPolyline(r.nodes, roadSpeed(r), r.oneway ? 1 : 0);
+      for (let i = 0; i < r.nodes.length - 1; i++) g.link(r.nodes[i], r.nodes[i + 1], segmentSpeed(r, i), r.oneway ? 1 : 0);
     }
     for (const k of roundabouts) {
       const c = project(k.center);
@@ -189,7 +192,7 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current' }) {
         if (Math.abs(d - k.radius) <= 1.5) g.link(n.ll, k.center, ROUNDABOUT_SPEED, 0);
       }
     }
-    for (const j of doc.features) {
+    for (const j of visible) {
       if (j.type === 'junction') g.addPenalty(j.at, JUNCTION_PENALTY[j.kind] || 0);
     }
   }

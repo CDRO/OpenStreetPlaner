@@ -3,7 +3,7 @@
 // ebenerdige Abschnitte, Brücken, Kreisel, Kreuzungen, Pfeile, Beschriftung,
 // Bearbeitungsgriffe, Zeichenvorschau, Einrast-Markierung.
 
-import { ROAD_KINDS, getLayer, zoneKind } from './model.js';
+import { ROAD_KINDS, getLayer, roadWidthMeters, segmentSpeed, zoneKind } from './model.js';
 
 const KIND_WIDTH = Object.fromEntries(ROAD_KINDS.map((k) => [k.id, k.width]));
 
@@ -13,6 +13,8 @@ export function drawScene(ctx, map, s) {
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
   const lineScale = zoom >= 15 ? 1 : zoom >= 13 ? 0.7 : 0.45;
+  // Ab etwa Zoom 17 übernimmt die reale Breite in Metern.
+  const widthOf = (f) => Math.min(200, Math.max(KIND_WIDTH[f.kind] * lineScale, roadWidthMeters(f) / mpp));
   const visible = doc.features.filter((f) => {
     const l = getLayer(doc, f.layerId);
     return l && l.visible !== false;
@@ -40,7 +42,7 @@ export function drawScene(ctx, map, s) {
   const roads = visible.filter((f) => f.type === 'road');
   // Tunnel
   for (const f of roads) {
-    const w = KIND_WIDTH[f.kind] * lineScale;
+    const w = widthOf(f);
     eachSegment(f, 'tunnel', (a, b) => {
       ctx.save();
       ctx.globalAlpha = f.status === 'existing' ? 0.4 : 0.55;
@@ -52,14 +54,14 @@ export function drawScene(ctx, map, s) {
   }
   // Ebenerdig: erst alle Einfassungen, dann alle Füllungen (saubere Kreuzungen)
   for (const f of roads) {
-    const w = KIND_WIDTH[f.kind] * lineScale;
+    const w = widthOf(f);
     ctx.save();
     ctx.globalAlpha = f.status === 'existing' ? 0.6 : 0.85;
     eachSegment(f, 'ground', (a, b) => stroke(ctx, [P(a), P(b)], '#2b2b2b', w + 2, 'round'));
     ctx.restore();
   }
   for (const f of roads) {
-    const w = KIND_WIDTH[f.kind] * lineScale;
+    const w = widthOf(f);
     ctx.save();
     if (f.status === 'existing') ctx.globalAlpha = 0.7;
     if (f.status === 'remove') ctx.setLineDash([6, 6]);
@@ -68,7 +70,7 @@ export function drawScene(ctx, map, s) {
   }
   // Brücken: dunkle Einfassung, weisser Rand, Füllung
   for (const f of roads) {
-    const w = KIND_WIDTH[f.kind] * lineScale;
+    const w = widthOf(f);
     ctx.save();
     if (f.status === 'existing') ctx.globalAlpha = 0.7;
     eachSegment(f, 'bridge', (a, b) => {
@@ -114,8 +116,8 @@ export function drawScene(ctx, map, s) {
   // Beschriftung und Tempolimit-Schilder
   if (zoom >= 16) {
     for (const f of roads) {
-      if (f.name) label(ctx, P, f, KIND_WIDTH[f.kind] * lineScale);
-      if (f.maxspeed) speedSign(ctx, P, f);
+      if (f.name) label(ctx, P, f, widthOf(f));
+      speedSigns(ctx, P, f);
     }
   }
   drawRoutes(ctx, P, doc.route, routes, routeDraft);
@@ -289,12 +291,31 @@ function longestSegment(P, road) {
   return best;
 }
 
-function speedSign(ctx, P, road) {
-  const seg = longestSegment(P, road);
-  if (!seg || seg.len < 70) return;
-  const c = { x: seg.a.x + (seg.b.x - seg.a.x) * 0.3, y: seg.a.y + (seg.b.y - seg.a.y) * 0.3 };
-  circle(ctx, c, 10, { stroke: '#c62828', width: 3, fill: '#fff' });
-  text(ctx, String(road.maxspeed), c.x, c.y + 0.5, { font: 'bold 9px system-ui, sans-serif', color: '#111', align: 'center', baseline: 'middle' });
+/** Ein Schild pro Lauf gleicher Geschwindigkeit, wenn ein Limit gesetzt ist (Strasse oder Abschnitt). */
+function speedSigns(ctx, P, road) {
+  let prev = null;
+  let run = null;
+  const flush = () => {
+    if (!run) return;
+    const seg = longestSegment(P, { nodes: road.nodes.slice(run.start, run.end + 2) });
+    if (seg && seg.len >= 50) {
+      const c = { x: seg.a.x + (seg.b.x - seg.a.x) * 0.35, y: seg.a.y + (seg.b.y - seg.a.y) * 0.35 };
+      circle(ctx, c, 10, { stroke: '#c62828', width: 3, fill: '#fff' });
+      text(ctx, String(run.speed), c.x, c.y + 0.5, { font: 'bold 9px system-ui, sans-serif', color: '#111', align: 'center', baseline: 'middle' });
+    }
+    run = null;
+  };
+  for (let i = 0; i < road.segments.length; i++) {
+    const explicit = (road.segments[i].maxspeed || road.maxspeed) ? segmentSpeed(road, i) : null;
+    if (explicit !== prev) {
+      flush();
+      if (explicit) run = { start: i, end: i, speed: explicit };
+    } else if (run) {
+      run.end = i;
+    }
+    prev = explicit;
+  }
+  flush();
 }
 
 function drawRoutes(ctx, P, query, routes, routeDraft) {
@@ -384,7 +405,7 @@ function drawSelectionHalo(ctx, P, f, selection, mpp, lineScale) {
   ctx.save();
   ctx.globalAlpha = 0.75;
   if (f.type === 'road') {
-    const w = KIND_WIDTH[f.kind] * lineScale;
+    const w = Math.min(200, Math.max(KIND_WIDTH[f.kind] * lineScale, roadWidthMeters(f) / mpp));
     stroke(ctx, f.nodes.map(P), '#ffd600', w + 10);
     if (selection.segIndex !== null && selection.segIndex !== undefined && f.segments[selection.segIndex]) {
       const i = selection.segIndex;
