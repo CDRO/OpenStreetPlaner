@@ -1,9 +1,10 @@
 // Seitenleiste, Kopfzeile, Statuszeile, Dialoge. Reine DOM-Arbeit; die Logik
 // steckt in app.js (actions) und den Modulen.
 
-import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, docStats, featureLabel, getFeature } from './model.js';
+import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, docStats, featureLabel, getFeature, roadSpeed } from './model.js';
 import { pathLength } from './geometry.js';
 import { TOOLS } from './tools.js';
+import { formatDuration } from './routing.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtDate = (iso) => {
@@ -52,6 +53,10 @@ export class UI {
     document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('active', s.id === `tab-${name}`));
     if (name === 'history') this.refreshHistory();
+    if (name === 'route') {
+      this.refreshRoute();
+      if (this.ctx.tools.tool !== 'route') this.ctx.tools.setTool('route');
+    }
   }
 
   // --- Suche ---------------------------------------------------------------------
@@ -147,6 +152,7 @@ export class UI {
     this.refreshLayers();
     this.refreshDrafts();
     this.refreshHistory();
+    this.refreshRoute();
   }
 
   refreshHeader() {
@@ -223,6 +229,13 @@ export class UI {
         <label class="field">Strassentyp<select id="prop-kind" ${dis}>${options(ROAD_KINDS, f.kind)}</select></label>
         <label class="field">Status<select id="prop-status" ${dis}>${options(STATUSES, f.status)}</select></label>
         <label class="check"><input type="checkbox" id="prop-oneway"${f.oneway ? ' checked' : ''} ${dis}> Einbahn (in Zeichenrichtung)</label>
+        <label class="field">Tempolimit (km/h)
+          <div class="speed-row">
+            <input type="number" id="prop-maxspeed" min="5" max="200" step="5" value="${f.maxspeed ?? ''}" placeholder="Standard ${roadSpeed({ ...f, maxspeed: null }) || '–'}" ${dis}>
+            ${[20, 30, 50, 80].map((v) => `<button type="button" class="speed${f.maxspeed === v ? ' active' : ''}" data-speed="${v}" ${dis}>${v}</button>`).join('')}
+            <button type="button" class="speed${f.maxspeed ? '' : ' active'}" data-speed="" title="Standard je Strassentyp" ${dis}>Std.</button>
+          </div>
+        </label>
         <div class="segments">
           <div class="seg-head">Abschnitte <span class="muted">(${f.segments.length}, ${fmtLen(pathLength(f.nodes))})</span></div>
           <div class="seg-chips">${chips}</div>
@@ -262,6 +275,9 @@ export class UI {
       this.$('prop-kind').onchange = (e) => patch('Strassentyp ändern', (x) => { x.kind = e.target.value; });
       this.$('prop-status').onchange = (e) => patch('Status ändern', (x) => { x.status = e.target.value; });
       this.$('prop-oneway').onchange = (e) => patch('Einbahn ändern', (x) => { x.oneway = e.target.checked; });
+      const setSpeed = (v) => patch('Tempolimit ändern', (x) => { x.maxspeed = v === '' || v === null ? null : Math.max(5, Math.min(200, Math.round(Number(v) / 5) * 5)); });
+      this.$('prop-maxspeed').onchange = (e) => setSpeed(e.target.value === '' ? null : e.target.value);
+      box.querySelectorAll('.speed').forEach((b) => { b.onclick = () => setSpeed(b.dataset.speed === '' ? null : b.dataset.speed); });
       box.querySelectorAll('.seg').forEach((b) => { b.onclick = () => tools.setSelection({ featureId: f.id, segIndex: Number(b.dataset.seg) }); });
       this.$('seg-prev').onclick = () => tools.setSelection({ featureId: f.id, segIndex: segIndex - 1 });
       this.$('seg-next').onclick = () => tools.setSelection({ featureId: f.id, segIndex: segIndex + 1 });
@@ -353,6 +369,10 @@ export class UI {
         <button type="button" id="d-export" class="btn small">JSON exportieren</button>
         <button type="button" id="d-geojson" class="btn small">GeoJSON exportieren</button>
         <button type="button" id="d-import" class="btn small">JSON importieren</button>
+      </div>
+      <div class="btn-row">
+        <button type="button" id="d-png" class="btn small">Karte als PNG</button>
+        <button type="button" id="d-pdf" class="btn small">Karte als PDF</button>
       </div>`;
     this.$('d-new').onclick = () => actions.newDraft();
     if (this.$('d-save')) this.$('d-save').onclick = () => actions.saveDraft();
@@ -362,6 +382,8 @@ export class UI {
     this.$('d-export').onclick = () => actions.exportJson();
     this.$('d-geojson').onclick = () => actions.exportGeoJson();
     this.$('d-import').onclick = () => this.$('import-file').click();
+    this.$('d-png').onclick = () => actions.exportPng();
+    this.$('d-pdf').onclick = () => actions.exportPdf();
 
     const drafts = local.listDrafts();
     const list = this.$('draft-list');
@@ -502,6 +524,8 @@ export class UI {
         <a class="btn" href="mailto:?subject=${subject}&body=${body}">Per E-Mail senden</a>
         <button type="button" id="share-json" class="btn">JSON herunterladen</button>
         <button type="button" id="share-geojson" class="btn">GeoJSON herunterladen</button>
+        <button type="button" id="share-png" class="btn">Karte als PNG</button>
+        <button type="button" id="share-pdf" class="btn">Karte als PDF</button>
         <button type="button" class="btn" data-close>Schliessen</button>
       </div>`);
     document.querySelectorAll('[data-copy]').forEach((b) => {
@@ -518,5 +542,58 @@ export class UI {
     });
     this.$('share-json').onclick = () => this.ctx.actions.exportJson();
     this.$('share-geojson').onclick = () => this.ctx.actions.exportGeoJson();
+    this.$('share-png').onclick = () => this.ctx.actions.exportPng();
+    this.$('share-pdf').onclick = () => this.ctx.actions.exportPdf();
+  }
+
+  // --- Routen-Rechner --------------------------------------------------------------
+
+  refreshRoute() {
+    const { store, actions, tools } = this.ctx;
+    const el = this.$('route-panel');
+    if (!el) return;
+    const q = store.doc.route;
+    const routes = actions.routes();
+    const net = actions.routeNetworkStatus();
+    const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+    const diff = (a, b, fmt, unit) => {
+      if (!a || !b) return '–';
+      const d = b - a;
+      const sign = d > 0 ? '+' : d < 0 ? '−' : '±';
+      return `${sign}${fmt(Math.abs(d))}${unit || ''}`;
+    };
+    const cur = routes && routes.current && !routes.current.error ? routes.current : null;
+    const neu = routes && routes.proposed && !routes.proposed.error ? routes.proposed : null;
+    let body = '';
+    if (!q) {
+      body = `<p class="muted">${tools.routeDraft ? 'Start gesetzt – jetzt das Ziel auf der Karte anklicken.' : 'Start und Ziel auf der Karte anklicken (Werkzeug „Route“, Taste T).'}</p>`;
+    } else if (!routes) {
+      body = '<p class="muted">Berechne…</p>';
+    } else {
+      body = `
+        <table class="route-table">
+          <thead><tr><th></th><th><span class="dot" style="background:#1b6ac9"></span>Heute</th><th><span class="dot" style="background:#2a9d3f"></span>Neu</th><th>Differenz</th></tr></thead>
+          <tbody>
+            <tr><td>Distanz</td><td>${cur ? fmtKm(cur.dist) : '–'}</td><td>${neu ? fmtKm(neu.dist) : '–'}</td><td>${diff(cur && cur.dist, neu && neu.dist, fmtKm)}</td></tr>
+            <tr><td>Fahrzeit</td><td>${cur ? formatDuration(cur.time) : '–'}</td><td>${neu ? formatDuration(neu.time) : '–'}</td><td>${diff(cur && cur.time, neu && neu.time, formatDuration)}</td></tr>
+          </tbody>
+        </table>
+        ${routes.current && routes.current.error ? `<p class="muted small">Heute: ${esc(routes.current.error)}</p>` : ''}
+        ${routes.proposed && routes.proposed.error ? `<p class="muted small">Neu: ${esc(routes.proposed.error)}</p>` : ''}`;
+    }
+    el.innerHTML = `
+      <p class="muted small">Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s.</p>
+      ${body}
+      <div class="btn-row">
+        <button type="button" id="route-tool" class="btn small ${tools.tool === 'route' ? 'primary' : ''}">Punkte setzen</button>
+        <button type="button" id="route-swap" class="btn small" ${q ? '' : 'disabled'}>A ↔ B</button>
+        <button type="button" id="route-clear" class="btn small" ${q || tools.routeDraft ? '' : 'disabled'}>Löschen</button>
+        <button type="button" id="route-load" class="btn small">Netz für Ansicht laden</button>
+      </div>
+      <p class="muted small" id="route-net">${esc(net)}</p>`;
+    this.$('route-tool').onclick = () => tools.setTool('route');
+    this.$('route-swap').onclick = () => actions.swapRoute();
+    this.$('route-clear').onclick = () => actions.clearRoute();
+    this.$('route-load').onclick = () => actions.loadRouteNetwork();
   }
 }

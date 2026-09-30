@@ -95,7 +95,7 @@ textarea { resize: vertical; }
 body.sidebar-hidden .sidebar { margin-left: calc(-1 * var(--sidebar-w)); }
 .tabs { display: flex; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 .tabs button {
-  flex: 1; font: inherit; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 4px; cursor: pointer; color: var(--muted);
+  flex: 1; font: inherit; font-size: 13px; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 2px; cursor: pointer; color: var(--muted);
 }
 .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab { display: none; padding: 12px 14px; overflow: auto; flex: 1; }
@@ -201,3 +201,20 @@ details.box summary { cursor: pointer; font-weight: 600; }
   .topbar input.draft-name { width: 100px; flex-basis: 100px; }
   #btn-save { display: none; }
 }
+
+/* Tempolimit */
+.speed-row { display: flex; gap: 4px; align-items: center; margin-top: 3px; }
+.speed-row input { width: 76px; flex: 0 0 auto; }
+.speed { font: 600 12px/1 inherit; padding: 6px 7px; border: 1px solid var(--border); border-radius: 4px; background: #fff; cursor: pointer; color: var(--text); }
+.speed.active { background: #fdecec; border-color: var(--danger); color: var(--danger); }
+.speed:disabled { opacity: .45; cursor: default; }
+.sign { display: inline-block; width: 22px; height: 22px; border-radius: 50%; border: 3px solid #c62828; background: #fff; font: 700 9px/16px system-ui, sans-serif; text-align: center; color: #111; }
+.swatch.route-cur { border: 0; height: 5px; background: #1b6ac9; }
+.swatch.route-new { border: 0; height: 5px; background: #2a9d3f; }
+
+/* Routen-Rechner */
+.route-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.route-table th, .route-table td { text-align: right; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.route-table th:first-child, .route-table td:first-child { text-align: left; color: var(--muted); font-weight: normal; }
+.route-table th { font-weight: 600; color: var(--text); white-space: nowrap; }
+.route-table .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }

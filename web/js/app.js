@@ -9,14 +9,16 @@ import {
   cloneDocument, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
-import { OSM_MIN_ZOOM, OsmRoadCache } from './osm.js';
+import { OSM_MIN_ZOOM, OSM_MAX_SPAN, OsmRoadCache, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
+import { computeRoutes } from './routing.js';
+import { exportPdf, exportPng } from './export.js';
 
 const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features });
 
-function download(filename, text, type = 'application/json') {
-  const blob = new Blob([text], { type });
+function download(filename, data, type = 'application/json') {
+  const blob = data instanceof Blob ? data : new Blob([data], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -50,6 +52,8 @@ async function main() {
     pickIndex: null,
     snapDirty: true,
     searchMarker: null,
+    routes: null,
+    routeTimer: null,
   };
 
   // --- Entwurf bestimmen: Link (/d/<id>) > Arbeitskopie > neuer Entwurf --------
@@ -131,7 +135,11 @@ async function main() {
     getDefaultRoadKind: () => state.defaultRoadKind,
     getOsmWay: (id) => osm.get(id),
     canEdit,
-    onSelectionChange: () => ui && ui.refreshProperties(),
+    onSelectionChange: (sel) => {
+      if (!ui) return;
+      ui.refreshProperties();
+      if (sel) ui.showTab('draw'); // Eigenschaften liegen im Zeichnen-Tab
+    },
     onToolChange: () => ui && ui.refreshTools(),
     onStatus: (text) => ui && ui.setStatus(text),
     onSceneChange: () => map.requestRender(),
@@ -159,7 +167,39 @@ async function main() {
     preview: tools.preview,
     snap: tools.snapPoint,
     showHandles: tools.tool === 'select' && canEdit(),
+    routes: store.doc.route ? state.routes : null,
+    routeDraft: tools.routeDraft,
   }));
+
+  // --- Routen-Rechner ----------------------------------------------------------
+  function recomputeRoutes() {
+    clearTimeout(state.routeTimer);
+    state.routeTimer = setTimeout(() => {
+      const q = store.doc.route;
+      if (!q) {
+        state.routes = null;
+      } else {
+        try {
+          state.routes = computeRoutes({ osmWays: osm.list(), doc: store.doc, from: q.from, to: q.to });
+        } catch (e) {
+          state.routes = { current: { error: e.message }, proposed: { error: e.message } };
+        }
+      }
+      map.requestRender();
+      if (ui) ui.refreshRoute();
+    }, 120);
+  }
+
+  function ensureRouteNetwork() {
+    const q = store.doc.route;
+    if (!q) return;
+    const b = routeBounds(q.from, q.to);
+    if (b.tooLarge) {
+      ui.toast(`Start und Ziel liegen zu weit auseinander (max. ${OSM_MAX_SPAN}° pro Abfrage). Näher zusammenliegende Punkte wählen.`, 'error', 6000);
+      return;
+    }
+    osm.ensureArea(b);
+  }
 
   // --- Aktionen für die Oberfläche ---------------------------------------------
   const actions = {
@@ -416,6 +456,50 @@ async function main() {
         doc: store.doc,
       });
     },
+    routes: () => (store.doc.route ? state.routes : null),
+    routeNetworkStatus() {
+      if (osm.pending) return 'Strassennetz wird geladen…';
+      if (osm.lastError) return `Strassennetz: ${osm.lastError.message}`;
+      return osm.ways.size ? `${osm.ways.size} OSM-Strassen im Speicher.` : 'Noch kein Strassennetz geladen – Start und Ziel setzen oder „Netz für Ansicht laden“.';
+    },
+    swapRoute() {
+      const q = store.doc.route;
+      if (!q) return;
+      store.commit('Route umkehren', (d) => { d.route = { from: q.to, to: q.from }; });
+    },
+    clearRoute() {
+      tools.routeDraft = null;
+      if (store.doc.route) store.commit('Route löschen', (d) => { d.route = null; });
+      else {
+        map.requestRender();
+        ui.refreshRoute();
+      }
+    },
+    loadRouteNetwork() {
+      const b = map.getBounds();
+      if (b.north - b.south > OSM_MAX_SPAN || b.east - b.west > OSM_MAX_SPAN) {
+        ui.toast(`Ansicht zu gross (max. ${OSM_MAX_SPAN}° pro Abfrage) – näher heranzoomen.`, 'error', 5000);
+        return;
+      }
+      osm.ensureArea(b);
+      ui.refreshRoute();
+    },
+    async exportPng() {
+      try {
+        const blob = await exportPng(map, store.doc, { routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '' });
+        download(`${safeFilename(store.doc.name)}.png`, blob);
+      } catch (e) {
+        ui.toast(`PNG-Export fehlgeschlagen: ${e.message}`, 'error', 6000);
+      }
+    },
+    async exportPdf() {
+      try {
+        const blob = await exportPdf(map, store.doc, { routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '' });
+        download(`${safeFilename(store.doc.name)}.pdf`, blob);
+      } catch (e) {
+        ui.toast(`PDF-Export fehlgeschlagen: ${e.message}`, 'error', 6000);
+      }
+    },
     search: (q) => api.search(q),
     goTo(result) {
       if (result.bbox) {
@@ -491,6 +575,8 @@ async function main() {
       if (!getLayer(d, state.activeLayerId)) state.activeLayerId = d.layers[0].id;
       map.requestRender();
       ui.refreshAll();
+      if (d.route) ensureRouteNetwork();
+      recomputeRoutes();
     }
     scheduleAutosave();
   });
@@ -499,6 +585,8 @@ async function main() {
     state.snapDirty = true;
     map.requestRender();
     updateOsmStatus(info);
+    if (info.status !== 'loading') recomputeRoutes();
+    ui.refreshRoute();
   });
 
   map.on('moveend', () => {
@@ -517,7 +605,9 @@ async function main() {
     if (e.key === 'Escape') {
       if (!ui.$('modal').hidden) return ui.closeModal();
       if (typing) return target.blur();
-      return tools.cancel();
+      if (tools.cancel()) return undefined;
+      if (tools.tool === 'route' && store.doc.route) return actions.clearRoute();
+      return undefined;
     }
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.key.toLowerCase() === 's') {
@@ -548,8 +638,12 @@ async function main() {
   window.addEventListener('beforeunload', saveWorking);
 
   // --- Start ----------------------------------------------------------------------
-  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api };
+  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes };
   ui.refreshAll();
+  if (store.doc.route) {
+    ensureRouteNetwork();
+    recomputeRoutes();
+  }
   ui.setStatus(TOOLS[0].hint);
   ui.setCoords(null, map.getZoom());
   ensureOsm();

@@ -20,14 +20,17 @@ export class Store {
     for (const fn of this.listeners) fn(this.doc, event);
   }
 
+  /** Alles, was Undo/Redo abdeckt: Name, Ebenen, Elemente und Routenanfrage (nicht der Kartenausschnitt). */
   snapshot() {
-    return JSON.stringify({ layers: this.doc.layers, features: this.doc.features });
+    return JSON.stringify({ name: this.doc.name, layers: this.doc.layers, features: this.doc.features, route: this.doc.route || null });
   }
 
   restore(snap) {
     const s = JSON.parse(snap);
+    this.doc.name = s.name;
     this.doc.layers = s.layers;
     this.doc.features = s.features;
+    this.doc.route = s.route || null;
   }
 
   /** Führt fn(doc) aus und legt bei einer tatsächlichen Änderung einen Undo-Eintrag an. */

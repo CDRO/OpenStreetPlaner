@@ -33,3 +33,18 @@ test('maxUndo begrenzt den Stapel, load leert ihn', () => {
   store.load(createDocument());
   assert.equal(store.canUndo(), false);
 });
+
+test('Name und Route sind Teil des Undo-Schnappschusses', () => {
+  const store = new Store(createDocument({ name: 'Alt' }));
+  let events = 0;
+  store.subscribe(() => events++);
+  store.commit('umbenennen', (doc) => { doc.name = 'Neu'; });
+  store.commit('Route', (doc) => { doc.route = { from: [1, 1], to: [2, 2] }; });
+  assert.equal(events, 2, 'beide Änderungen lösen Ereignisse aus');
+  store.undo();
+  assert.equal(store.doc.route, null);
+  store.undo();
+  assert.equal(store.doc.name, 'Alt');
+  store.redo();
+  assert.equal(store.doc.name, 'Neu');
+});

@@ -34,11 +34,14 @@ go run . -data ./data
 | Suche | Ort/Adresse wie in einer Karten-App, oder direkt `lat, lng`; Button „Mein Standort“ |
 | Ebenen | Beliebig viele, ein-/ausblenden, umbenennen, einfärben, sortieren; jedes Element gehört zu einer Ebene |
 | Strassen | Linienzug zeichnen (Klick für Punkte, Doppelklick/Enter/Rechtsklick beendet), Strassentyp, Status *Neu / Bestehend / Rückbau*, Einbahn mit Pfeilen, Beschriftung ab Zoom 16 |
+| Tempolimit | Pro Strasse in km/h (Schnellwahl 20/30/50/80 oder Standard je Strassentyp); wird beim Übernehmen aus OSM `maxspeed` gelesen (auch `30 mph`, `CH:urban` usw.) und ab Zoom 16 als Schild gezeichnet |
+| Routen-Rechner | Start A und Ziel B klicken: schnellste Fahrroute im heutigen OSM-Netz vs. im Netz mit dem Entwurf (neue Strassen dazu, Rückbau weg, übernommene Strassen mit ihren Änderungen), Distanz und Fahrzeit aus Tempolimits, gezeichnete Kreuzungen kosten Zeit (Ampel 20 s, Stop 8 s, Vortritt 3 s), Kreisel verbinden ihre Anschlüsse |
+| Bild / PDF | Karte mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution als PNG oder als einseitiges A4-PDF, beides ohne Bibliothek erzeugt |
 | Abschnitte | Jeder Abschnitt zwischen zwei Punkten hat seine eigene Führung: **Ebenerdig, Brücke oder Tunnel** |
 | Kreuzungen | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop) |
 | Kreisel | Zentrum klicken, Radius mit der Maus wählen; später in Metern editierbar |
 | Einrasten | Beim Zeichnen und Verschieben rastet der Cursor an eigene Punkte, Abschnitte, Kreisel-Ringe und – ab Zoom 16 – an OSM-Strassen. Wird auf einen eigenen Abschnitt eingerastet, wird dieser dort geteilt, damit das Netz verbunden ist. **Shift** (einstellbar: Shift/Ctrl/Alt) gedrückt halten setzt das Einrasten für die aktuelle Aktion aus. |
-| OSM übernehmen | Bestehende OSM-Strasse anklicken und als bearbeitbare Kopie holen (Name, Typ, Brücke/Tunnel, Einbahn werden übernommen) |
+| OSM übernehmen | Bestehende OSM-Strasse anklicken und als bearbeitbare Kopie holen (Name, Typ, Brücke/Tunnel, Einbahn, Tempolimit werden übernommen; die Kopie merkt sich den OSM-Way, damit der Routen-Rechner ihn ersetzt) |
 | Bearbeiten | Punkte ziehen, Zwischenpunkte einfügen, Punkte per Rechtsklick löschen, Eigenschaften in der Seitenleiste, Tooltip beim Überfahren |
 | Speichern | Entwürfe liegen auf dem Server; der Browser merkt sich die eigenen (mit Bearbeitungs-Token). Arbeitskopie wird lokal automatisch gesichert |
 | Historie | Rückgängig/Wiederholen in der Sitzung; jedes Speichern legt eine Version an (Standard: 30), die wiederhergestellt werden kann |
@@ -46,7 +49,7 @@ go run . -data ./data
 
 ### Tastenkürzel
 
-`V` Auswählen · `S` Strasse · `K` Kreuzung · `R` Kreisel · `O` OSM übernehmen ·
+`V` Auswählen · `S` Strasse · `K` Kreuzung · `R` Kreisel · `O` OSM übernehmen · `T` Route ·
 `Enter` Strasse beenden · `Esc` abbrechen · `⌫` letzter Punkt · `Entf` löschen ·
 `Ctrl+Z` / `Ctrl+Y` rückgängig / wiederholen · `Ctrl+S` speichern ·
 Karte: Pfeiltasten, `+` / `−`
@@ -113,6 +116,8 @@ web/js/geometry.js       Mercator-Projektion, Distanzen, Einrast-Mathematik
 web/js/snap.js           Einrast-Index aus Entwurf + OSM-Daten
 web/js/store.js          Zustand mit Undo/Redo
 web/js/osm.js            Strassen-Cache, Tag-Zuordnung
+web/js/routing.js        Routen-Rechner: Netz aus OSM + Entwurf, Dijkstra, maxspeed-Parser
+web/js/export.js         PNG/PDF-Export (Bildkomposition, handgeschriebener PDF-Writer)
 web/js/api.js            Aufrufe ans Backend
 web/js/local.js          Browser-lokal: eigene Entwürfe, Arbeitskopie, Einstellungen
 web/js/ui.js             Seitenleiste, Dialoge, Statuszeile
@@ -129,16 +134,33 @@ web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwri
   "layers": [{ "id": "l_…", "name": "Variante A", "color": "#d7263d", "visible": true }],
   "features": [
     { "id": "r_…", "type": "road", "layerId": "l_…", "name": "Umfahrung", "kind": "main",
-      "status": "new", "oneway": false,
+      "status": "new", "oneway": false, "maxspeed": 50, "osmId": null,
       "nodes": [[47.05, 8.30], [47.051, 8.302], [47.052, 8.305]],
       "segments": [{ "level": "ground" }, { "level": "tunnel" }] },
     { "id": "j_…", "type": "junction", "layerId": "l_…", "kind": "signals", "at": [47.05, 8.30] },
     { "id": "k_…", "type": "roundabout", "layerId": "l_…", "center": [47.052, 8.305], "radius": 14 }
-  ]
+  ],
+  "route": { "from": [47.049, 8.298], "to": [47.053, 8.306] }
 }
 ```
 
-`segments` hat immer einen Eintrag weniger als `nodes`.
+`segments` hat immer einen Eintrag weniger als `nodes`. `maxspeed` ist
+optional (null = Standard je Strassentyp), `osmId` verweist auf den
+übernommenen OSM-Way, `route` ist die gespeicherte Anfrage des Routen-Rechners.
+
+### Routen-Rechner: Annahmen
+
+- Befahrbar sind OSM-Ways mit `highway` in motorway…service und
+  living_street; Fusswege, Velowege, Feldwege und `access=no/private` nicht.
+- Geschwindigkeit: OSM `maxspeed`, sonst Standard je `highway` (z. B.
+  residential 50, service 30, living_street 20). Für gezeichnete Strassen das
+  gesetzte Tempolimit, sonst Standard je Typ (Hauptstrasse 50, Quartierstrasse
+  30, Zufahrt 20; Fuss-/Veloweg nicht befahrbar).
+- Einbahnen werden beachtet (OSM `oneway`, Zeichenrichtung im Entwurf).
+- Das Netz wird nur für den Bereich um Start und Ziel (plus Rand) geladen;
+  die Servergrenze pro Abfrage liegt bei 0.06°, also etwa 6 km. Ohne Abbiege-
+  und Verkehrsmodell sind die Zeiten Richtwerte für den Vergleich, keine
+  Prognose.
 
 ## Entwicklung und Tests
 
@@ -158,5 +180,6 @@ Frontend-Unit-Tests und einen Docker-Build mit Smoke-Test aus.
   Ansichtslink ist ungefährlich, weil Empfänger nur Kopien bearbeiten.
 - Entwürfe werden nicht automatisch gelöscht; Aufräumen heisst Ordner unter
   `DATA_DIR/drafts` entfernen.
-- Export als Bild oder PDF, Massnahmen wie Tempo-30-Zonen oder Parkplätze
-  fehlen noch.
+- Der Routen-Rechner kennt keine Abbiegebeziehungen, Ampeln aus OSM oder
+  Verkehrsaufkommen; er vergleicht Netzgeometrie und Tempolimits.
+- Der Export gibt den aktuellen Kartenausschnitt in Bildschirmauflösung aus.

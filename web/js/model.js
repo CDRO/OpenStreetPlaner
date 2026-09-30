@@ -5,14 +5,29 @@ import { circleRing, pathLength } from './geometry.js';
 
 export const DOC_VERSION = 1;
 
+// speed: Standard-Tempolimit in km/h für den Routen-Rechner, wenn keines gesetzt ist (0 = nicht befahrbar).
 export const ROAD_KINDS = [
-  { id: 'main', label: 'Hauptstrasse', width: 7 },
-  { id: 'secondary', label: 'Nebenstrasse', width: 5.5 },
-  { id: 'residential', label: 'Quartierstrasse', width: 4.5 },
-  { id: 'service', label: 'Zufahrt / Erschliessung', width: 3.5 },
-  { id: 'path', label: 'Fuss- / Veloweg', width: 2.5 },
-  { id: 'other', label: 'Sonstiges', width: 4 },
+  { id: 'main', label: 'Hauptstrasse', width: 7, speed: 50 },
+  { id: 'secondary', label: 'Nebenstrasse', width: 5.5, speed: 50 },
+  { id: 'residential', label: 'Quartierstrasse', width: 4.5, speed: 30 },
+  { id: 'service', label: 'Zufahrt / Erschliessung', width: 3.5, speed: 20 },
+  { id: 'path', label: 'Fuss- / Veloweg', width: 2.5, speed: 0 },
+  { id: 'other', label: 'Sonstiges', width: 4, speed: 50 },
 ];
+
+export const MAX_SPEED = 200;
+
+/** Tempolimit einer Strasse in km/h: gesetzter Wert oder Standard je Typ (0 = nicht befahrbar). */
+export function roadSpeed(road) {
+  if (Number.isFinite(road.maxspeed) && road.maxspeed > 0) return road.maxspeed;
+  return (ROAD_KINDS.find((k) => k.id === road.kind) || ROAD_KINDS[5]).speed;
+}
+
+export function normalizeMaxspeed(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > MAX_SPEED) return null;
+  return Math.round(n);
+}
 
 export const LEVELS = [
   { id: 'ground', label: 'Ebenerdig' },
@@ -63,6 +78,7 @@ export function createDocument({ name = 'Neuer Entwurf', center = [46.8, 8.23], 
     view: { center: [center[0], center[1]], zoom },
     layers: [],
     features: [],
+    route: null,
   };
   createLayer(doc, 'Ebene 1');
   return doc;
@@ -96,7 +112,7 @@ export function moveLayer(doc, id, delta) {
   doc.layers.splice(j, 0, layer);
 }
 
-export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false }) {
+export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false, maxspeed = null, osmId = null }) {
   const pts = nodes.map(roundCoord);
   return {
     id: newId('r'),
@@ -106,6 +122,8 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     kind,
     status,
     oneway,
+    maxspeed: normalizeMaxspeed(maxspeed),
+    osmId: Number.isInteger(osmId) && osmId > 0 ? osmId : null,
     nodes: pts,
     segments: pts.slice(1).map(() => ({ level })),
     note: '',
@@ -234,7 +252,11 @@ export function normalizeDocument(raw) {
     view: { center: [46.8, 8.23], zoom: 8 },
     layers: [],
     features: [],
+    route: null,
   };
+  if (raw.route && isLatLng(raw.route.from) && isLatLng(raw.route.to)) {
+    doc.route = { from: roundCoord(raw.route.from), to: roundCoord(raw.route.to) };
+  }
   if (raw.view && isLatLng(raw.view.center) && Number.isFinite(raw.view.zoom)) {
     doc.view = { center: [raw.view.center[0], raw.view.center[1]], zoom: raw.view.zoom };
   }
@@ -270,6 +292,8 @@ export function normalizeDocument(raw) {
         kind: idIn(ROAD_KINDS, f.kind, 'other'),
         status: idIn(STATUSES, f.status, 'new'),
         oneway: f.oneway === true,
+        maxspeed: normalizeMaxspeed(f.maxspeed),
+        osmId: Number.isInteger(f.osmId) && f.osmId > 0 ? f.osmId : null,
         nodes,
         segments,
       });
@@ -331,7 +355,7 @@ export function toGeoJSON(doc) {
       f.segments.forEach((seg, i) => {
         features.push({
           type: 'Feature',
-          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, segment: i, level: seg.level },
+          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, maxspeed: f.maxspeed, osmId: f.osmId, segment: i, level: seg.level },
           geometry: {
             type: 'LineString',
             coordinates: [f.nodes[i], f.nodes[i + 1]].map(([lat, lng]) => [lng, lat]),

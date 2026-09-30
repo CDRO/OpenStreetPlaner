@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  roadSpeed, normalizeMaxspeed,
   createDocument, createLayer, createRoad, createJunction, createRoundabout, splitRoadSegment,
   applySnapSplits, removeRoadNode, normalizeDocument, deserialize, serialize, toGeoJSON, docStats,
   removeLayer, moveLayer, featureLabel,
@@ -117,4 +118,27 @@ test('featureLabel fällt auf den Typ zurück', () => {
   assert.equal(featureLabel({ type: 'road', kind: 'main', name: '' }), 'Hauptstrasse');
   assert.equal(featureLabel({ type: 'road', kind: 'main', name: 'Dorfstrasse' }), 'Dorfstrasse');
   assert.equal(featureLabel({ type: 'roundabout' }), 'Kreisel');
+});
+
+test('Tempolimit: Normalisierung, Standard je Typ, Route im Dokument', () => {
+  assert.equal(normalizeMaxspeed('49.6'), 50);
+  assert.equal(normalizeMaxspeed(-3), null);
+  assert.equal(normalizeMaxspeed('abc'), null);
+  assert.equal(normalizeMaxspeed(500), null);
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const r = createRoad({ layerId, nodes: [[47, 8], [47, 8.001]], kind: 'residential', osmId: 4242 });
+  assert.equal(r.maxspeed, null);
+  assert.equal(roadSpeed(r), 30, 'Quartierstrasse Standard 30');
+  r.maxspeed = 20;
+  assert.equal(roadSpeed(r), 20);
+  assert.equal(roadSpeed({ kind: 'path', maxspeed: null }), 0, 'Fussweg nicht befahrbar');
+  doc.features.push(r);
+  doc.route = { from: [47, 8], to: [47.0000004, 8.001] };
+  const back = deserialize(serialize(doc));
+  assert.equal(back.features[0].osmId, 4242);
+  assert.equal(back.features[0].maxspeed, 20);
+  assert.deepEqual(back.route, { from: [47, 8], to: [47, 8.001] });
+  const noRoute = normalizeDocument({ layers: [{ id: 'l1' }], route: { from: [99, 0], to: [0, 0] } });
+  assert.equal(noRoute.route, null);
 });

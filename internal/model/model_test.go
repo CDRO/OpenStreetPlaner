@@ -105,3 +105,32 @@ func TestCompute(t *testing.T) {
 		t.Fatalf("Länge falsch: %v", s.LengthMeters)
 	}
 }
+
+func TestMaxspeedOsmIDAndRoute(t *testing.T) {
+	bad := -5.0
+	ok := 49.6
+	d := sample()
+	d.Features[0].Maxspeed = &bad
+	d.Features[0].OsmID = -1
+	d.Route = &Route{From: LatLng{47.0000004, 8}, To: LatLng{47.1, 8.1}}
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Features[0].Maxspeed != nil || d.Features[0].OsmID != 0 {
+		t.Fatalf("ungültiges Tempolimit/OsmID nicht bereinigt: %+v", d.Features[0])
+	}
+	if d.Route == nil || d.Route.From[0] != 47 {
+		t.Fatalf("Route nicht gerundet: %+v", d.Route)
+	}
+	d = sample()
+	d.Features[0].Maxspeed = &ok
+	d.Features[0].OsmID = 4242
+	d.Route = &Route{From: LatLng{99, 0}, To: LatLng{0, 0}}
+	_ = Normalize(d)
+	if d.Features[0].Maxspeed == nil || *d.Features[0].Maxspeed != 50 || d.Features[0].OsmID != 4242 {
+		t.Fatalf("Tempolimit nicht gerundet/übernommen: %+v", d.Features[0])
+	}
+	if d.Route != nil {
+		t.Fatalf("ungültige Route nicht verworfen")
+	}
+}

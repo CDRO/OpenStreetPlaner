@@ -35,6 +35,7 @@
         <button type="button" data-tab="layers">Ebenen</button>
         <button type="button" data-tab="drafts">Entwürfe</button>
         <button type="button" data-tab="history">Verlauf</button>
+        <button type="button" data-tab="route">Route</button>
       </nav>
 
       <section id="tab-draw" class="tab active">
@@ -54,9 +55,11 @@
             <li><span class="swatch tunnel"></span> Tunnel (gestrichelt, halbtransparent)</li>
             <li><span class="swatch remove"></span> Rückbau (rot gestrichelt)</li>
             <li><span class="swatch osm"></span> Geladene OSM-Strassen (Einrast-Ziele)</li>
+            <li><span class="swatch route-cur"></span> Route heute · <span class="swatch route-new"></span> Route neu</li>
+            <li><span class="sign">30</span> Tempolimit (ab Zoom 16)</li>
           </ul>
           <ul class="keys">
-            <li><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung · <kbd>R</kbd> Kreisel · <kbd>O</kbd> OSM übernehmen</li>
+            <li><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung · <kbd>R</kbd> Kreisel · <kbd>O</kbd> OSM übernehmen · <kbd>T</kbd> Route</li>
             <li><kbd>Enter</kbd> Strasse beenden · <kbd>Esc</kbd> abbrechen / Auswahl aufheben · <kbd>⌫</kbd> letzter Punkt</li>
             <li><kbd>Entf</kbd> Ausgewähltes löschen · <kbd>Ctrl</kbd>+<kbd>Z</kbd>/<kbd>Y</kbd> rückgängig/wiederholen · <kbd>Ctrl</kbd>+<kbd>S</kbd> speichern</li>
             <li><kbd>Shift</kbd> (einstellbar) gedrückt halten: Einrasten für diese Aktion aussetzen</li>
@@ -83,6 +86,11 @@
       <section id="tab-history" class="tab">
         <div id="history-undo" class="box"></div>
         <div id="version-list"></div>
+      </section>
+
+      <section id="tab-route" class="tab">
+        <h3>Routen-Rechner: heute vs. neu</h3>
+        <div id="route-panel"></div>
       </section>
     </aside>
     <div class="map-wrap">

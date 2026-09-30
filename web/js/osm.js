@@ -1,6 +1,22 @@
 // OSM-Strassen im Sichtbereich (über das Backend geladen) und Tag-Zuordnung.
 
 export const OSM_MIN_ZOOM = 16;
+/** Grösster Bereich (Grad), den der Server pro Anfrage liefert (siehe internal/osm). */
+export const OSM_MAX_SPAN = 0.06;
+
+/** Erweitert einen Bereich um Faktor und mindestens minMeters, und prüft die Servergrenze. */
+export function routeBounds(from, to, { factor = 0.3, minMeters = 400 } = {}) {
+  const south = Math.min(from[0], to[0]);
+  const north = Math.max(from[0], to[0]);
+  const west = Math.min(from[1], to[1]);
+  const east = Math.max(from[1], to[1]);
+  const dLat = Math.max((north - south) * factor, minMeters / 111320);
+  const dLng = Math.max((east - west) * factor, minMeters / (111320 * Math.cos(((south + north) / 2) * Math.PI / 180)));
+  const b = { south: south - dLat, north: north + dLat, west: west - dLng, east: east + dLng };
+  // Auf die Servergrenze stutzen: der Bereich darf pro Anfrage nicht grösser sein.
+  b.tooLarge = b.north - b.south > OSM_MAX_SPAN || b.east - b.west > OSM_MAX_SPAN;
+  return b;
+}
 
 /** Zuordnung OSM highway-Tag -> Strassentyp des Entwurfs. */
 export function roadKindFromHighway(tag) {
@@ -64,6 +80,11 @@ export class OsmRoadCache {
 
   ensure(bounds, zoom) {
     if (zoom < OSM_MIN_ZOOM) return;
+    this.ensureArea(bounds);
+  }
+
+  /** Lädt einen Bereich unabhängig vom Zoom (Routen-Rechner). */
+  ensureArea(bounds) {
     if (this.loadedBoxes.some((b) => contains(b, bounds))) return;
     const target = expand(bounds, 0.25);
     if (this.pending) {
@@ -75,7 +96,7 @@ export class OsmRoadCache {
       if (this.queued) {
         const next = this.queued;
         this.queued = null;
-        if (!this.loadedBoxes.some((b) => contains(b, next))) this.ensure(next, zoom);
+        if (!this.loadedBoxes.some((b) => contains(b, next))) this.ensureArea(next);
       }
     });
   }

@@ -21,6 +21,7 @@ const (
 	MaxNameLen   = 200
 	MaxNoteLen   = 2000
 	MaxRadius    = 500.0
+	MaxSpeed     = 200.0
 )
 
 var (
@@ -62,6 +63,8 @@ type Feature struct {
 	Kind     string    `json:"kind,omitempty"`
 	Status   string    `json:"status,omitempty"`
 	Oneway   *bool     `json:"oneway,omitempty"`
+	Maxspeed *float64  `json:"maxspeed,omitempty"` // km/h; nil = Standard je Strassentyp
+	OsmID    int64     `json:"osmId,omitempty"`    // OSM-Way, aus dem die Strasse übernommen wurde
 	Nodes    []LatLng  `json:"nodes,omitempty"`
 	Segments []Segment `json:"segments,omitempty"`
 	// Kreuzung
@@ -69,6 +72,12 @@ type Feature struct {
 	// Kreisel
 	Center *LatLng `json:"center,omitempty"`
 	Radius float64 `json:"radius,omitempty"`
+}
+
+// Route ist die gespeicherte Routenanfrage (Start/Ziel) des Routen-Rechners.
+type Route struct {
+	From LatLng `json:"from"`
+	To   LatLng `json:"to"`
 }
 
 type Document struct {
@@ -80,6 +89,7 @@ type Document struct {
 	View      View      `json:"view"`
 	Layers    []Layer   `json:"layers"`
 	Features  []Feature `json:"features"`
+	Route     *Route    `json:"route,omitempty"`
 }
 
 // Stats fasst einen Entwurf für Listen und Versionen zusammen.
@@ -225,6 +235,16 @@ func Normalize(d *Document) error {
 			if f.Oneway == nil {
 				f.Oneway = boolPtr(false)
 			}
+			if f.Maxspeed != nil && (math.IsNaN(*f.Maxspeed) || *f.Maxspeed <= 0 || *f.Maxspeed > MaxSpeed) {
+				f.Maxspeed = nil
+			}
+			if f.Maxspeed != nil {
+				v := math.Round(*f.Maxspeed)
+				f.Maxspeed = &v
+			}
+			if f.OsmID < 0 {
+				f.OsmID = 0
+			}
 			f.At, f.Center, f.Radius = nil, nil, 0
 		case "junction":
 			if f.At == nil || !validLatLng(*f.At) {
@@ -234,6 +254,7 @@ func Normalize(d *Document) error {
 			f.At = &p
 			f.Kind = oneOf(JunctionKinds, f.Kind, "plain")
 			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius = "", nil, nil, nil, nil, 0
+			f.Maxspeed, f.OsmID = nil, 0
 		case "roundabout":
 			if f.Center == nil || !validLatLng(*f.Center) {
 				return invalid("Kreisel %s hat kein gültiges Zentrum", f.ID)
@@ -248,9 +269,17 @@ func Normalize(d *Document) error {
 			}
 			f.Radius = math.Round(f.Radius*10) / 10
 			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At = "", "", nil, nil, nil, nil
+			f.Maxspeed, f.OsmID = nil, 0
 		default:
 			return invalid("unbekannter Elementtyp %q", f.Type)
 		}
+	}
+	if d.Route != nil && (!validLatLng(d.Route.From) || !validLatLng(d.Route.To)) {
+		d.Route = nil
+	}
+	if d.Route != nil {
+		d.Route.From = round6(d.Route.From)
+		d.Route.To = round6(d.Route.To)
 	}
 	return nil
 }

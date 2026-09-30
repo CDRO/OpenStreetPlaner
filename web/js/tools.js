@@ -10,6 +10,7 @@ import { snapLatLng, excludeFeature } from './snap.js';
 import { haversine } from './geometry.js';
 import { roadKindFromHighway } from './osm.js';
 import { hitHandle } from './draw.js';
+import { parseMaxspeed } from './routing.js';
 
 export const TOOLS = [
   { id: 'select', label: 'Auswählen', key: 'V', hint: 'Element anklicken zum Auswählen. Griffe ziehen zum Verschieben, Rechtsklick auf einen Griff löscht den Punkt, Klick auf einen Zwischenpunkt fügt einen ein.' },
@@ -17,7 +18,11 @@ export const TOOLS = [
   { id: 'junction', label: 'Kreuzung', key: 'K', hint: 'Klicken platziert eine Kreuzung, am besten auf einen Strassenpunkt.' },
   { id: 'roundabout', label: 'Kreisel', key: 'R', hint: 'Klicken setzt das Zentrum, Maus bewegen wählt den Radius, erneut klicken bestätigt.' },
   { id: 'adopt', label: 'OSM übernehmen', key: 'O', hint: 'Bestehende OSM-Strasse anklicken, um sie als bearbeitbare Strasse in die aktive Ebene zu kopieren (ab Zoom 16).' },
+  { id: 'route', label: 'Route', key: 'T', hint: 'Klicken setzt den Start (A), ein zweiter Klick das Ziel (B). Weitere Klicks beginnen neu, Esc löscht die Route.' },
 ];
+
+/** Werkzeuge, die auch ohne Bearbeitungsrecht erlaubt sind. */
+const VIEW_TOOLS = new Set(['select', 'route']);
 
 const MODIFIER_PROP = { Shift: 'shiftKey', Control: 'ctrlKey', Alt: 'altKey' };
 const PICK_TOLERANCE = 9;
@@ -33,6 +38,7 @@ export class ToolController {
     this.drag = null; // Griff-Verschiebung
     this.preview = null;
     this.snapPoint = null;
+    this.routeDraft = null; // Start gesetzt, Ziel fehlt noch
     this.modifiers = { Shift: false, Control: false, Alt: false };
 
     const map = this.map;
@@ -59,7 +65,7 @@ export class ToolController {
 
   setTool(id) {
     if (!TOOLS.some((t) => t.id === id)) return;
-    if (id !== 'select' && !this.canEdit()) {
+    if (!VIEW_TOOLS.has(id) && !this.canEdit()) {
       this.toast('Nur Ansicht: Lege zuerst eine eigene Kopie an, um zu zeichnen.');
       return;
     }
@@ -136,6 +142,7 @@ export class ToolController {
       case 'junction': return this.junctionClick(e);
       case 'roundabout': return this.roundaboutClick(e);
       case 'adopt': return this.adoptClick(e);
+      case 'route': return this.routeClick(e);
       default: return this.selectClick(e);
     }
   }
@@ -213,6 +220,13 @@ export class ToolController {
   // --- Tastatur (von app.js aufgerufen) ---------------------------------------
 
   cancel() {
+    // Ein Werkzeugwechsel verwirft nur den halb gesetzten Start; die fertige Route bleibt (Löschen via Esc im Routen-Werkzeug oder Button).
+    if (this.routeDraft) {
+      this.routeDraft = null;
+      this.onStatus(this.toolInfo().hint);
+      this.onSceneChange();
+      return true;
+    }
     if (this.draft) {
       this.draft = null;
       this.setPreview(null);
@@ -422,6 +436,23 @@ export class ToolController {
     this.onStatus(this.toolInfo().hint);
   }
 
+  // --- Route ------------------------------------------------------------------
+
+  routeClick(e) {
+    const ll = roundCoord(e.latlng);
+    if (!this.routeDraft) {
+      this.routeDraft = { from: ll };
+      if (this.store.doc.route) this.store.commit('Route neu beginnen', (doc) => { doc.route = null; });
+      this.onStatus('Start gesetzt – jetzt das Ziel anklicken.');
+      this.onSceneChange();
+      return;
+    }
+    const from = this.routeDraft.from;
+    this.routeDraft = null;
+    this.store.commit('Route setzen', (doc) => { doc.route = { from, to: ll }; });
+    this.onStatus(this.toolInfo().hint);
+  }
+
   // --- OSM übernehmen ---------------------------------------------------------
 
   adoptClick(e) {
@@ -445,6 +476,8 @@ export class ToolController {
         status: 'existing',
         level,
         oneway: tags.oneway === 'yes' || tags.oneway === '1',
+        maxspeed: parseMaxspeed(tags.maxspeed),
+        osmId: way.id,
       });
       road.note = tags.highway ? `OSM highway=${tags.highway}, way ${way.id}` : `OSM way ${way.id}`;
       doc.features.push(road);

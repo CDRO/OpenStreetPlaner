@@ -8,7 +8,7 @@ import { ROAD_KINDS, getLayer } from './model.js';
 const KIND_WIDTH = Object.fromEntries(ROAD_KINDS.map((k) => [k.id, k.width]));
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -104,13 +104,14 @@ export function drawScene(ctx, map, s) {
       }
     }
   }
-  // Beschriftung
+  // Beschriftung und Tempolimit-Schilder
   if (zoom >= 16) {
     for (const f of roads) {
-      if (!f.name) continue;
-      label(ctx, P, f, KIND_WIDTH[f.kind] * lineScale);
+      if (f.name) label(ctx, P, f, KIND_WIDTH[f.kind] * lineScale);
+      if (f.maxspeed) speedSign(ctx, P, f);
     }
   }
+  drawRoutes(ctx, P, doc.route, routes, routeDraft);
   if (showHandles && selected) drawHandles(ctx, P, selected);
   if (preview) drawPreview(ctx, P, preview, mpp);
   if (snap) {
@@ -244,6 +245,53 @@ function label(ctx, P, road, width) {
   ctx.rotate(angle);
   text(ctx, road.name, 0, -(width / 2 + 6), { font: '600 12px system-ui, sans-serif', color: '#1f2933', halo: 'rgba(255,255,255,0.9)', align: 'center', baseline: 'alphabetic' });
   ctx.restore();
+}
+
+function longestSegment(P, road) {
+  let best = null;
+  for (let i = 0; i < road.nodes.length - 1; i++) {
+    const a = P(road.nodes[i]);
+    const b = P(road.nodes[i + 1]);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (!best || len > best.len) best = { a, b, len };
+  }
+  return best;
+}
+
+function speedSign(ctx, P, road) {
+  const seg = longestSegment(P, road);
+  if (!seg || seg.len < 70) return;
+  const c = { x: seg.a.x + (seg.b.x - seg.a.x) * 0.3, y: seg.a.y + (seg.b.y - seg.a.y) * 0.3 };
+  circle(ctx, c, 10, { stroke: '#c62828', width: 3, fill: '#fff' });
+  text(ctx, String(road.maxspeed), c.x, c.y + 0.5, { font: 'bold 9px system-ui, sans-serif', color: '#111', align: 'center', baseline: 'middle' });
+}
+
+function drawRoutes(ctx, P, query, routes, routeDraft) {
+  const marker = (ll, letter) => {
+    const c = P(ll);
+    circle(ctx, c, 11, { stroke: '#fff', width: 2, fill: '#1f2933' });
+    text(ctx, letter, c.x, c.y + 0.5, { font: 'bold 12px system-ui, sans-serif', color: '#fff', align: 'center', baseline: 'middle' });
+  };
+  if (routes) {
+    const paths = [
+      { r: routes.current, color: '#1b6ac9' },
+      { r: routes.proposed, color: '#2a9d3f' },
+    ];
+    for (const { r, color } of paths) {
+      if (!r || r.error || !r.path) continue;
+      const pts = r.path.map(P);
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      stroke(ctx, pts, '#ffffff', 9);
+      stroke(ctx, pts, color, 5);
+      ctx.restore();
+    }
+  }
+  if (routeDraft && routeDraft.from) marker(routeDraft.from, 'A');
+  if (query && query.from && query.to) {
+    marker(query.from, 'A');
+    marker(query.to, 'B');
+  }
 }
 
 function drawSelectionHalo(ctx, P, f, selection, mpp, lineScale) {
