@@ -1,6 +1,7 @@
 // Startet den Go-Server mit leerem Datenordner und führt die Browser-Tests
 // nacheinander aus. Braucht Go und ein installiertes Playwright mit Chromium.
 //   node web/tests/browser/run.cjs
+//   ONLY=roads.test.cjs node web/tests/browser/run.cjs   (nur eine Datei)
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -44,7 +45,8 @@ async function waitFor(url, tries = 50) {
   try {
     const base = `http://127.0.0.1:${port}/`;
     await waitFor(base + 'healthz');
-    for (const file of ['basics.test.cjs', 'osm-editing.test.cjs', 'ux.test.cjs']) {
+    const files = process.env.ONLY ? process.env.ONLY.split(',') : ['basics.test.cjs', 'osm-editing.test.cjs', 'ux.test.cjs', 'roads.test.cjs'];
+    for (const file of files) {
       const r = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: 'inherit', env: { ...process.env, BASE_URL: base } });
       if (r.status !== 0) failed = true;
     }

@@ -1,7 +1,7 @@
 // Seitenleiste, Kopfzeile, Statuszeile, Dialoge. Reine DOM-Arbeit; die Logik
 // steckt in app.js (actions) und den Modulen.
 
-import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, STATUSES, ZONE_KINDS, docStats, featureLabel, getFeature, roadSpeed, roadWidthMeters, segmentSpeed, splitRoadAtNode, validProfile } from './model.js';
+import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, SECTION_LIMITS, STATUSES, ZONE_KINDS, defaultSection, docStats, featureLabel, getFeature, junctionKind, junctionTurns, roadKind, roadSpeed, roadWidthMeters, sectionSummary, sectionWidth, segmentSpeed, splitRoadAtNode, validProfile } from './model.js';
 import { DPI, PAPER } from './export.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
@@ -15,6 +15,43 @@ const fmtDate = (iso) => {
 };
 const fmtLen = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
 const options = (list, value) => list.map((o) => `<option value="${o.id}"${o.id === value ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+
+/** Querschnitt-Block der Strassen-Eigenschaften: Standard-Hinweis oder Editor. */
+function sectionBlock(road, editable) {
+  const dis = editable ? '' : 'disabled';
+  const s = road.section;
+  if (!s) {
+    return `
+      <details class="box">
+        <summary>Querschnitt <span class="muted">(Standard)</span></summary>
+        <p class="muted small">Standard für ${esc(roadKind(road).label)}: ${esc(sectionSummary(defaultSection(road.kind)))}. Ein eigener Querschnitt legt Fahrstreifen, Velostreifen, Trottoirs und Parkstreifen mit Breiten fest; ab Zoom 17 werden sie als Bänder gezeichnet.</p>
+        <button type="button" id="sec-create" class="btn small" ${dis}>Querschnitt festlegen</button>
+      </details>`;
+  }
+  const num = (key, label, step = 0.25) => `<label class="field">${label}<input type="number" class="sec-num" data-key="${key}" min="${SECTION_LIMITS[key][0]}" max="${SECTION_LIMITS[key][1]}" step="${step}" value="${s[key]}" ${dis}></label>`;
+  const side = (name, label) => `
+    <div class="sec-row">
+      <span>${label}</span>
+      <label class="check"><input type="checkbox" class="sec-flag" data-key="${name}Left" ${s[`${name}Left`] ? 'checked' : ''} ${dis}> links</label>
+      <label class="check"><input type="checkbox" class="sec-flag" data-key="${name}Right" ${s[`${name}Right`] ? 'checked' : ''} ${dis}> rechts</label>
+      <input type="number" class="sec-num" data-key="${name}Width" min="${SECTION_LIMITS[`${name}Width`][0]}" max="${SECTION_LIMITS[`${name}Width`][1]}" step="0.25" value="${s[`${name}Width`]}" title="Breite in m" ${dis}> m
+    </div>`;
+  return `
+    <details class="box" open>
+      <summary>Querschnitt <span class="muted">(${sectionWidth(s)} m gesamt)</span></summary>
+      <div class="sec-grid">
+        ${num('lanes', 'Fahrstreifen', 1)}
+        ${num('laneWidth', 'Breite je Streifen (m)')}
+        ${num('median', 'Mittelstreifen (m)')}
+        ${num('shoulder', 'Pannenstreifen (m)')}
+      </div>
+      ${side('bike', 'Velostreifen')}
+      ${side('walk', 'Trottoir')}
+      ${side('park', 'Parkstreifen')}
+      <p class="muted small">${esc(sectionSummary(s))}. Links/rechts in Zeichenrichtung; ein Mittelstreifen teilt die Fahrstreifen in zwei Fahrbahnen.</p>
+      <button type="button" id="sec-remove" class="btn small" ${dis}>Querschnitt entfernen</button>
+    </details>`;
+}
 
 function nodeDistances(nodes) {
   const d = [0];
@@ -503,7 +540,9 @@ export class UI {
             <button type="button" class="speed${f.maxspeed ? '' : ' active'}" data-speed="" title="Standard je Strassentyp" ${dis}>Std.</button>
           </div>
         </label>
-        <label class="field">Breite (m)<input type="number" id="prop-width" min="1" max="60" step="0.5" value="${f.width ?? ''}" placeholder="Standard ${roadWidthMeters({ ...f, width: null })} m" ${dis}></label>
+        <label class="field">Breite (m)<input type="number" id="prop-width" min="1" max="60" step="0.5" value="${f.section ? sectionWidth(f.section) : (f.width ?? '')}" placeholder="Standard ${roadWidthMeters({ ...f, width: null, section: null })} m" ${f.section ? 'disabled title="Ergibt sich aus dem Querschnitt"' : dis}></label>
+        ${roadKind(f).motorOnly ? '<p class="muted small">Autobahn/Autostrasse: keine Fussgänger und Velos; zwei getrennte Fahrbahnen ab Zoom 15.</p>' : ''}
+        ${sectionBlock(f, editable)}
         <div class="btn-row">
           <button type="button" id="prop-smooth" class="btn small" ${dis || f.nodes.length < 3 ? 'disabled' : ''} title="Knicke durch eine Spline ersetzen (fügt Zwischenpunkte ein)">Glätten</button>
           <button type="button" id="prop-simplify" class="btn small" ${dis || f.nodes.length < 3 ? 'disabled' : ''} title="Überflüssige Punkte entfernen (Toleranz 1 m)">Vereinfachen</button>
@@ -529,7 +568,17 @@ export class UI {
           </div>
         </div>`;
     } else if (f.type === 'junction') {
-      specific = `<label class="field">Art<select id="prop-jkind" ${dis}>${options(JUNCTION_KINDS, f.kind)}</select></label>`;
+      const turns = junctionTurns(f);
+      const turnsOn = junctionKind(f).turns;
+      specific = `<label class="field">Art<select id="prop-jkind" ${dis}>${options(JUNCTION_KINDS, f.kind)}</select></label>
+        ${f.kind === 'interchange' ? '<p class="muted small">Kreuzungsfrei: keine Wartezeit und kein Abbiegezuschlag im Routen-Rechner.</p>' : ''}
+        ${turnsOn ? `
+        <div class="field">Abbiegen erlaubt <span class="muted small">(bezogen auf die Fahrtrichtung, Routen-Rechner)</span>
+          <div class="check-row">
+            ${[['left', '↰ links'], ['straight', '↑ geradeaus'], ['right', '↱ rechts'], ['uturn', '↶ wenden']].map(([k, l]) => `<label class="check"><input type="checkbox" class="turn" data-turn="${k}" ${turns[k] ? 'checked' : ''} ${dis}> ${l}</label>`).join('')}
+          </div>
+          ${f.turns ? `<button type="button" id="turns-reset" class="btn small" ${dis}>Standard</button>` : ''}
+        </div>` : ''}`;
     } else if (f.type === 'roundabout') {
       specific = `<label class="field">Radius (m)<input type="number" id="prop-radius" min="4" max="200" step="0.5" value="${f.radius}" ${dis}></label>`;
     } else if (f.type === 'zone') {
@@ -582,6 +631,7 @@ export class UI {
         patch('Führung auf alle Abschnitte', (x) => x.segments.forEach((s) => { s.level = level; }));
       };
       this.$('prop-width').onchange = (e) => patch('Breite ändern', (x) => { x.width = e.target.value === '' ? null : Math.max(1, Math.min(60, Math.round(Number(e.target.value) * 2) / 2)); });
+      this.wireSection(f, patch);
       this.$('seg-maxspeed').onchange = (e) => patch('Abschnitts-Tempolimit ändern', (x) => { x.segments[segIndex].maxspeed = e.target.value === '' ? null : Math.max(5, Math.min(200, Math.round(Number(e.target.value) / 5) * 5)); });
       const split = (nodeIndex) => {
         let newId = null;
@@ -592,6 +642,11 @@ export class UI {
       this.$('seg-split-after').onclick = () => split(segIndex + 1);
     } else if (f.type === 'junction') {
       this.$('prop-jkind').onchange = (e) => patch('Art ändern', (x) => { x.kind = e.target.value; });
+      box.querySelectorAll('.turn').forEach((cb) => {
+        cb.onchange = () => patch('Abbiegeregel ändern', (x) => { x.turns = { ...junctionTurns(x), [cb.dataset.turn]: cb.checked }; });
+      });
+      const reset = this.$('turns-reset');
+      if (reset) reset.onclick = () => patch('Abbiegeregeln zurücksetzen', (x) => { x.turns = null; });
     } else if (f.type === 'zone') {
       this.$('prop-zkind').onchange = (e) => patch('Art der Fläche ändern', (x) => { x.kind = e.target.value; });
     } else if (f.type === 'roundabout') {
@@ -600,6 +655,27 @@ export class UI {
         patch('Radius ändern', (x) => { x.radius = Math.round(r * 10) / 10; });
       };
     }
+  }
+
+  /** Ereignisse des Querschnitt-Editors einer Strasse. */
+  wireSection(f, patch) {
+    const create = this.$('sec-create');
+    if (create) create.onclick = () => patch('Querschnitt festlegen', (x) => { x.section = defaultSection(x.kind); });
+    const remove = this.$('sec-remove');
+    if (remove) remove.onclick = () => patch('Querschnitt entfernen', (x) => { x.section = null; });
+    if (!f.section) return;
+    const box = this.$('properties');
+    box.querySelectorAll('.sec-num').forEach((inp) => {
+      inp.onchange = () => patch('Querschnitt ändern', (x) => {
+        if (!x.section) return;
+        const [lo, hi] = SECTION_LIMITS[inp.dataset.key];
+        const v = Math.max(lo, Math.min(hi, Number(inp.value)));
+        x.section[inp.dataset.key] = inp.dataset.key === 'lanes' ? Math.round(v) : Math.round(v * 4) / 4;
+      });
+    });
+    box.querySelectorAll('.sec-flag').forEach((cb) => {
+      cb.onchange = () => patch('Querschnitt ändern', (x) => { if (x.section) x.section[cb.dataset.key] = cb.checked; });
+    });
   }
 
   // --- Ebenen ------------------------------------------------------------------------

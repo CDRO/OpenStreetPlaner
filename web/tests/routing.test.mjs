@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   zoneSpeedAt,
   parseMaxspeed, isDrivable, waySpeed, wayDirection, buildGraph, attachPoint, shortestPath, computeRoutes,
-  insertPointsOnLine, formatDuration, keyOf,
+  insertPointsOnLine, formatDuration, keyOf, turnKind, TURN_COST, ROUNDABOUT_SPEED,
 } from '../js/routing.js';
 import { createDocument, createLayer, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
 import { project as projectLL } from '../js/geometry.js';
@@ -214,4 +214,81 @@ test('Geometriemodell: Kurven verlangsamen, Steigung aus Profil, Streuband, Ampe
   const withSignal = computeRoutes({ osmWays: [], doc, from, to, model: 'geometry' }).proposed;
   assert.ok(Math.abs(withSignal.time - withoutSignal.time - 20) < 1e-6, `Ampel +20 s: ${withSignal.time} vs ${withoutSignal.time}`);
   assert.ok(withSignal.sd > withoutSignal.sd, 'Ampel erhöht die Streuung');
+});
+
+// Kreuz: Ost-West-Strasse auf 47° und Nord-Süd-Strasse auf 8.005°, Schnittpunkt (47, 8.005) mit vier Armen.
+function crossWays() {
+  return [
+    { id: 11, tags: { highway: 'residential', maxspeed: '50' }, geometry: [[47, 8], [47, 8.005], [47, 8.01]] },
+    { id: 12, tags: { highway: 'residential', maxspeed: '50' }, geometry: [[47.004, 8.005], [47, 8.005], [46.996, 8.005]] },
+  ];
+}
+
+test('Abbiegen: Winkelklassen, Linksabbiegen kostet mehr als rechts, geradeaus nichts', () => {
+  assert.equal(turnKind([47, 8], [47, 8.001], [47.001, 8.001]), 'left', 'Ost, dann Nord = links');
+  assert.equal(turnKind([47, 8], [47, 8.001], [46.999, 8.001]), 'right', 'Ost, dann Süd = rechts');
+  assert.equal(turnKind([47, 8], [47, 8.001], [47, 8.002]), 'straight');
+  assert.equal(turnKind([47, 8], [47, 8.001], [47, 8]), 'uturn');
+  assert.equal(turnKind([47, 8], [47.001, 8], [47.001, 8.001]), 'right', 'Nord, dann Ost = rechts');
+  const ways = crossWays();
+  const from = [47, 8];
+  const straight = computeRoutes({ osmWays: ways, doc: null, from, to: [47, 8.01] }).current;
+  const left = computeRoutes({ osmWays: ways, doc: null, from, to: [47.004, 8.005] }).current;
+  const right = computeRoutes({ osmWays: ways, doc: null, from, to: [46.996, 8.005] }).current;
+  assert.ok(Math.abs(straight.time - straight.dist / (50 / 3.6)) < 1e-6, 'geradeaus ohne Zuschlag');
+  assert.ok(Math.abs(left.dist - right.dist) < 1, 'gleich lange Arme');
+  assert.ok(Math.abs((left.time - right.time) - (TURN_COST.left.mean - TURN_COST.right.mean)) < 1e-6, `links − rechts = 3 s: ${left.time} vs ${right.time}`);
+  assert.ok(Math.abs(right.time - (right.dist / (50 / 3.6) + TURN_COST.right.mean)) < 1e-6, 'rechts = Fahrzeit + 2 s');
+  // Zwischenknoten mit zwei Armen: keine Abbiegekosten trotz Knick
+  const bent = [{ id: 13, tags: { highway: 'residential', maxspeed: '50' }, geometry: [[47, 8], [47, 8.005], [47.004, 8.005]] }];
+  const b = computeRoutes({ osmWays: bent, doc: null, from, to: [47.004, 8.005] }).current;
+  assert.ok(Math.abs(b.time - b.dist / (50 / 3.6)) < 1e-6, 'Knick ohne Abzweigung kostet nichts');
+});
+
+test('Abbiegeverbot sperrt, Anschluss ist kreuzungsfrei, Kreisel dreht frei', () => {
+  const ways = crossWays();
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const from = [47, 8];
+  const toNorth = [47.004, 8.005];
+  const j = createJunction({ layerId, at: [47, 8.005], kind: 'plain', turns: { left: false } });
+  doc.features.push(j);
+  const banned = computeRoutes({ osmWays: ways, doc, from, to: toNorth });
+  assert.ok(banned.current.path && banned.current.time > 0, 'heute erlaubt');
+  // Mit Verbot bleibt nur: geradeaus bis ans Ende, wenden (kostet), zurück und rechts abbiegen
+  assert.ok(banned.proposed.path, 'Wenden am Ende der Sackgasse ist erlaubt');
+  assert.ok(banned.proposed.dist > banned.current.dist + 700, `Umweg über die Sackgasse (2 × 380 m): ${banned.proposed.dist} vs ${banned.current.dist}`);
+  assert.ok(banned.proposed.time > banned.current.time + TURN_COST.uturn.mean, 'Wenden kostet');
+  const rightOk = computeRoutes({ osmWays: ways, doc, from, to: [46.996, 8.005] }).proposed;
+  assert.ok(rightOk.path && Math.abs(rightOk.dist - banned.current.dist) < 1, 'rechts weiterhin direkt erlaubt');
+  // Einbahn nach Osten (kein Zurück) und zusätzlich Geradeaus-Verbot: auch der Trick
+  // „rechts, am Ende wenden, zurück und geradeaus“ fällt weg, keine Verbindung
+  const noReturn = [{ id: 15, tags: { highway: 'residential', maxspeed: '50', oneway: 'yes' }, geometry: [[47, 8], [47, 8.005], [47, 8.01]] }, ways[1]];
+  const viaSouth = computeRoutes({ osmWays: noReturn, doc, from, to: toNorth });
+  assert.ok(viaSouth.proposed.path && viaSouth.proposed.dist > viaSouth.current.dist + 700, 'rechts, wenden, zurück und geradeaus ist erlaubt');
+  j.turns = { left: false, right: true, straight: false, uturn: false };
+  const none = computeRoutes({ osmWays: noReturn, doc, from, to: toNorth });
+  assert.ok(none.current.path, 'heute erreichbar');
+  assert.ok(none.proposed.error, 'mit Linksabbiegeverbot keine Verbindung');
+  // Umweg: Verbot zwingt auf eine längere, erlaubte Route
+  const loop = ways.concat([{ id: 14, tags: { highway: 'residential', maxspeed: '50' }, geometry: [[47, 8.01], [47.004, 8.01], [47.004, 8.005]] }]);
+  const detour = computeRoutes({ osmWays: loop, doc, from, to: toNorth });
+  assert.ok(detour.proposed.path && detour.proposed.dist > detour.current.dist * 1.5, `Umweg statt Linksabbiegen: ${detour.proposed.dist} vs ${detour.current.dist}`);
+  // Anschluss (kreuzungsfrei): keine Abbiegekosten, kein Verbot ausser Wenden
+  j.kind = 'interchange';
+  j.turns = null;
+  const ic = computeRoutes({ osmWays: ways, doc, from, to: toNorth }).proposed;
+  assert.ok(Math.abs(ic.time - ic.dist / (50 / 3.6)) < 1e-6, `Anschluss ohne Zuschlag: ${ic.time}`);
+  // Kreisel: Drehen kostet nichts über die Kreisel-Verzögerung hinaus
+  doc.features = [];
+  const ring = createRoundabout({ layerId, center: [47.002, 8.02], radius: 15 });
+  doc.features.push(ring);
+  const rM = 15 / (111320 * Math.cos((47.002 * Math.PI) / 180));
+  const rLat = 15 / 111320;
+  doc.features.push(createRoad({ layerId, nodes: [[47.002, 8.015], [47.002, 8.02 - rM]], kind: 'main', maxspeed: 50 }));
+  doc.features.push(createRoad({ layerId, nodes: [[47.002 + rLat, 8.02], [47.006, 8.02]], kind: 'main', maxspeed: 50 }));
+  const viaRing = computeRoutes({ osmWays: [], doc, from: [47.002, 8.015], to: [47.006, 8.02] }).proposed;
+  assert.ok(viaRing.path, 'Kreisel verbindet');
+  const expected = viaRing.dist - 30 > 0 ? (viaRing.dist - 30) / (50 / 3.6) + 30 / (ROUNDABOUT_SPEED / 3.6) : 0;
+  assert.ok(Math.abs(viaRing.time - expected) < 0.05, `Kreisel ohne Abbiegezuschlag (Rundung der Speichen): ${viaRing.time} vs ${expected}`);
 });

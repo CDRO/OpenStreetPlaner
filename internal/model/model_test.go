@@ -202,3 +202,43 @@ func TestProfileField(t *testing.T) {
 		t.Fatalf("NaN-Profil nicht verworfen")
 	}
 }
+
+func TestSectionAndTurns(t *testing.T) {
+	d := sample()
+	d.Features[0].Kind = "motorway"
+	d.Features[0].Section = &Section{Lanes: 4, LaneWidth: 3.8, Median: 3, Shoulder: 2.5, WalkLeft: true, WalkWidth: 0.2}
+	tr := false
+	d.Features = append(d.Features, Feature{ID: "jx_turns", Type: "junction", LayerID: d.Layers[0].ID, Kind: "interchange", At: &LatLng{47, 8}, Turns: &Turns{Left: &tr}})
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	r := d.Features[0]
+	if r.Kind != "motorway" {
+		t.Fatalf("Autobahn nicht erlaubt: %s", r.Kind)
+	}
+	if r.Section == nil || r.Section.LaneWidth != 3.75 || r.Section.WalkWidth != 1 || !r.Section.WalkLeft {
+		t.Fatalf("Querschnitt nicht begrenzt: %+v", r.Section)
+	}
+	if got := r.Section.Width(); got != 4*3.75+3+5+1 {
+		t.Fatalf("Breite %v", got)
+	}
+	j := d.Features[len(d.Features)-1]
+	if j.Kind != "interchange" || j.Turns == nil || *j.Turns.Left || !*j.Turns.Right || !*j.Turns.Straight || *j.Turns.Uturn {
+		t.Fatalf("Abbiegeregeln: %+v %+v", j.Kind, j.Turns)
+	}
+	// zu breiter Querschnitt wird verworfen
+	d.Features[0].Section = &Section{Lanes: 8, LaneWidth: 5, Median: 10, Shoulder: 4, WalkLeft: true, WalkRight: true, WalkWidth: 5}
+	_ = Normalize(d)
+	if d.Features[0].Section != nil {
+		t.Fatalf("zu breiter Querschnitt nicht verworfen")
+	}
+	// Querschnitt und Abbiegeregeln gehören nur zu Strasse bzw. Kreuzung
+	d.Features = append(d.Features, Feature{ID: "zx_fields", Type: "zone", LayerID: d.Layers[0].ID, Nodes: []LatLng{{47, 8}, {47, 8.01}, {47.01, 8}}, Section: &Section{Lanes: 2}, Turns: &Turns{}})
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	z := d.Features[len(d.Features)-1]
+	if z.Section != nil || z.Turns != nil {
+		t.Fatalf("Zone trägt Strassen-/Kreuzungsfelder: %+v", z)
+	}
+}

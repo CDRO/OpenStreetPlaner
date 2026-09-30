@@ -5,6 +5,7 @@ import {
   createDocument, createLayer, createRoad, createJunction, createRoundabout, splitRoadSegment,
   applySnapSplits, removeRoadNode, normalizeDocument, deserialize, serialize, toGeoJSON, docStats,
   removeLayer, moveLayer, featureLabel,
+  ROAD_KINDS, defaultSection, normalizeSection, sectionWidth, sectionBands, sectionSummary, roadMedian, junctionTurns,
 } from '../js/model.js';
 
 function docWithRoad() {
@@ -205,4 +206,55 @@ test('Tempolimit pro Abschnitt, Breite in Metern, teilen und verlängern', () =>
   extendRoad(doc, r.id, [[47, 7.999]], false);
   assert.deepEqual(r.nodes[0], [47, 7.999]);
   assert.equal(r.segments[0].level, 'ground');
+});
+
+test('Autobahn/Autostrasse, Querschnitte und Abbiegeregeln', () => {
+  const mw = ROAD_KINDS.find((k) => k.id === 'motorway');
+  const tr = ROAD_KINDS.find((k) => k.id === 'trunk');
+  assert.ok(mw && tr && mw.motorOnly && tr.motorOnly);
+  assert.equal(roadSpeed({ kind: 'motorway' }), 120);
+  assert.equal(roadSpeed({ kind: 'trunk' }), 100);
+  assert.equal(roadSpeed({ kind: 'unbekannt' }), 50, 'Rückfall auf Sonstiges');
+  assert.equal(featureLabel({ type: 'road', kind: 'motorway', name: '' }), 'Autobahn');
+  assert.equal(featureLabel({ type: 'junction', kind: 'interchange', name: '' }), 'Anschluss (kreuzungsfrei)');
+  // Standard-Querschnitte: Fahrbahnbreite entspricht widthM, Autobahn hat Mittelstreifen
+  for (const k of ROAD_KINDS) assert.equal(sectionWidth(defaultSection(k.id)), k.widthM, `${k.id}: Standardquerschnitt = widthM`);
+  assert.equal(roadWidthMeters({ kind: 'motorway', width: null }), 23);
+  assert.equal(roadMedian({ kind: 'motorway' }), 3);
+  assert.equal(roadMedian({ kind: 'main' }), 0);
+  assert.deepEqual(sectionBands(defaultSection('motorway')).map((b) => b.kind), ['shoulder', 'lane', 'lane', 'median', 'lane', 'lane', 'shoulder']);
+  // Normalisierung: Raster 0.25 m, Grenzen, Gesamtbreite
+  const s = normalizeSection({ lanes: 3, laneWidth: 3.1, walkLeft: true, walkRight: true, walkWidth: 2, bikeRight: true, bikeWidth: 1.5, parkLeft: 'ja' });
+  assert.equal(s.laneWidth, 3);
+  assert.equal(s.parkLeft, false);
+  assert.equal(sectionWidth(s), 14.5);
+  assert.deepEqual(sectionBands(s).map((b) => b.kind), ['walk', 'lane', 'lane', 'lane', 'bike', 'walk']);
+  assert.ok(sectionSummary(s).includes('3 Fahrstreifen à 3 m') && sectionSummary(s).includes('Velostreifen rechts') && sectionSummary(s).includes('Trottoir beidseitig'));
+  assert.equal(normalizeSection({ lanes: 8, laneWidth: 5, median: 10, shoulder: 4, walkLeft: true, walkRight: true, walkWidth: 5 }), null, 'breiter als 60 m');
+  assert.equal(normalizeSection(null), null);
+  assert.equal(normalizeSection({ lanes: 99, laneWidth: 0.1 }).lanes, 8);
+  // Querschnitt setzt sich gegen Breite durch; Serialisierung behält beides
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const road = createRoad({ layerId, nodes: [[47, 8], [47, 8.001]], kind: 'main', width: 6, section: s });
+  doc.features.push(road);
+  assert.equal(roadWidthMeters(road), 14.5);
+  const j = createJunction({ layerId, at: [47, 8], kind: 'signals', turns: { left: false } });
+  const j2 = createJunction({ layerId, at: [47, 8.001] });
+  doc.features.push(j, j2);
+  assert.deepEqual(j.turns, { left: false, right: true, straight: true, uturn: false });
+  assert.equal(j2.turns, null);
+  assert.deepEqual(junctionTurns(j2), { left: true, right: true, straight: true, uturn: false });
+  const back = deserialize(serialize(doc));
+  assert.deepEqual(back.features[0].section, s);
+  assert.equal(back.features[0].width, 6);
+  assert.deepEqual(back.features[1].turns, { left: false, right: true, straight: true, uturn: false });
+  assert.equal(back.features[2].turns, null);
+  const unknownKind = deserialize(JSON.stringify({ ...doc, features: [{ ...road, kind: 'autobahn', section: { lanes: 'x' } }] }));
+  assert.equal(unknownKind.features[0].kind, 'other');
+  assert.equal(unknownKind.features[0].section.lanes, 2, 'unbrauchbare Werte fallen auf die Basis zurück');
+  const gj = toGeoJSON(doc);
+  assert.ok(gj.features[0].properties.section.includes('Fahrstreifen'));
+  assert.equal(gj.features[0].properties.width, 14.5);
+  assert.deepEqual(gj.features.find((f) => f.properties.type === 'junction').properties.turns, j.turns);
 });

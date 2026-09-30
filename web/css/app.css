@@ -278,3 +278,10 @@ body.present .banner { display: none !important; }
 .present-panel h2 { font-size: 16px; margin-bottom: 4px; }
 .present-panel .legend { margin: 8px 0; }
 .present-panel .route-table { font-size: 12px; }
+
+/* Querschnitt-Editor und Abbiegeregeln */
+.sec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+.sec-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; margin: 4px 0; }
+.sec-row > span { min-width: 84px; }
+.sec-row input[type="number"] { width: 64px; }
+.check-row { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0; }

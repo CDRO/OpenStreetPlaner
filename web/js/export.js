@@ -2,7 +2,7 @@
 // Karten-Canvas plus Titel, Legende, Massstab und OSM-Attribution zusammengesetzt;
 // das PDF bettet dieses Bild als JPEG (DCTDecode) in eine A4-Seite ein.
 
-import { LEVELS, ZONE_KINDS } from './model.js';
+import { LEVELS, ZONE_KINDS, roadWidthMeters, sectionSummary } from './model.js';
 import { formatDuration } from './routing.js';
 import { haversine } from './geometry.js';
 
@@ -432,6 +432,7 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '' } = 
     const len = Math.round(pathLengthLL(r.nodes));
     const parts = [`${i + 1}. ${r.name || 'Strasse'} (${kindLabel(ROAD_KINDS_LABELS, r.kind)}, ${STATUS_LABELS[r.status] || r.status})`, `${len} m`];
     if (r.maxspeed) parts.push(`Tempo ${r.maxspeed}`);
+    parts.push(`Breite ${roadWidthMeters(r)} m${r.section ? ` (${sectionSummary(r.section)})` : ''}`);
     const special = r.segments.filter((s) => s.level !== 'ground').length;
     if (special) parts.push(`${special} Abschnitt(e) Brücke/Tunnel`);
     if (r.oneway) parts.push('Einbahn');

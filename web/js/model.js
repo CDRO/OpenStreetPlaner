@@ -5,15 +5,18 @@ import { circleRing, pathLength } from './geometry.js';
 
 export const DOC_VERSION = 1;
 
-// width: Bildschirmbreite in Pixeln (kleine Zoomstufen); widthM: reale Breite in Metern (grosse Zoomstufen);
-// speed: Standard-Tempolimit in km/h für den Routen-Rechner, wenn keines gesetzt ist (0 = nicht befahrbar).
+// width: Bildschirmbreite in Pixeln (kleine Zoomstufen); widthM: reale Breite der Fahrbahn in Metern (grosse Zoomstufen);
+// speed: Standard-Tempolimit in km/h für den Routen-Rechner, wenn keines gesetzt ist (0 = nicht befahrbar);
+// section: Standard-Querschnitt (Fahrstreifen, Mittelstreifen, Pannenstreifen); motorOnly: keine Fussgänger und Velos.
 export const ROAD_KINDS = [
-  { id: 'main', label: 'Hauptstrasse', width: 7, widthM: 7, speed: 50 },
-  { id: 'secondary', label: 'Nebenstrasse', width: 5.5, widthM: 6, speed: 50 },
-  { id: 'residential', label: 'Quartierstrasse', width: 4.5, widthM: 5, speed: 30 },
-  { id: 'service', label: 'Zufahrt / Erschliessung', width: 3.5, widthM: 3.5, speed: 20 },
-  { id: 'path', label: 'Fuss- / Veloweg', width: 2.5, widthM: 2.5, speed: 0 },
-  { id: 'other', label: 'Sonstiges', width: 4, widthM: 5, speed: 50 },
+  { id: 'motorway', label: 'Autobahn', width: 9, widthM: 23, speed: 120, motorOnly: true, section: { lanes: 4, laneWidth: 3.75, median: 3, shoulder: 2.5 } },
+  { id: 'trunk', label: 'Autostrasse', width: 8, widthM: 9.5, speed: 100, motorOnly: true, section: { lanes: 2, laneWidth: 3.75, median: 0, shoulder: 1 } },
+  { id: 'main', label: 'Hauptstrasse', width: 7, widthM: 7, speed: 50, section: { lanes: 2, laneWidth: 3.5 } },
+  { id: 'secondary', label: 'Nebenstrasse', width: 5.5, widthM: 6, speed: 50, section: { lanes: 2, laneWidth: 3 } },
+  { id: 'residential', label: 'Quartierstrasse', width: 4.5, widthM: 5, speed: 30, section: { lanes: 2, laneWidth: 2.5 } },
+  { id: 'service', label: 'Zufahrt / Erschliessung', width: 3.5, widthM: 3.5, speed: 20, section: { lanes: 1, laneWidth: 3.5 } },
+  { id: 'path', label: 'Fuss- / Veloweg', width: 2.5, widthM: 2.5, speed: 0, section: { lanes: 1, laneWidth: 2.5 } },
+  { id: 'other', label: 'Sonstiges', width: 4, widthM: 5, speed: 50, section: { lanes: 2, laneWidth: 2.5 } },
 ];
 
 export const MAX_WIDTH_M = 60;
@@ -22,10 +25,93 @@ export function roadKind(road) {
   return ROAD_KINDS.find((k) => k.id === road.kind) || ROAD_KINDS[ROAD_KINDS.length - 1];
 }
 
-/** Reale Breite in Metern: gesetzter Wert oder Standard je Typ. */
+// --- Querschnitt --------------------------------------------------------------------
+// Bänder von links nach rechts (in Zeichenrichtung): Trottoir, Parkstreifen, Velostreifen,
+// Pannenstreifen, Fahrstreifen (bei Mittelstreifen in zwei Hälften), dann spiegelbildlich.
+
+export const SECTION_LIMITS = {
+  lanes: [1, 8], laneWidth: [2, 5], median: [0, 10], shoulder: [0, 4],
+  bikeWidth: [1, 3], walkWidth: [1, 5], parkWidth: [1.5, 3],
+};
+
+const SECTION_BASE = { lanes: 2, laneWidth: 3.25, median: 0, shoulder: 0, bikeLeft: false, bikeRight: false, bikeWidth: 1.5, walkLeft: false, walkRight: false, walkWidth: 2, parkLeft: false, parkRight: false, parkWidth: 2 };
+
+const clampRound = (v, [lo, hi], step = 0.25) => Math.round(Math.max(lo, Math.min(hi, v)) / step) * step;
+
+/** Prüft einen rohen Querschnitt; null, wenn keiner gesetzt ist. */
+export function normalizeSection(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = { ...SECTION_BASE };
+  for (const key of Object.keys(SECTION_LIMITS)) {
+    const v = Number(raw[key]);
+    if (Number.isFinite(v)) s[key] = key === 'lanes' ? Math.round(clampRound(v, SECTION_LIMITS.lanes, 1)) : clampRound(v, SECTION_LIMITS[key]);
+  }
+  for (const key of ['bikeLeft', 'bikeRight', 'walkLeft', 'walkRight', 'parkLeft', 'parkRight']) s[key] = raw[key] === true;
+  if (sectionWidth(s) > MAX_WIDTH_M) return null;
+  return s;
+}
+
+/** Standard-Querschnitt eines Strassentyps (als eigenständige Kopie). */
+export function defaultSection(kind) {
+  const k = ROAD_KINDS.find((x) => x.id === kind) || ROAD_KINDS[ROAD_KINDS.length - 1];
+  return normalizeSection({ ...SECTION_BASE, ...(k.section || {}) });
+}
+
+/** Bänder eines Querschnitts: [{ kind, width, side }] von links nach rechts; width in Metern. */
+export function sectionBands(s) {
+  const bands = [];
+  const side = (name, on, width, where) => { if (on && width > 0) bands.push({ kind: name, width, side: where }); };
+  side('walk', s.walkLeft, s.walkWidth, 'left');
+  side('park', s.parkLeft, s.parkWidth, 'left');
+  side('bike', s.bikeLeft, s.bikeWidth, 'left');
+  side('shoulder', s.shoulder > 0, s.shoulder, 'left');
+  if (s.median > 0 && s.lanes >= 2) {
+    const half = Math.floor(s.lanes / 2);
+    for (let i = 0; i < half; i++) bands.push({ kind: 'lane', width: s.laneWidth, side: 'left' });
+    bands.push({ kind: 'median', width: s.median, side: 'center' });
+    for (let i = 0; i < s.lanes - half; i++) bands.push({ kind: 'lane', width: s.laneWidth, side: 'right' });
+  } else {
+    for (let i = 0; i < s.lanes; i++) bands.push({ kind: 'lane', width: s.laneWidth, side: 'center' });
+  }
+  side('shoulder', s.shoulder > 0, s.shoulder, 'right');
+  side('bike', s.bikeRight, s.bikeWidth, 'right');
+  side('park', s.parkRight, s.parkWidth, 'right');
+  side('walk', s.walkRight, s.walkWidth, 'right');
+  return bands;
+}
+
+/** Gesamtbreite eines Querschnitts in Metern. */
+export function sectionWidth(s) {
+  return Math.round(sectionBands(s).reduce((sum, b) => sum + b.width, 0) * 100) / 100;
+}
+
+/** Kurzbeschreibung, z. B. „2 Fahrstreifen à 3.25 m, Velostreifen rechts, Trottoir beidseitig“. */
+export function sectionSummary(s) {
+  const parts = [`${s.lanes} Fahrstreifen à ${s.laneWidth} m`];
+  const both = (l, r, name) => (l && r ? `${name} beidseitig` : l ? `${name} links` : r ? `${name} rechts` : null);
+  if (s.median > 0) parts.push(`Mittelstreifen ${s.median} m`);
+  if (s.shoulder > 0) parts.push(`Pannenstreifen ${s.shoulder} m`);
+  for (const p of [both(s.bikeLeft, s.bikeRight, 'Velostreifen'), both(s.parkLeft, s.parkRight, 'Parkstreifen'), both(s.walkLeft, s.walkRight, 'Trottoir')]) if (p) parts.push(p);
+  return parts.join(', ');
+}
+
+/** Wirksamer Querschnitt einer Strasse: gesetzter, sonst Standard je Typ (bei gesetzter Breite ohne Querschnitt: null). */
+export function roadSection(road) {
+  return road.section || null;
+}
+
+/** Reale Breite in Metern: Querschnitt, sonst gesetzter Wert, sonst Standard je Typ. */
 export function roadWidthMeters(road) {
+  if (road.section) return sectionWidth(road.section);
   if (Number.isFinite(road.width) && road.width > 0) return road.width;
   return roadKind(road).widthM;
+}
+
+/** Mittelstreifen in Metern (getrennte Fahrbahnen); Autobahnen ohne eigenen Querschnitt bekommen den Standard. */
+export function roadMedian(road) {
+  if (road.section) return road.section.median || 0;
+  const k = roadKind(road);
+  return k.section && k.section.median ? k.section.median : 0;
 }
 
 /** Kennung der Punktfolge, um veraltete Höhenprofile zu erkennen. */
@@ -71,7 +157,7 @@ export const MAX_SPEED = 200;
 /** Tempolimit einer Strasse in km/h: gesetzter Wert oder Standard je Typ (0 = nicht befahrbar). */
 export function roadSpeed(road) {
   if (Number.isFinite(road.maxspeed) && road.maxspeed > 0) return road.maxspeed;
-  return (ROAD_KINDS.find((k) => k.id === road.kind) || ROAD_KINDS[5]).speed;
+  return roadKind(road).speed;
 }
 
 export function normalizeMaxspeed(v) {
@@ -92,14 +178,35 @@ export const STATUSES = [
   { id: 'remove', label: 'Rückbau' },
 ];
 
+// turns: ob Abbiegeregeln (Verbote) an dieser Art sinnvoll sind.
 export const JUNCTION_KINDS = [
-  { id: 'plain', label: 'Kreuzung' },
-  { id: 'signals', label: 'Ampel' },
-  { id: 'priority', label: 'Vortritt' },
-  { id: 'stop', label: 'Stop' },
-  { id: 'crossing', label: 'Fussgängerstreifen' },
-  { id: 'busstop', label: 'Bushaltestelle' },
+  { id: 'plain', label: 'Kreuzung', turns: true },
+  { id: 'signals', label: 'Ampel', turns: true },
+  { id: 'priority', label: 'Vortritt', turns: true },
+  { id: 'stop', label: 'Stop', turns: true },
+  { id: 'interchange', label: 'Anschluss (kreuzungsfrei)', turns: true },
+  { id: 'crossing', label: 'Fussgängerstreifen', turns: false },
+  { id: 'busstop', label: 'Bushaltestelle', turns: false },
 ];
+
+export function junctionKind(j) {
+  return JUNCTION_KINDS.find((k) => k.id === j.kind) || JUNCTION_KINDS[0];
+}
+
+/** Abbiegeregeln einer Kreuzung: welche Richtungen erlaubt sind. Standard: alles ausser Wenden. */
+export const DEFAULT_TURNS = { left: true, right: true, straight: true, uturn: false };
+
+export function normalizeTurns(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const t = {};
+  for (const k of Object.keys(DEFAULT_TURNS)) t[k] = typeof raw[k] === 'boolean' ? raw[k] : DEFAULT_TURNS[k];
+  return t;
+}
+
+/** Wirksame Abbiegeregeln (null = Standard). */
+export function junctionTurns(j) {
+  return j.turns || DEFAULT_TURNS;
+}
 
 // speed: Tempolimit, das die Zone auf alle Strassen darin legt (0 = nicht befahrbar, null = keines).
 // color: Darstellung; null = Ebenenfarbe.
@@ -198,7 +305,7 @@ export function moveLayer(doc, id, delta) {
   doc.layers.splice(j, 0, layer);
 }
 
-export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false, maxspeed = null, osmId = null, width = null }) {
+export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false, maxspeed = null, osmId = null, width = null, section = null }) {
   const pts = nodes.map(roundCoord);
   return {
     id: newId('r'),
@@ -210,6 +317,7 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     oneway,
     maxspeed: normalizeMaxspeed(maxspeed),
     width: normalizeWidth(width),
+    section: normalizeSection(section),
     osmId: Number.isInteger(osmId) && osmId > 0 ? osmId : null,
     nodes: pts,
     segments: pts.slice(1).map(() => ({ level, maxspeed: null })),
@@ -253,8 +361,8 @@ export function extendRoad(doc, roadId, latlngs, atEnd = true) {
   }
 }
 
-export function createJunction({ layerId, at, kind = 'plain', name = '' }) {
-  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), note: '' };
+export function createJunction({ layerId, at, kind = 'plain', name = '', turns = null }) {
+  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), note: '' };
 }
 
 export function createZone({ layerId, nodes, kind = 'tempo30', name = '' }) {
@@ -305,7 +413,7 @@ export function removeFeature(doc, id) {
 
 export function featureLabel(f) {
   if (f.name) return f.name;
-  if (f.type === 'road') return (ROAD_KINDS.find((k) => k.id === f.kind) || ROAD_KINDS[5]).label;
+  if (f.type === 'road') return roadKind(f).label;
   if (f.type === 'junction') return (JUNCTION_KINDS.find((k) => k.id === f.kind) || JUNCTION_KINDS[0]).label;
   if (f.type === 'roundabout') return 'Kreisel';
   if (f.type === 'zone') return zoneKind(f).label;
@@ -445,6 +553,7 @@ export function normalizeDocument(raw) {
         oneway: f.oneway === true,
         maxspeed: normalizeMaxspeed(f.maxspeed),
         width: normalizeWidth(f.width),
+        section: normalizeSection(f.section),
         osmId: Number.isInteger(f.osmId) && f.osmId > 0 ? f.osmId : null,
         nodes,
         segments,
@@ -452,7 +561,7 @@ export function normalizeDocument(raw) {
       });
     } else if (f.type === 'junction') {
       if (!isLatLng(f.at)) throw new Error(`Kreuzung ${f.id} hat keine Position`);
-      doc.features.push({ ...base, type: 'junction', kind: idIn(JUNCTION_KINDS, f.kind, 'plain'), at: roundCoord(f.at) });
+      doc.features.push({ ...base, type: 'junction', kind: idIn(JUNCTION_KINDS, f.kind, 'plain'), at: roundCoord(f.at), turns: normalizeTurns(f.turns) });
     } else if (f.type === 'roundabout') {
       if (!isLatLng(f.center)) throw new Error(`Kreisel ${f.id} hat kein Zentrum`);
       const radius = Number.isFinite(f.radius) && f.radius > 0 ? Math.min(500, f.radius) : 15;
@@ -514,7 +623,7 @@ export function toGeoJSON(doc) {
       f.segments.forEach((seg, i) => {
         features.push({
           type: 'Feature',
-          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, maxspeed: segmentSpeed(f, i), width: roadWidthMeters(f), osmId: f.osmId, segment: i, level: seg.level },
+          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, maxspeed: segmentSpeed(f, i), width: roadWidthMeters(f), section: f.section ? sectionSummary(f.section) : null, osmId: f.osmId, segment: i, level: seg.level },
           geometry: {
             type: 'LineString',
             coordinates: [f.nodes[i], f.nodes[i + 1]].map(([lat, lng]) => [lng, lat]),
@@ -524,7 +633,7 @@ export function toGeoJSON(doc) {
     } else if (f.type === 'junction') {
       features.push({
         type: 'Feature',
-        properties: { ...common, type: 'junction', kind: f.kind },
+        properties: { ...common, type: 'junction', kind: f.kind, turns: f.turns || null },
         geometry: { type: 'Point', coordinates: [f.at[1], f.at[0]] },
       });
     } else if (f.type === 'roundabout') {

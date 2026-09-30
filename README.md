@@ -33,15 +33,16 @@ go run . -data ./data
 | Karte | Kacheln über den eigenen Proxy: OpenStreetMap, swisstopo Landeskarte (farbig, grau), Luftbild, dazu das Parzellen-Overlay der amtlichen Vermessung (WMS, ab Zoom 15). Eigene Quellen über `TILE_SOURCES`. Massstab, Zoom 2–20, Maus, Touch (Pinch), Tastatur |
 | Suche | Ort/Adresse wie in einer Karten-App, oder direkt `lat, lng`; Button „Mein Standort“ |
 | Ebenen | Beliebig viele, ein-/ausblenden, umbenennen, einfärben, sortieren; jedes Element gehört zu einer Ebene |
-| Strassen | Linienzug zeichnen (Klick für Punkte, Doppelklick/Enter/Rechtsklick beendet), Strassentyp, Status *Neu / Bestehend / Rückbau*, Einbahn mit Pfeilen, Beschriftung ab Zoom 16 |
+| Strassen | Linienzug zeichnen (Klick für Punkte, Doppelklick/Enter/Rechtsklick beendet), Strassentyp (Autobahn 120, Autostrasse 100, Haupt-, Neben-, Quartierstrasse, Zufahrt, Fuss-/Veloweg), Status *Neu / Bestehend / Rückbau*, Einbahn mit Pfeilen, Beschriftung ab Zoom 16. Autobahnen und Strassen mit Mittelstreifen werden ab Zoom 15 als zwei getrennte Fahrbahnen gezeichnet; Autobahn/Autostrasse sind für Fussgänger und Velos gesperrt |
+| Querschnitte | Pro Strasse: Zahl und Breite der Fahrstreifen, Mittelstreifen, Pannenstreifen, Velostreifen, Trottoir und Parkstreifen links/rechts mit Breiten. Die Gesamtbreite ersetzt die Breitenangabe; ab Zoom 17 werden die Bänder gezeichnet, ab Zoom 18 mit Fahrstreifen-Markierungen. Standard je Strassentyp, wenn keiner gesetzt ist |
 | Tempolimit | Pro Strasse in km/h (Schnellwahl 20/30/50/80 oder Standard je Strassentyp); wird beim Übernehmen aus OSM `maxspeed` gelesen (auch `30 mph`, `CH:urban` usw.) und ab Zoom 16 als Schild gezeichnet |
-| Routen-Rechner | Start A und Ziel B klicken: schnellste Fahrroute im heutigen OSM-Netz vs. im Netz mit dem Entwurf (neue Strassen dazu, Rückbau weg, übernommene Strassen mit ihren Änderungen, nur sichtbare Ebenen), Distanz und Fahrzeit aus Tempolimits, gezeichnete Kreuzungen kosten Zeit (Ampel 20 s, Stop 8 s, Vortritt 3 s), Kreisel verbinden ihre Anschlüsse |
+| Routen-Rechner | Start A und Ziel B klicken: schnellste Fahrroute im heutigen OSM-Netz vs. im Netz mit dem Entwurf (neue Strassen dazu, Rückbau weg, übernommene Strassen mit ihren Änderungen, nur sichtbare Ebenen), Distanz und Fahrzeit aus Tempolimits, gezeichnete Kreuzungen kosten Zeit (Ampel 20 s, Stop 8 s, Vortritt 3 s), Kreisel verbinden ihre Anschlüsse. **Abbiegen**: an Knoten mit drei und mehr Armen kostet rechts 2 s, links 5 s, wenden 15 s (Rechtsverkehr, aus dem Richtungswechsel berechnet); Abbiegeverbote an gezeichneten Kreuzungen sperren die Richtung, Anschlüsse und Kreisel sind kostenfrei. Die Suche läuft über (Knoten, Vorgänger)-Zustände, damit Verbote korrekt wirken |
 | Geschwindigkeitsmodell | Schalter im Routen-Tab: Fahrzeit aus der Strassenführung statt nur aus dem Limit. Kurvenradien aus der Geometrie (v = √(3 m/s² · R)), Steigung aus dem Höhenprofil, Wartezeiten an Kreuzungen und Kreiseln mit Streuung. Ergebnis als typische Zeit mit Band P15–P85 |
 | Glätten / Vereinfachen | Strassen per Catmull-Rom-Spline glätten (Abschnittseigenschaften bleiben) oder per Douglas-Peucker auf 1 m vereinfachen |
 | Höhenprofil | Pro Strasse vom swisstopo-Profildienst laden: Gelände, Steigungen, Brücken über und Tunnel unter dem Gelände als Diagramm; fliesst ins Geschwindigkeitsmodell ein |
 | Bild / PDF | Export-Dialog: aktuelle Ansicht oder ganzer Entwurf, A4/A3, Hoch- oder Querformat, 96/150/300 dpi. Die Karte wird dafür offscreen neu gezeichnet (Kacheln werden vorgeladen), mit Titel, Legende, Massstab, Routenvergleich und OSM-Attribution; PNG oder PDF, beides ohne Bibliothek. Option **Bericht anhängen**: weitere PDF-Seiten mit Massnahmenliste (Strassen mit Typ, Länge, Tempo, Brücken/Tunnel; Punkte; Flächen), Routenvergleich, Kommentaren samt Antworten und Link zum Entwurf |
 | Abschnitte | Jeder Abschnitt zwischen zwei Punkten hat seine eigene Führung: **Ebenerdig, Brücke oder Tunnel** |
-| Kreuzungen / Punkte | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop, Fussgängerstreifen, Bushaltestelle) |
+| Kreuzungen / Punkte | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop, Anschluss (kreuzungsfrei, Raute), Fussgängerstreifen, Bushaltestelle) und **Abbiegeregeln** (links, geradeaus, rechts, wenden erlaubt; Verbote werden als rote Marken gezeichnet) |
 | Flächen | Polygone als Tempo-30-Zone, Begegnungszone (20), Fussgängerzone, Parkplatz oder sonstige Fläche; Eckpunkte ziehen, einfügen, löschen. Zonen mit Tempolimit deckeln im Routen-Rechner alle Strassen darin, Fussgängerzonen sperren sie |
 | Kommentare | Wer den Ansichtslink hat, heftet Kommentare an Kartenpunkte und antwortet auf Kommentare (eine Ebene). Besitzer und Verfasser können erledigen oder löschen; Löschen eines Kommentars nimmt seine Antworten mit. Kommentare liegen getrennt vom Entwurf auf dem Server |
 | Benachrichtigungen | Web-Push ohne Fremdbibliothek (RFC 8291 aes128gcm, RFC 8292 VAPID): der Besitzer abonniert alle neuen Kommentare und Antworten, andere Antworten auf ihre eigenen Kommentare. Klick auf die Benachrichtigung öffnet den Entwurf beim Kommentar. Bei offener Seite prüft die App zusätzlich alle 45 s auf neue Kommentare |
@@ -166,10 +167,15 @@ web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwri
   "layers": [{ "id": "l_…", "name": "Variante A", "color": "#d7263d", "visible": true }],
   "features": [
     { "id": "r_…", "type": "road", "layerId": "l_…", "name": "Umfahrung", "kind": "main",
-      "status": "new", "oneway": false, "maxspeed": 50, "osmId": null,
+      "status": "new", "oneway": false, "maxspeed": 50, "width": null, "osmId": null,
+      "section": { "lanes": 2, "laneWidth": 3.25, "median": 0, "shoulder": 0,
+                   "bikeLeft": false, "bikeRight": true, "bikeWidth": 1.5,
+                   "walkLeft": true, "walkRight": true, "walkWidth": 2,
+                   "parkLeft": false, "parkRight": false, "parkWidth": 2 },
       "nodes": [[47.05, 8.30], [47.051, 8.302], [47.052, 8.305]],
-      "segments": [{ "level": "ground" }, { "level": "tunnel" }] },
-    { "id": "j_…", "type": "junction", "layerId": "l_…", "kind": "signals", "at": [47.05, 8.30] },
+      "segments": [{ "level": "ground", "maxspeed": null }, { "level": "tunnel", "maxspeed": 30 }] },
+    { "id": "j_…", "type": "junction", "layerId": "l_…", "kind": "signals", "at": [47.05, 8.30],
+      "turns": { "left": false, "right": true, "straight": true, "uturn": false } },
     { "id": "k_…", "type": "roundabout", "layerId": "l_…", "center": [47.052, 8.305], "radius": 14 },
     { "id": "z_…", "type": "zone", "layerId": "l_…", "kind": "tempo30",
       "nodes": [[47.049, 8.299], [47.049, 8.303], [47.052, 8.303], [47.052, 8.299]] }
@@ -179,8 +185,14 @@ web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwri
 ```
 
 `segments` hat immer einen Eintrag weniger als `nodes`. `maxspeed` ist
-optional (null = Standard je Strassentyp), `osmId` verweist auf den
-übernommenen OSM-Way, `route` ist die gespeicherte Anfrage des Routen-Rechners.
+optional (null = Standard je Strassentyp), ebenso `width` (Meter) und
+`section` (Querschnitt; wenn gesetzt, ergibt sich die Breite daraus).
+`kind` einer Strasse ist `motorway`, `trunk`, `main`, `secondary`,
+`residential`, `service`, `path` oder `other`; `kind` einer Kreuzung
+`plain`, `signals`, `priority`, `stop`, `interchange`, `crossing` oder
+`busstop`. `turns` einer Kreuzung ist optional (null = links, rechts und
+geradeaus erlaubt, wenden nicht). `osmId` verweist auf den übernommenen
+OSM-Way, `route` ist die gespeicherte Anfrage des Routen-Rechners.
 
 ### Routen-Rechner: Annahmen
 

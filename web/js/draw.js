@@ -3,9 +3,18 @@
 // ebenerdige Abschnitte, Brücken, Kreisel, Kreuzungen, Pfeile, Beschriftung,
 // Bearbeitungsgriffe, Zeichenvorschau, Einrast-Markierung.
 
-import { ROAD_KINDS, getLayer, roadWidthMeters, segmentSpeed, zoneKind } from './model.js';
+import { ROAD_KINDS, getLayer, roadMedian, roadWidthMeters, sectionBands, segmentSpeed, zoneKind } from './model.js';
 
 const KIND_WIDTH = Object.fromEntries(ROAD_KINDS.map((k) => [k.id, k.width]));
+
+/** Farben der Querschnitt-Bänder. */
+const BAND_COLORS = {
+  walk: '#d8d8d8', park: '#b9c3cf', bike: '#e4b98f', shoulder: '#c9ccd1', median: '#8fa08a',
+};
+/** Ab dieser Auflösung (Pixel pro Meter) werden Querschnitte als Bänder gezeichnet. */
+export const BAND_MIN_PX_PER_M = 1.2;
+/** Ab dieser Auflösung kommen Fahrstreifen-Markierungen dazu. */
+const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
   const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null } = s;
@@ -83,6 +92,21 @@ export function drawScene(ctx, map, s) {
     });
     ctx.restore();
   }
+  // Getrennte Fahrbahnen (Autobahn, Mittelstreifen) und Querschnitt-Bänder
+  const pxPerM = 1 / mpp;
+  for (const f of roads) {
+    if (f.status === 'remove') continue;
+    const median = roadMedian(f);
+    const bands = f.section && pxPerM >= BAND_MIN_PX_PER_M ? sectionBands(f.section) : null;
+    if (!bands && median > 0) {
+      // Nur der Mittelstreifen: zwei Fahrbahnen mit Abstand
+      const gap = Math.max(1.5, median * pxPerM);
+      const w = widthOf(f);
+      if (gap < w) drawMedian(ctx, P, f, gap, f.status === 'existing' ? 0.7 : 1);
+      continue;
+    }
+    if (bands) drawSectionBands(ctx, P, f, bands, pxPerM, colorOf(f), f.status === 'existing' ? 0.7 : 1);
+  }
   // Kreisel
   for (const f of visible) {
     if (f.type !== 'roundabout') continue;
@@ -95,10 +119,12 @@ export function drawScene(ctx, map, s) {
   for (const f of visible) {
     if (f.type !== 'junction') continue;
     const c = P(f.at);
-    const glyph = { plain: '', signals: 'A', priority: 'V', stop: 'S', crossing: '≡', busstop: 'H' }[f.kind] || '';
+    const glyph = { plain: '', signals: 'A', priority: 'V', stop: 'S', crossing: '≡', busstop: 'H', interchange: '' }[f.kind] || '';
     const fill = f.kind === 'busstop' ? '#ffe600' : '#fff';
-    circle(ctx, c, 9, { stroke: colorOf(f), width: 3, fill });
+    if (f.kind === 'interchange') diamond(ctx, c, 11, { stroke: colorOf(f), width: 3, fill });
+    else circle(ctx, c, 9, { stroke: colorOf(f), width: 3, fill });
     if (glyph) text(ctx, glyph, c.x, c.y + 0.5, { font: 'bold 11px system-ui, sans-serif', color: '#222', align: 'center', baseline: 'middle' });
+    if (f.turns && zoom >= 16) drawTurnBans(ctx, c, f.turns);
   }
   // Einbahn-Pfeile
   if (zoom >= 15) {
@@ -209,6 +235,138 @@ function stroke(ctx, pts, color, width, cap = 'round') {
   ctx.lineCap = cap;
   ctx.lineJoin = 'round';
   strokePath(ctx, pts);
+}
+
+/** Raute (kreuzungsfreier Anschluss). */
+function diamond(ctx, c, r, { stroke: strokeColor, width = 1, fill = null } = {}) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(c.x, c.y - r);
+  ctx.lineTo(c.x + r, c.y);
+  ctx.lineTo(c.x, c.y + r);
+  ctx.lineTo(c.x - r, c.y);
+  ctx.closePath();
+  if (fill) {
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = width;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Kleine rote Verbotsmarken neben einer Kreuzung für gesperrte Abbiegerichtungen. */
+function drawTurnBans(ctx, c, turns) {
+  const banned = [];
+  if (!turns.left) banned.push('↰');
+  if (!turns.straight) banned.push('↑');
+  if (!turns.right) banned.push('↱');
+  if (!banned.length) return;
+  banned.forEach((g, i) => {
+    const x = c.x + 14 + i * 13;
+    const y = c.y - 10;
+    circle(ctx, { x, y }, 6, { stroke: '#c62828', width: 1.5, fill: '#fff' });
+    text(ctx, g, x, y + 0.5, { font: 'bold 9px system-ui, sans-serif', color: '#c62828', align: 'center', baseline: 'middle' });
+    ctx.save();
+    ctx.strokeStyle = '#c62828';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x - 4, y - 4);
+    ctx.lineTo(x + 4, y + 4);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+/**
+ * Parallele Linie im Abstand d (Pixel, positiv = rechts der Zeichenrichtung).
+ * Eckpunkte werden entlang der Winkelhalbierenden versetzt (begrenzte Gehrung).
+ */
+export function offsetPolyline(pts, d) {
+  const n = pts.length;
+  if (n < 2 || d === 0) return pts.slice();
+  const normals = [];
+  for (let i = 0; i < n - 1; i++) {
+    const dx = pts[i + 1].x - pts[i].x;
+    const dy = pts[i + 1].y - pts[i].y;
+    const len = Math.hypot(dx, dy) || 1;
+    normals.push({ x: -dy / len, y: dx / len }); // rechts der Richtung (y zeigt nach unten)
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = normals[Math.max(0, i - 1)];
+    const b = normals[Math.min(n - 2, i)];
+    let mx = (a.x + b.x) / 2;
+    let my = (a.y + b.y) / 2;
+    const ml = Math.hypot(mx, my);
+    if (ml < 1e-6) {
+      mx = b.x;
+      my = b.y;
+    } else {
+      // Länge 1/cos(θ/2), auf das Dreifache begrenzt (spitze Winkel)
+      const cosHalf = Math.max(1 / 3, ml);
+      mx = (mx / ml) / cosHalf;
+      my = (my / ml) / cosHalf;
+    }
+    out.push({ x: pts[i].x + mx * d, y: pts[i].y + my * d });
+  }
+  return out;
+}
+
+/** Mittelstreifen entlang der Achse, nur auf ebenerdigen und Brücken-Abschnitten. */
+function drawMedian(ctx, P, road, gap, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  for (let i = 0; i < road.segments.length; i++) {
+    if (road.segments[i].level === 'tunnel') continue;
+    stroke(ctx, [P(road.nodes[i]), P(road.nodes[i + 1])], BAND_COLORS.median, gap, 'butt');
+  }
+  ctx.restore();
+}
+
+/** Querschnitt als Bänder: Trottoir, Parkstreifen, Velostreifen, Pannenstreifen, Mittelstreifen und Fahrstreifen-Markierungen. */
+function drawSectionBands(ctx, P, road, bands, pxPerM, layerColor, alpha) {
+  const total = bands.reduce((sum, b) => sum + b.width, 0);
+  const pts = road.nodes.map(P);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const runs = [];
+  // Zusammenhängende Läufe ohne Tunnel, damit die versetzten Linien saubere Ecken haben
+  let start = null;
+  for (let i = 0; i <= road.segments.length; i++) {
+    const tunnel = i < road.segments.length && road.segments[i].level === 'tunnel';
+    if (!tunnel && start === null) start = i;
+    if ((tunnel || i === road.segments.length) && start !== null) {
+      if (i > start) runs.push(pts.slice(start, i + 1));
+      start = null;
+    }
+  }
+  let offset = -total / 2;
+  const markings = pxPerM >= MARKING_MIN_PX_PER_M;
+  const edges = [];
+  for (const b of bands) {
+    const center = offset + b.width / 2;
+    const color = BAND_COLORS[b.kind];
+    if (color) {
+      for (const run of runs) stroke(ctx, offsetPolyline(run, center * pxPerM), color, Math.max(1, b.width * pxPerM), 'butt');
+    }
+    if (b.kind === 'lane') edges.push(offset, offset + b.width);
+    offset += b.width;
+  }
+  if (markings) {
+    // Fahrbahnränder durchgezogen, Fahrstreifen-Grenzen gestrichelt
+    const uniq = Array.from(new Set(edges.map((e) => Math.round(e * 100) / 100)));
+    const counts = new Map();
+    edges.forEach((e) => counts.set(Math.round(e * 100) / 100, (counts.get(Math.round(e * 100) / 100) || 0) + 1));
+    for (const e of uniq) {
+      const inner = counts.get(e) === 2; // Grenze zwischen zwei Fahrstreifen
+      ctx.setLineDash(inner ? [3 * pxPerM, 6 * pxPerM] : []);
+      for (const run of runs) stroke(ctx, offsetPolyline(run, e * pxPerM), 'rgba(255,255,255,0.9)', Math.max(1, 0.15 * pxPerM), 'butt');
+    }
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
 }
 
 function circle(ctx, c, r, { stroke: strokeColor, width = 1, fill = null, alpha = 1 } = {}) {

@@ -11,7 +11,11 @@ export const MAX_CELLS = 100;
 /** Zuordnung OSM highway-Tag -> Strassentyp des Entwurfs. */
 export function roadKindFromHighway(tag) {
   switch (tag) {
-    case 'motorway': case 'trunk': case 'primary': case 'motorway_link': case 'trunk_link': case 'primary_link':
+    case 'motorway':
+      return 'motorway';
+    case 'trunk':
+      return 'trunk';
+    case 'primary': case 'motorway_link': case 'trunk_link': case 'primary_link':
       return 'main';
     case 'secondary': case 'tertiary': case 'secondary_link': case 'tertiary_link': case 'unclassified':
       return 'secondary';

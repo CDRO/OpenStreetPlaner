@@ -30,10 +30,10 @@ var (
 	idPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,48}$`)
 	colorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
-	RoadKinds     = []string{"main", "secondary", "residential", "service", "path", "other"}
+	RoadKinds     = []string{"motorway", "trunk", "main", "secondary", "residential", "service", "path", "other"}
 	Levels        = []string{"ground", "bridge", "tunnel"}
 	Statuses      = []string{"new", "existing", "remove"}
-	JunctionKinds = []string{"plain", "signals", "priority", "stop", "crossing", "busstop"}
+	JunctionKinds = []string{"plain", "signals", "priority", "stop", "interchange", "crossing", "busstop"}
 	ZoneKinds     = []string{"tempo30", "tempo20", "pedestrian", "parking", "other"}
 	LayerColors   = []string{"#d7263d", "#1b6ac9", "#2a9d3f", "#e08a00", "#7b3fbf", "#0e9aa7", "#c2185b", "#5d4037"}
 )
@@ -57,6 +57,98 @@ type Segment struct {
 	Maxspeed *float64 `json:"maxspeed"` // km/h; nil = wie die Strasse
 }
 
+// Section ist der Querschnitt einer Strasse in Metern (Regeln wie web/js/model.js).
+type Section struct {
+	Lanes     int     `json:"lanes"`
+	LaneWidth float64 `json:"laneWidth"`
+	Median    float64 `json:"median"`
+	Shoulder  float64 `json:"shoulder"`
+	BikeLeft  bool    `json:"bikeLeft"`
+	BikeRight bool    `json:"bikeRight"`
+	BikeWidth float64 `json:"bikeWidth"`
+	WalkLeft  bool    `json:"walkLeft"`
+	WalkRight bool    `json:"walkRight"`
+	WalkWidth float64 `json:"walkWidth"`
+	ParkLeft  bool    `json:"parkLeft"`
+	ParkRight bool    `json:"parkRight"`
+	ParkWidth float64 `json:"parkWidth"`
+}
+
+// Width ist die Gesamtbreite des Querschnitts in Metern.
+func (s Section) Width() float64 {
+	w := float64(s.Lanes)*s.LaneWidth + 2*s.Shoulder
+	if s.Median > 0 && s.Lanes >= 2 {
+		w += s.Median
+	}
+	if s.BikeLeft {
+		w += s.BikeWidth
+	}
+	if s.BikeRight {
+		w += s.BikeWidth
+	}
+	if s.WalkLeft {
+		w += s.WalkWidth
+	}
+	if s.WalkRight {
+		w += s.WalkWidth
+	}
+	if s.ParkLeft {
+		w += s.ParkWidth
+	}
+	if s.ParkRight {
+		w += s.ParkWidth
+	}
+	return math.Round(w*100) / 100
+}
+
+func clampStep(v, lo, hi, step float64) float64 {
+	if math.IsNaN(v) {
+		return lo
+	}
+	return math.Round(math.Max(lo, math.Min(hi, v))/step) * step
+}
+
+// normalizeSection begrenzt alle Masse; nil, wenn der Querschnitt breiter als MaxWidth wäre.
+func normalizeSection(s *Section) *Section {
+	if s == nil {
+		return nil
+	}
+	n := *s
+	n.Lanes = int(clampStep(float64(n.Lanes), 1, 8, 1))
+	n.LaneWidth = clampStep(n.LaneWidth, 2, 5, 0.25)
+	n.Median = clampStep(n.Median, 0, 10, 0.25)
+	n.Shoulder = clampStep(n.Shoulder, 0, 4, 0.25)
+	n.BikeWidth = clampStep(n.BikeWidth, 1, 3, 0.25)
+	n.WalkWidth = clampStep(n.WalkWidth, 1, 5, 0.25)
+	n.ParkWidth = clampStep(n.ParkWidth, 1.5, 3, 0.25)
+	if n.Width() > MaxWidth {
+		return nil
+	}
+	return &n
+}
+
+// Turns sind die Abbiegeregeln einer Kreuzung; fehlende Felder gelten als Standard
+// (links, rechts, geradeaus erlaubt; Wenden nicht).
+type Turns struct {
+	Left     *bool `json:"left"`
+	Right    *bool `json:"right"`
+	Straight *bool `json:"straight"`
+	Uturn    *bool `json:"uturn"`
+}
+
+func normalizeTurns(t *Turns) *Turns {
+	if t == nil {
+		return nil
+	}
+	def := func(p *bool, d bool) *bool {
+		if p == nil {
+			return boolPtr(d)
+		}
+		return p
+	}
+	return &Turns{Left: def(t.Left, true), Right: def(t.Right, true), Straight: def(t.Straight, true), Uturn: def(t.Uturn, false)}
+}
+
 type Feature struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"`
@@ -69,13 +161,15 @@ type Feature struct {
 	Oneway   *bool     `json:"oneway,omitempty"`
 	Maxspeed *float64  `json:"maxspeed,omitempty"` // km/h; nil = Standard je Strassentyp
 	Width    *float64  `json:"width,omitempty"`    // Meter; nil = Standard je Strassentyp
+	Section  *Section  `json:"section,omitempty"`  // Querschnitt; nil = nur Breite/Standard
 	OsmID    int64     `json:"osmId,omitempty"`    // OSM-Way, aus dem die Strasse übernommen wurde
 	Nodes    []LatLng  `json:"nodes,omitempty"`
 	Segments []Segment `json:"segments,omitempty"`
 	// Höhenprofil einer Strasse (vom Profil-Dienst), mit Kennung der Punktfolge
 	Profile *Profile `json:"profile,omitempty"`
 	// Kreuzung / Punkt-Massnahme
-	At *LatLng `json:"at,omitempty"`
+	At    *LatLng `json:"at,omitempty"`
+	Turns *Turns  `json:"turns,omitempty"` // Abbiegeregeln; nil = Standard
 	// Kreisel
 	Center *LatLng `json:"center,omitempty"`
 	Radius float64 `json:"radius,omitempty"`
@@ -272,6 +366,7 @@ func Normalize(d *Document) error {
 				v := math.Round(*f.Width*10) / 10
 				f.Width = &v
 			}
+			f.Section = normalizeSection(f.Section)
 			if f.Profile != nil {
 				if len(f.Profile.Points) < 2 || len(f.Profile.Points) > 1000 || len(f.Profile.Key) > 64 {
 					f.Profile = nil
@@ -284,7 +379,7 @@ func Normalize(d *Document) error {
 					}
 				}
 			}
-			f.At, f.Center, f.Radius = nil, nil, 0
+			f.At, f.Turns, f.Center, f.Radius = nil, nil, nil, 0
 		case "junction":
 			if f.At == nil || !validLatLng(*f.At) {
 				return invalid("Kreuzung %s hat keine gültige Position", f.ID)
@@ -292,8 +387,9 @@ func Normalize(d *Document) error {
 			p := round6(*f.At)
 			f.At = &p
 			f.Kind = oneOf(JunctionKinds, f.Kind, "plain")
+			f.Turns = normalizeTurns(f.Turns)
 			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius = "", nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID, f.Width, f.Profile = nil, 0, nil, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile = nil, 0, nil, nil, nil
 		case "roundabout":
 			if f.Center == nil || !validLatLng(*f.Center) {
 				return invalid("Kreisel %s hat kein gültiges Zentrum", f.ID)
@@ -307,8 +403,8 @@ func Normalize(d *Document) error {
 				f.Radius = MaxRadius
 			}
 			f.Radius = math.Round(f.Radius*10) / 10
-			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At = "", "", nil, nil, nil, nil
-			f.Maxspeed, f.OsmID, f.Width, f.Profile = nil, 0, nil, nil
+			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At, f.Turns = "", "", nil, nil, nil, nil, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile = nil, 0, nil, nil, nil
 		case "zone":
 			if len(f.Nodes) < 3 {
 				return invalid("Zone %s braucht mindestens drei Punkte", f.ID)
@@ -323,8 +419,8 @@ func Normalize(d *Document) error {
 				f.Nodes[j] = round6(n)
 			}
 			f.Kind = oneOf(ZoneKinds, f.Kind, "other")
-			f.Status, f.Oneway, f.Segments, f.At, f.Center, f.Radius = "", nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID, f.Width, f.Profile = nil, 0, nil, nil
+			f.Status, f.Oneway, f.Segments, f.At, f.Turns, f.Center, f.Radius = "", nil, nil, nil, nil, nil, 0
+			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile = nil, 0, nil, nil, nil
 		default:
 			return invalid("unbekannter Elementtyp %q", f.Type)
 		}

@@ -7,7 +7,7 @@
 // eingerastet sind, teilen diesen Abschnitt beim Aufbau des Netzes.
 
 import { closestPointOnSegment, haversine, mercatorScale, project, unproject } from './geometry.js';
-import { pointInPolygon, segmentSpeed, validProfile, zoneKind } from './model.js';
+import { junctionTurns, pointInPolygon, segmentSpeed, validProfile, zoneKind } from './model.js';
 import { polylineRadii } from './smooth.js';
 import { NODE_DELAY, expectedSpeedKmh, segmentGrades, segmentTime, summarize } from './speedmodel.js';
 
@@ -27,7 +27,34 @@ const ZONE_SPEED = {
 };
 
 /** Tempo-Zuschlag in Sekunden beim Durchfahren einer gezeichneten Kreuzung. */
-export const JUNCTION_PENALTY = { plain: 0, priority: 3, stop: 8, signals: 20, crossing: 2, busstop: 0 };
+export const JUNCTION_PENALTY = { plain: 0, priority: 3, stop: 8, signals: 20, crossing: 2, busstop: 0, interchange: 0 };
+
+/** Abbiegekosten in Sekunden (Erwartungswert, Streuung) an Knoten mit mindestens drei Armen. */
+export const TURN_COST = {
+  straight: { mean: 0, sd: 0 },
+  right: { mean: 2, sd: 1 },
+  left: { mean: 5, sd: 3 },
+  uturn: { mean: 15, sd: 5 },
+};
+
+/**
+ * Art des Abbiegens aus dem Richtungswechsel: Kurs vorher (a->b) und nachher (b->c).
+ * Rechtsverkehr: Drehung im Uhrzeigersinn = rechts.
+ */
+export function turnKind(a, b, c) {
+  const pa = project(a);
+  const pb = project(b);
+  const pc = project(c);
+  const h1 = Math.atan2(pb.y - pa.y, pb.x - pa.x);
+  const h2 = Math.atan2(pc.y - pb.y, pc.x - pb.x);
+  let d = ((h2 - h1) * 180) / Math.PI;
+  while (d > 180) d -= 360;
+  while (d <= -180) d += 360;
+  // Mercator-y wächst nach Norden: positiver Winkel = Drehung gegen den Uhrzeigersinn = links
+  if (Math.abs(d) < 30) return 'straight';
+  if (Math.abs(d) >= 150) return 'uturn';
+  return d > 0 ? 'left' : 'right';
+}
 
 /** Strengstes Zonen-Tempolimit an einem Punkt (null = keine Zone mit Limit). */
 export function zoneSpeedAt(zones, latlng) {
@@ -87,6 +114,34 @@ export class Graph {
     this.penalty = new Map(); // key -> { mean, variance } in Sekunden
     this.segments = []; // für die Suche nach dem nächsten Punkt: { a, b, ka, kb, speed, dir }
     this.speedCap = null; // (latlng) -> km/h oder null; deckelt Abschnitte in Zonen
+    this.degree = new Map(); // key -> Zahl der Nachbarknoten (Arme), unabhängig von der Richtung
+    this.junctions = new Map(); // key -> { kind, turns } gezeichneter Kreuzungen (Abbiegeregeln)
+    this.turnCosts = true; // Abbiegekosten nach Winkel an Knoten mit >= 3 Armen
+  }
+
+  /** Abbiegeregeln an einem Knoten setzen; kind 'roundabout' = frei drehen ohne Kosten. */
+  setJunction(ll, kind, turns) {
+    this.junctions.set(keyOf(ll), { kind, turns });
+  }
+
+  /**
+   * Kosten (Sekunden) und Streuung für das Abbiegen prev -> node -> next;
+   * null, wenn das Abbiegen verboten ist.
+   */
+  turnCost(prevKey, nodeKey, nextKey) {
+    const zero = { mean: 0, variance: 0 };
+    if (!this.turnCosts) return zero;
+    const j = this.junctions.get(nodeKey);
+    if (j && j.kind === 'roundabout') return zero;
+    const kind = turnKind(this.nodes.get(prevKey).latlng, this.nodes.get(nodeKey).latlng, this.nodes.get(nextKey).latlng);
+    if (j) {
+      if (j.turns && j.turns[kind] === false) return null;
+      if (j.kind === 'interchange') return zero; // kreuzungsfrei: kein Warten auf Gegenverkehr
+    }
+    const cost = (k) => ({ mean: TURN_COST[k].mean, variance: TURN_COST[k].sd * TURN_COST[k].sd });
+    if (kind === 'uturn') return cost('uturn'); // Wenden kostet überall, auch am Ende einer Sackgasse
+    if (!j && (this.degree.get(nodeKey) || 0) < 3) return zero; // Knick ohne Abzweigung
+    return cost(kind);
   }
 
   node(ll) {
@@ -125,6 +180,8 @@ export class Graph {
     }
     if (dir >= 0) this.nodes.get(ka).edges.push({ to: kb, dist, time, variance });
     if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time, variance });
+    this.degree.set(ka, (this.degree.get(ka) || 0) + 1);
+    this.degree.set(kb, (this.degree.get(kb) || 0) + 1);
     this.segments.push({ a, b, ka, kb, speed: speedKmh, dir });
   }
 
@@ -236,6 +293,7 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
         }
       }
       if (attached && geometry) g.addPenalty(k.center, NODE_DELAY.roundabout.mean, NODE_DELAY.roundabout.sd);
+      if (attached) g.setJunction(k.center, 'roundabout', null);
     }
     for (const j of visible) {
       if (j.type !== 'junction') continue;
@@ -245,6 +303,7 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
       } else {
         g.addPenalty(j.at, JUNCTION_PENALTY[j.kind] || 0);
       }
+      if (j.kind !== 'crossing' && j.kind !== 'busstop') g.setJunction(j.at, j.kind, junctionTurns(j));
     }
   }
   return g;
@@ -314,36 +373,51 @@ class MinHeap {
   }
 }
 
-/** Schnellste Route (nach Zeit). Liefert { path: [[lat,lng]], dist, time } oder null. */
+/**
+ * Schnellste Route (nach Zeit). Der Zustand ist (Knoten, Vorgänger), damit
+ * Abbiegekosten und -verbote am Knoten aus dem Richtungswechsel folgen.
+ * Liefert { path: [[lat,lng]], dist, time, sd, p15, p85 } oder null.
+ */
 export function shortestPath(g, fromKey, toKey) {
   if (!g.nodes.has(fromKey) || !g.nodes.has(toKey)) return null;
-  const best = new Map([[fromKey, { cost: 0, dist: 0, variance: 0, prev: null }]]);
+  const stateKey = (node, prev) => (prev ? `${node}|${prev}` : node);
+  const best = new Map([[fromKey, { node: fromKey, prev: null, cost: 0, dist: 0, variance: 0, from: null }]]);
   const heap = new MinHeap();
-  heap.push({ key: fromKey, cost: 0 });
+  heap.push({ state: fromKey, node: fromKey, prev: null, cost: 0 });
   const done = new Set();
+  let endState = null;
   while (heap.size) {
-    const { key, cost } = heap.pop();
-    if (done.has(key)) continue;
-    done.add(key);
-    if (key === toKey) break;
+    const { state, node: key, prev, cost } = heap.pop();
+    if (done.has(state)) continue;
+    done.add(state);
+    if (key === toKey) {
+      endState = state;
+      break;
+    }
     const node = g.nodes.get(key);
     const pen = key === fromKey ? null : g.penalty.get(key);
     const penalty = pen ? pen.mean : 0;
     const penVar = pen ? pen.variance : 0;
+    const here = best.get(state);
     for (const e of node.edges) {
-      const c = cost + penalty + e.time;
-      const cur = best.get(e.to);
+      let turn = { mean: 0, variance: 0 };
+      if (prev) {
+        turn = g.turnCost(prev, key, e.to);
+        if (!turn) continue; // Abbiegeverbot
+      }
+      const c = cost + penalty + turn.mean + e.time;
+      const next = stateKey(e.to, key);
+      const cur = best.get(next);
       if (!cur || c < cur.cost) {
-        const here = best.get(key);
-        best.set(e.to, { cost: c, dist: here.dist + e.dist, variance: here.variance + penVar + (e.variance || 0), prev: key });
-        heap.push({ key: e.to, cost: c });
+        best.set(next, { node: e.to, prev: key, cost: c, dist: here.dist + e.dist, variance: here.variance + penVar + turn.variance + (e.variance || 0), from: state });
+        heap.push({ state: next, node: e.to, prev: key, cost: c });
       }
     }
   }
-  const end = best.get(toKey);
-  if (!end || !done.has(toKey)) return null;
+  if (!endState) return null;
+  const end = best.get(endState);
   const path = [];
-  for (let k = toKey; k; k = best.get(k).prev) path.push(g.nodes.get(k).latlng);
+  for (let st = endState; st; st = best.get(st).from) path.push(g.nodes.get(best.get(st).node).latlng);
   path.reverse();
   const band = summarize(end.cost, end.variance);
   return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85 };
