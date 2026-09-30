@@ -1,0 +1,119 @@
+// Browser-lokaler Zustand: Liste der eigenen Entwürfe (mit Bearbeitungs-Token),
+// Arbeitskopie und Einstellungen. Der Entwurfsinhalt selbst liegt auf dem Server.
+
+const KEY_INDEX = 'stadtplaner.drafts';
+const KEY_WORKING = 'stadtplaner.working';
+const KEY_SETTINGS = 'stadtplaner.settings';
+
+export const DEFAULT_SETTINGS = {
+  snapEnabled: true,
+  snapModifier: 'Shift', // Taste, die das Einrasten für die aktuelle Aktion aufhebt
+  snapOsm: true,
+  showOsm: false,
+  snapTolerance: 14,
+};
+
+export class LocalState {
+  constructor(backend) {
+    this.backend = backend || safeLocalStorage();
+  }
+
+  readJson(key, fallback) {
+    try {
+      const raw = this.backend.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  writeJson(key, value) {
+    try {
+      this.backend.setItem(key, JSON.stringify(value));
+    } catch {
+      // Speicher voll oder gesperrt: still ignorieren, die Server-Kopie ist massgebend.
+    }
+  }
+
+  /** Eigene Entwürfe, zuletzt geändert zuerst. */
+  listDrafts() {
+    const index = this.readJson(KEY_INDEX, []);
+    return index.slice().reverse().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  }
+
+  getDraft(id) {
+    return this.readJson(KEY_INDEX, []).find((d) => d.id === id) || null;
+  }
+
+  rememberDraft({ id, name, token, updatedAt }) {
+    const index = this.readJson(KEY_INDEX, []).filter((d) => d.id !== id);
+    const previous = this.getDraft(id);
+    index.push({
+      id,
+      name: name || (previous && previous.name) || 'Entwurf',
+      token: token || (previous && previous.token) || null,
+      updatedAt: updatedAt || new Date().toISOString(),
+    });
+    this.writeJson(KEY_INDEX, index);
+  }
+
+  forgetDraft(id) {
+    this.writeJson(KEY_INDEX, this.readJson(KEY_INDEX, []).filter((d) => d.id !== id));
+  }
+
+  tokenFor(id) {
+    const d = this.getDraft(id);
+    return d && d.token ? d.token : null;
+  }
+
+  saveWorking(working) {
+    this.writeJson(KEY_WORKING, working);
+  }
+
+  loadWorking() {
+    return this.readJson(KEY_WORKING, null);
+  }
+
+  clearWorking() {
+    try {
+      this.backend.removeItem(KEY_WORKING);
+    } catch {
+      // siehe writeJson
+    }
+  }
+
+  loadSettings() {
+    return { ...DEFAULT_SETTINGS, ...this.readJson(KEY_SETTINGS, {}) };
+  }
+
+  saveSettings(settings) {
+    this.writeJson(KEY_SETTINGS, settings);
+  }
+}
+
+/** Minimaler In-Memory-Ersatz für localStorage (Tests, gesperrter Speicher). */
+export class MemoryBackend {
+  constructor() {
+    this.map = new Map();
+  }
+  getItem(k) {
+    return this.map.has(k) ? this.map.get(k) : null;
+  }
+  setItem(k, v) {
+    this.map.set(k, String(v));
+  }
+  removeItem(k) {
+    this.map.delete(k);
+  }
+}
+
+function safeLocalStorage() {
+  try {
+    const probe = '__stadtplaner_probe__';
+    globalThis.localStorage.setItem(probe, '1');
+    globalThis.localStorage.removeItem(probe);
+    return globalThis.localStorage;
+  } catch {
+    return new MemoryBackend();
+  }
+}

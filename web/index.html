@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stadtplaner – Planungsvorschläge auf OpenStreetMap</title>
+  <meta name="description" content="Strassen, Kreuzungen und Kreisel auf OpenStreetMap einzeichnen, in Ebenen organisieren, speichern und als Link teilen.">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%231b6ac9'/%3E%3Cpath d='M6 22 L14 10 L20 18 L26 8' stroke='%23fff' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <button id="sidebar-toggle" class="icon-btn" title="Seitenleiste ein-/ausblenden" aria-label="Seitenleiste">☰</button>
+    <div class="brand" title="Stadtplaner">Stadtplaner</div>
+    <input id="draft-name" class="draft-name" type="text" placeholder="Name des Entwurfs" spellcheck="false" aria-label="Name des Entwurfs">
+    <span id="dirty-indicator" class="dirty" title="Ungespeicherte Änderungen" hidden>●</span>
+    <span id="readonly-indicator" class="badge muted" title="Du hast kein Bearbeitungsrecht für diesen Entwurf" hidden>nur Ansicht</span>
+    <div class="search">
+      <input id="search-input" type="search" placeholder="Ort oder Adresse suchen…" autocomplete="off" aria-label="Ort suchen">
+      <ul id="search-results" class="search-results" hidden></ul>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-undo" class="icon-btn" title="Rückgängig (Ctrl+Z)" aria-label="Rückgängig">↶</button>
+      <button id="btn-redo" class="icon-btn" title="Wiederholen (Ctrl+Y)" aria-label="Wiederholen">↷</button>
+      <button id="btn-locate" class="icon-btn" title="Zu meinem Standort" aria-label="Mein Standort">◎</button>
+      <button id="btn-save" class="btn" title="Speichern (Ctrl+S)">Speichern</button>
+      <button id="btn-share" class="btn primary">Teilen</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside id="sidebar" class="sidebar">
+      <nav class="tabs" role="tablist">
+        <button type="button" data-tab="draw" class="active">Zeichnen</button>
+        <button type="button" data-tab="layers">Ebenen</button>
+        <button type="button" data-tab="drafts">Entwürfe</button>
+        <button type="button" data-tab="history">Verlauf</button>
+      </nav>
+
+      <section id="tab-draw" class="tab active">
+        <div id="tool-buttons" class="tool-grid"></div>
+        <label class="field">Zeichnen auf Ebene<select id="active-layer"></select></label>
+        <label class="field">Typ für neue Strassen<select id="default-kind"></select></label>
+        <div id="properties" class="box"></div>
+        <details class="box" open>
+          <summary>Einrasten</summary>
+          <div id="snap-settings"></div>
+        </details>
+        <details class="box">
+          <summary>Legende &amp; Tastenkürzel</summary>
+          <ul class="legend">
+            <li><span class="swatch ground"></span> Ebenerdig</li>
+            <li><span class="swatch bridge"></span> Brücke (dunkle Einfassung)</li>
+            <li><span class="swatch tunnel"></span> Tunnel (gestrichelt, halbtransparent)</li>
+            <li><span class="swatch remove"></span> Rückbau (rot gestrichelt)</li>
+            <li><span class="swatch osm"></span> Geladene OSM-Strassen (Einrast-Ziele)</li>
+          </ul>
+          <ul class="keys">
+            <li><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung · <kbd>R</kbd> Kreisel · <kbd>O</kbd> OSM übernehmen</li>
+            <li><kbd>Enter</kbd> Strasse beenden · <kbd>Esc</kbd> abbrechen / Auswahl aufheben · <kbd>⌫</kbd> letzter Punkt</li>
+            <li><kbd>Entf</kbd> Ausgewähltes löschen · <kbd>Ctrl</kbd>+<kbd>Z</kbd>/<kbd>Y</kbd> rückgängig/wiederholen · <kbd>Ctrl</kbd>+<kbd>S</kbd> speichern</li>
+            <li><kbd>Shift</kbd> (einstellbar) gedrückt halten: Einrasten für diese Aktion aussetzen</li>
+            <li>Karte: ziehen, Mausrad, Doppelklick, Pfeiltasten, <kbd>+</kbd>/<kbd>−</kbd>, Pinch auf Touch</li>
+          </ul>
+        </details>
+      </section>
+
+      <section id="tab-layers" class="tab">
+        <p class="muted">Ebenen lassen sich ein- und ausblenden, umbenennen und einfärben. Neue Elemente landen auf der aktiven Ebene (Punkt links).</p>
+        <div id="layer-list"></div>
+        <button type="button" id="btn-add-layer" class="btn">+ Neue Ebene</button>
+      </section>
+
+      <section id="tab-drafts" class="tab">
+        <div id="draft-current" class="box"></div>
+        <h3>Meine Entwürfe</h3>
+        <p class="muted small">Entwürfe liegen auf dem Server; dieser Browser merkt sich, welche dir gehören.</p>
+        <div id="draft-list"></div>
+        <h3>Entwurf per Link öffnen</h3>
+        <div class="link-row"><input type="text" id="open-link" placeholder="Link oder ID einfügen"><button type="button" id="open-link-btn" class="btn">Öffnen</button></div>
+      </section>
+
+      <section id="tab-history" class="tab">
+        <div id="history-undo" class="box"></div>
+        <div id="version-list"></div>
+      </section>
+    </aside>
+    <div class="map-wrap">
+      <div id="banner" class="banner" hidden></div>
+      <div id="map" class="map" role="application" aria-label="Karte"></div>
+      <div id="tooltip" class="tooltip" hidden></div>
+      <div id="pin" class="pin" hidden><div class="pin-marker"></div><div class="pin-label"><span id="pin-label"></span> <button type="button" id="pin-close" class="icon-btn" title="Markierung entfernen">✕</button></div></div>
+    </div>
+  </div>
+
+  <footer class="statusbar">
+    <span id="status-hint" class="grow"></span>
+    <span id="status-osm"></span>
+    <span id="status-coords"></span>
+  </footer>
+
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-body"></div>
+    </div>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <input id="import-file" type="file" accept="application/json,.json,.geojson" hidden>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

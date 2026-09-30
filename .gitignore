@@ -1,0 +1,14 @@
+# Laufzeitdaten (Entwürfe, Kachel-Cache)
+/data/
+
+# Build-Artefakte
+/stadtplaner
+/bin/
+/dist/
+
+# Werkzeug-Kram
+node_modules/
+*.tmp
+.DS_Store
+.vscode/
+.idea/
