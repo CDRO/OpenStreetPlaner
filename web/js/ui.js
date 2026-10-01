@@ -8,10 +8,10 @@ import { featureTitle } from './diff.js';
 import { COST_ITEMS, costValue, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
 import { ISO_COLORS, ISO_DIFF_COLORS } from './draw.js';
-import { ISOCHRONE_PRESETS, ROAD_ACCESS, segmentAccess, normalizeLines } from './model.js';
+import { ISOCHRONE_PRESETS, ROAD_ACCESS, segmentAccess, normalizeLines, getLayer } from './model.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
-import { TOOLS } from './tools.js';
+import { TOOLS, formatLength } from './tools.js';
 import { formatDuration } from './routing.js';
 import { LANGUAGES, getLanguage, locale, t, tn } from './i18n.js';
 import { confidenceLabel, confidenceText, staticConfidence, transitRouteConfidence } from './confidence.js';
@@ -535,6 +535,7 @@ export class UI {
     this.refreshRoute();
     this.refreshComments();
     this.refreshDrawActions();
+    this.refreshElements();
     this.refreshPresent();
     if (this.$('tab-analysis') && this.$('tab-analysis').classList.contains('active')) this.refreshAnalysis();
   }
@@ -779,6 +780,115 @@ export class UI {
     document.title = `${store.doc.name} – Stadtplaner`;
   }
 
+  /** Eigenschaften bei Mehrfachauswahl: Zusammenfassung und gemeinsame Aktionen. */
+  refreshMultiProperties(box) {
+    const { store, tools, actions } = this.ctx;
+    const ids = tools.selectedIds();
+    const feats = ids.map((id) => getFeature(store.doc, id)).filter(Boolean);
+    const editable = actions.canEdit();
+    const dis = editable ? '' : 'disabled';
+    const counts = {};
+    for (const f of feats) counts[f.type] = (counts[f.type] || 0) + 1;
+    const typeLabel = { road: ['{n} Strasse', '{n} Strassen'], junction: ['{n} Punkt', '{n} Punkte'], roundabout: ['{n} Kreisel', '{n} Kreisel'], zone: ['{n} Fläche', '{n} Flächen'] };
+    const summary = Object.entries(counts).map(([k, n]) => tn(n, typeLabel[k][0], typeLabel[k][1])).join(', ');
+    const layerIds = new Set(feats.map((f) => f.layerId));
+    const roads = feats.filter((f) => f.type === 'road');
+    const statuses = new Set(roads.map((f) => f.status));
+    box.innerHTML = `
+      <h3>${t('Eigenschaften')} <span class="muted">(${tn(feats.length, '{n} Element', '{n} Elemente')})</span></h3>
+      <p class="muted small">${esc(summary)}. ${t('Ziehen auf einem ausgewählten Element verschiebt alle; Shift+Klick ergänzt oder entfernt; Entf löscht.')}</p>
+      <label class="field">${t('Ebene')}<select id="multi-layer" ${dis}><option value="">${layerIds.size > 1 ? t('(verschieden)') : ''}</option>${store.doc.layers.map((l) => `<option value="${l.id}" ${layerIds.size === 1 && layerIds.has(l.id) ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
+      ${roads.length ? `<label class="field">${t('Status')} (${tn(roads.length, '{n} Strasse', '{n} Strassen')})<select id="multi-status" ${dis}><option value="">${statuses.size > 1 ? t('(verschieden)') : ''}</option>${STATUSES.map((st) => `<option value="${st.id}" ${statuses.size === 1 && statuses.has(st.id) ? 'selected' : ''}>${esc(t(st.label))}</option>`).join('')}</select></label>` : ''}
+      <div class="btn-row">
+        <button type="button" id="multi-zoom" class="btn small">${t('Hinzoomen')}</button>
+        <button type="button" id="multi-clear" class="btn small">${t('Auswahl aufheben')}</button>
+        <button type="button" id="multi-delete" class="btn small danger" ${dis}>${t('Löschen')}</button>
+      </div>`;
+    this.$('multi-layer').onchange = (e) => { if (e.target.value) actions.setFeaturesLayer(ids, e.target.value); };
+    const st = this.$('multi-status');
+    if (st) st.onchange = (e) => { if (e.target.value) actions.setFeaturesStatus(roads.map((f) => f.id), e.target.value); };
+    this.$('multi-zoom').onclick = () => actions.zoomToFeatures(ids);
+    this.$('multi-clear').onclick = () => tools.setSelection(null);
+    this.$('multi-delete').onclick = () => tools.deleteSelection();
+    return undefined;
+  }
+
+  // --- Elementliste ----------------------------------------------------------------
+
+  refreshElements() {
+    const { store, tools, actions } = this.ctx;
+    const list = this.$('element-list');
+    if (!list) return;
+    const filterEl = this.$('element-filter');
+    const q = (this.elementFilter || '').trim().toLowerCase();
+    if (filterEl && document.activeElement !== filterEl) filterEl.value = this.elementFilter || '';
+    const typeName = { road: t('Strasse'), junction: t('Punkt'), roundabout: t('Kreisel'), zone: t('Fläche') };
+    const rows = store.doc.features.map((f) => {
+      const layer = getLayer(store.doc, f.layerId) || {};
+      const label = t(featureLabel(f));
+      const extra = f.type === 'road' ? `${formatLength(pathLength(f.nodes))} · ${t(STATUSES.find((st) => st.id === f.status)?.label || f.status)}` : f.type === 'roundabout' ? `r = ${f.radius} m` : f.type === 'zone' ? tn(f.nodes.length, '{n} Eckpunkt', '{n} Eckpunkte') : (f.lines && f.lines.length ? f.lines.join(' ') : '');
+      return { f, layer, label, type: typeName[f.type] || f.type, extra, text: `${label} ${typeName[f.type] || ''} ${layer.name || ''} ${extra} ${f.note || ''}`.toLowerCase() };
+    }).filter((r) => !q || r.text.includes(q));
+    const count = this.$('elements-count');
+    if (count) count.textContent = q ? `${rows.length}/${store.doc.features.length}` : `${store.doc.features.length}`;
+    const shown = rows.slice(0, 200);
+    list.innerHTML = shown.map(({ f, layer, label, type, extra }) => `<li class="${tools.isSelected(f.id) ? 'selected' : ''}${layer.visible === false ? ' muted' : ''}"><button type="button" class="linkish el-row" data-id="${esc(f.id)}" title="${t('Auswählen und hinzoomen')}"><span class="dot" style="background:${esc(layer.color || '#333')}"></span>${esc(label)}</button><span class="muted small">${esc(type)}${extra ? ` · ${esc(extra)}` : ''}${layer.visible === false ? ` · ${t('ausgeblendet')}` : ''}</span></li>`).join('')
+      + (rows.length > shown.length ? `<li class="muted small">${t('… und {n} weitere; Filter eingrenzen.', { n: rows.length - shown.length })}</li>` : '')
+      + (!rows.length ? `<li class="muted small">${store.doc.features.length ? t('Nichts gefunden.') : t('Noch keine Elemente.')}</li>` : '');
+    list.querySelectorAll('.el-row').forEach((b) => {
+      b.onclick = (e) => actions.selectFeature(b.dataset.id, { zoom: true, add: e.shiftKey });
+    });
+    if (filterEl && !filterEl.dataset.wired) {
+      filterEl.dataset.wired = '1';
+      filterEl.oninput = () => { this.elementFilter = filterEl.value; this.refreshElements(); };
+    }
+  }
+
+  // --- Kontextmenü -----------------------------------------------------------------
+
+  /** items: { header } | { separator } | { label, action, checked, disabled, danger }. Position in Seitenkoordinaten. */
+  showContextMenu(items, { x, y }) {
+    const menu = this.$('context-menu');
+    if (!menu) return;
+    menu.innerHTML = items.map((it, i) => {
+      if (it.header) return `<div class="menu-header">${esc(it.header)}</div>`;
+      if (it.separator) return '<div class="sep"></div>';
+      return `<button type="button" class="${it.checked ? 'checked' : ''}${it.danger ? ' danger' : ''}" data-i="${i}" ${it.disabled ? 'disabled' : ''}>${esc(it.label)}</button>`;
+    }).join('');
+    menu.hidden = false;
+    const w = menu.offsetWidth;
+    const h = menu.offsetHeight;
+    menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - w - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
+    menu.querySelectorAll('button').forEach((b) => {
+      b.onclick = () => {
+        const it = items[Number(b.dataset.i)];
+        this.hideContextMenu();
+        if (it && it.action) it.action();
+      };
+    });
+    const close = (e) => { if (!menu.contains(e.target)) this.hideContextMenu(); };
+    const esc2 = (e) => { if (e.key === 'Escape') this.hideContextMenu(); };
+    setTimeout(() => {
+      document.addEventListener('pointerdown', close, { capture: true });
+      document.addEventListener('keydown', esc2, { capture: true });
+    }, 0);
+    this.menuCloser = () => {
+      document.removeEventListener('pointerdown', close, { capture: true });
+      document.removeEventListener('keydown', esc2, { capture: true });
+    };
+    const first = menu.querySelector('button:not(:disabled)');
+    if (first) first.focus({ preventScroll: true });
+  }
+
+  hideContextMenu() {
+    const menu = this.$('context-menu');
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    if (this.menuCloser) this.menuCloser();
+    this.menuCloser = null;
+  }
+
   // --- Werkzeuge -----------------------------------------------------------------
 
   refreshTools() {
@@ -787,6 +897,11 @@ export class UI {
     const editable = actions.canEdit();
     grid.innerHTML = TOOLS.map((tool) => `<button type="button" class="tool${tools.tool === tool.id ? ' active' : ''}" data-tool="${tool.id}" title="${esc(t(tool.hint))} (${t('Taste')} ${tool.key})" ${!editable && tool.id !== 'select' ? 'disabled' : ''}><span class="tool-key">${tool.key}</span>${esc(t(tool.label))}</button>`).join('');
     grid.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => tools.setTool(b.dataset.tool)));
+    const multi = this.$('multi-mode');
+    if (multi) {
+      multi.checked = tools.multiMode;
+      multi.onchange = () => { tools.multiMode = multi.checked; };
+    }
 
     const layerSel = this.$('active-layer');
     layerSel.innerHTML = store.doc.layers.map((l) => `<option value="${l.id}"${l.id === actions.activeLayerId() ? ' selected' : ''}>${esc(l.name)}${l.visible === false ? ` (${t('ausgeblendet')})` : ''}</option>`).join('');
@@ -846,6 +961,7 @@ export class UI {
     const box = this.$('properties');
     const sel = tools.selection;
     const f = sel ? getFeature(store.doc, sel.featureId) : null;
+    if (tools.multi.size > 1) return this.refreshMultiProperties(box);
     if (!f) {
       box.innerHTML = `<h3>${t('Eigenschaften')}</h3><p class="muted">${t('Kein Element ausgewählt. Mit dem Werkzeug „Auswählen“ ein Element anklicken.')}</p>`;
       return;

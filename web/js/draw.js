@@ -4,6 +4,8 @@
 // Bearbeitungsgriffe, Zeichenvorschau, Einrast-Markierung.
 
 import { ROAD_KINDS, getLayer, roadMedian, roadWidthMeters, sectionBands, segmentAccess, segmentSpeed, zoneKind } from './model.js';
+import { haversine } from './geometry.js';
+import { ringAreaM2 } from './costs.js';
 
 const KIND_WIDTH = Object.fromEntries(ROAD_KINDS.map((k) => [k.id, k.width]));
 
@@ -17,7 +19,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6 } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -54,6 +56,9 @@ export function drawScene(ctx, map, s) {
   if (isochrone && isochrone.pieces) drawIsochrone(ctx, P, isochrone, doc.isochrone);
 
   const selected = selection ? visible.find((f) => f.id === selection.featureId) : null;
+  if (multiIds && multiIds.size) {
+    for (const f of visible) if (multiIds.has(f.id) && f !== selected) drawSelectionHalo(ctx, P, f, { featureId: f.id, segIndex: null }, mpp, lineScale);
+  }
   if (selected) drawSelectionHalo(ctx, P, selected, selection, mpp, lineScale);
 
   const roads = visible.filter((f) => f.type === 'road');
@@ -190,7 +195,7 @@ export function drawScene(ctx, map, s) {
   }
   drawComments(ctx, P, comments, activeCommentId, commentDraft);
   if (diff) drawDiff(ctx, P, diff, mpp);
-  if (showHandles && selected) drawHandles(ctx, P, selected);
+  if (showHandles && selected) drawHandles(ctx, P, selected, handleRadius);
   if (preview) drawPreview(ctx, P, preview, mpp);
   if (snap) {
     const c = P(snap.latlng);
@@ -804,16 +809,83 @@ function drawSelectionHalo(ctx, P, f, selection, mpp, lineScale) {
   ctx.restore();
 }
 
-function drawHandles(ctx, P, f) {
+function drawHandles(ctx, P, f, r = 6) {
   for (const h of handlePoints(f)) {
     const c = P(h.latlng);
-    if (h.kind === 'vertex') circle(ctx, c, 6, { stroke: '#1a1a1a', width: 2, fill: '#fff' });
-    else circle(ctx, c, 4, { stroke: '#1a1a1a', width: 1, fill: 'rgba(255,255,255,0.75)' });
+    if (h.kind === 'vertex') circle(ctx, c, r, { stroke: '#1a1a1a', width: 2, fill: '#fff' });
+    else circle(ctx, c, Math.max(3, r - 2), { stroke: '#1a1a1a', width: 1, fill: 'rgba(255,255,255,0.75)' });
   }
+}
+
+const fmtLen = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m >= 100 ? Math.round(m) : m.toFixed(1)} m`);
+const fmtArea = (m2) => (m2 >= 10000 ? `${(m2 / 10000).toFixed(2)} ha` : `${Math.round(m2)} m²`);
+
+/** Messung: gestrichelte Linie, Länge je Abschnitt, Summe am Ende, Fläche in der Mitte. */
+function drawMeasure(ctx, P, m) {
+  const pts = m.cursor ? [...m.points, m.cursor] : m.points;
+  if (!pts.length) return;
+  const px = pts.map(P);
+  ctx.save();
+  if (pts.length >= 3) {
+    ctx.beginPath();
+    px.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,109,0,0.12)';
+    ctx.fill();
+  }
+  ctx.setLineDash([8, 6]);
+  stroke(ctx, px, '#ff6d00', 3);
+  ctx.setLineDash([]);
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = haversine(pts[i - 1], pts[i]);
+    total += d;
+    const mid = { x: (px[i - 1].x + px[i].x) / 2, y: (px[i - 1].y + px[i].y) / 2 };
+    text(ctx, fmtLen(d), mid.x, mid.y - 6, { font: 'bold 11px system-ui, sans-serif', color: '#bf360c', halo: 'rgba(255,255,255,0.9)', align: 'center', baseline: 'bottom' });
+  }
+  for (const p of px) circle(ctx, p, 4, { stroke: '#fff', width: 2, fill: '#ff6d00' });
+  if (pts.length >= 2) {
+    const last = px[px.length - 1];
+    text(ctx, `Σ ${fmtLen(total)}`, last.x + 10, last.y + 4, { font: 'bold 12px system-ui, sans-serif', color: '#bf360c', halo: 'rgba(255,255,255,0.95)', align: 'left', baseline: 'middle' });
+  }
+  if (pts.length >= 3) {
+    const cx = px.reduce((s, p) => s + p.x, 0) / px.length;
+    const cy = px.reduce((s, p) => s + p.y, 0) / px.length;
+    text(ctx, fmtArea(ringAreaM2(pts)), cx, cy, { font: 'bold 12px system-ui, sans-serif', color: '#bf360c', halo: 'rgba(255,255,255,0.95)', align: 'center', baseline: 'middle' });
+  }
+  ctx.restore();
 }
 
 function drawPreview(ctx, P, preview, mpp) {
   const color = preview.color || '#333';
+  if (preview.measure) return drawMeasure(ctx, P, preview.measure);
+  if (preview.box) {
+    const [a, b] = preview.box;
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = '#1b6ac9';
+    ctx.fillStyle = 'rgba(27,106,201,0.08)';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.restore();
+    return;
+  }
+  if (preview.shapes) {
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.setLineDash([6, 4]);
+    for (const sh of preview.shapes) {
+      if (sh.circle) circle(ctx, P(sh.circle.center), Math.max(2, sh.circle.radius / mpp), { stroke: color, width: 3 });
+      else if (sh.point) circle(ctx, P(sh.point), 9, { stroke: color, width: 3, fill: 'rgba(255,255,255,0.6)' });
+      else {
+        const pts = sh.points.map(P);
+        stroke(ctx, sh.closed ? [...pts, pts[0]] : pts, color, 4);
+      }
+    }
+    ctx.restore();
+    return;
+  }
   if (preview.circle) {
     const c = P(preview.circle.center);
     circle(ctx, c, Math.max(2, preview.circle.radius / mpp), { stroke: color, width: 4, fill: 'rgba(0,0,0,0.08)' });

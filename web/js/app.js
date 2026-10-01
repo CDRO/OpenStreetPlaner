@@ -6,7 +6,7 @@ import { Store } from './store.js';
 import { LocalState } from './local.js';
 import { api, setClientId } from './api.js';
 import {
-  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES,
+  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES, featureLabel, STATUSES, LEVELS, ROAD_ACCESS,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
 import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, routeBounds } from './osm.js';
@@ -213,6 +213,7 @@ async function main() {
       ui.refreshComments();
     },
     toast: (text) => ui && ui.toast(text),
+    onMenu: (info) => ui && showMenuFor(info),
   });
 
   function hoverText(h) {
@@ -235,6 +236,8 @@ async function main() {
   map.setOverlay((ctx) => drawScene(ctx, map, {
     doc: store.doc,
     selection: tools.selection,
+    multiIds: tools.multi,
+    handleRadius: tools.touch ? 9 : 6,
     osmWays: osm.list(),
     showOsm: settings.showOsm,
     preview: tools.preview,
@@ -687,6 +690,51 @@ async function main() {
       const layer = getLayer(store.doc, id);
       if (count && !confirm(t('Ebene „{name}“ mit {n} Element(en) löschen?', { name: layer.name, n: count }))) return;
       store.commit('Ebene löschen', (d) => removeLayer(d, id));
+    },
+    /** Auswahl per Liste oder Menü: optional ergänzen (Shift) und hinzoomen. */
+    selectFeature(id, { zoom = false, add = false } = {}) {
+      const f = getFeature(store.doc, id);
+      if (!f) return;
+      if (tools.tool !== 'select') tools.setTool('select');
+      if (add) tools.toggleSelected({ featureId: id, segIndex: null });
+      else tools.setSelection({ featureId: id, segIndex: null });
+      if (zoom) actions.zoomToFeature(id);
+    },
+    /** Auf mehrere Elemente zoomen (Umriss aller Punkte). */
+    zoomToFeatures(ids) {
+      const feats = ids.map((id) => getFeature(store.doc, id)).filter(Boolean);
+      if (feats.length === 1) return actions.zoomToFeature(feats[0].id);
+      const pts = [];
+      for (const f of feats) {
+        if (f.type === 'junction') pts.push(f.at);
+        else if (f.type === 'roundabout') pts.push(f.center);
+        else pts.push(...f.nodes);
+      }
+      if (!pts.length) return undefined;
+      const lats = pts.map((n) => n[0]);
+      const lngs = pts.map((n) => n[1]);
+      map.fitBounds({ south: Math.min(...lats), west: Math.min(...lngs), north: Math.max(...lats), east: Math.max(...lngs) }, { padding: 60, maxZoom: 18 });
+      return undefined;
+    },
+    setFeaturesLayer(ids, layerId) {
+      if (!getLayer(store.doc, layerId)) return;
+      actions.commitDoc(ids.length > 1 ? 'Ebene der Auswahl wechseln' : 'Ebene wechseln', (d) => {
+        for (const id of ids) {
+          const f = getFeature(d, id);
+          if (f) f.layerId = layerId;
+        }
+      });
+    },
+    setFeaturesStatus(ids, status) {
+      actions.commitDoc(ids.length > 1 ? 'Status der Auswahl ändern' : 'Status ändern', (d) => {
+        for (const id of ids) {
+          const f = getFeature(d, id);
+          if (f && f.type === 'road') f.status = status;
+        }
+      });
+    },
+    setSegmentLevel(id, i, level) {
+      actions.patchFeature(id, 'Abschnitt ändern', (f) => { if (f.segments[i]) f.segments[i].level = level; });
     },
     zoomToFeature(id) {
       const f = getFeature(store.doc, id);
@@ -1407,6 +1455,44 @@ async function main() {
   map.on('pointermove', (e) => ui.setCoords(e.latlng, map.getZoom()));
   map.on('zoom', () => ui.setCoords(null, map.getZoom()));
 
+  /** Kontextmenü für das Element unter dem Zeiger bzw. die ganze Auswahl. */
+  function showMenuFor(info) {
+    const doc = store.doc;
+    const ids = info.ids;
+    const feats = ids.map((id) => getFeature(doc, id)).filter(Boolean);
+    const f = getFeature(doc, info.featureId);
+    if (!f || !feats.length) return;
+    const multi = feats.length > 1;
+    const editable = canEdit();
+    const items = [];
+    items.push({ header: multi ? tn(feats.length, '{n} Element ausgewählt', '{n} Elemente ausgewählt') : t(featureLabel(f)) });
+    items.push({ label: t('Hinzoomen'), action: () => actions.zoomToFeatures(ids) });
+    items.push({ label: t('Eigenschaften'), action: () => ui.showTab('draw', { reveal: true }) });
+    if (editable) {
+      items.push({ separator: true }, { header: t('Ebene') });
+      const layerIds = new Set(feats.map((x) => x.layerId));
+      for (const l of doc.layers) items.push({ label: l.name, checked: layerIds.size === 1 && layerIds.has(l.id), action: () => actions.setFeaturesLayer(ids, l.id) });
+      const roads = feats.filter((x) => x.type === 'road');
+      if (roads.length) {
+        items.push({ separator: true }, { header: t('Status') });
+        const statuses = new Set(roads.map((x) => x.status));
+        for (const st of STATUSES) items.push({ label: t(st.label), checked: statuses.size === 1 && statuses.has(st.id), action: () => actions.setFeaturesStatus(roads.map((x) => x.id), st.id) });
+      }
+      if (!multi && f.type === 'road' && info.segIndex !== null && info.segIndex !== undefined && f.segments[info.segIndex]) {
+        const i = info.segIndex;
+        items.push({ separator: true }, { header: t('Abschnitt {n}', { n: i + 1 }) });
+        for (const lv of LEVELS) items.push({ label: t(lv.label), checked: f.segments[i].level === lv.id, action: () => actions.setSegmentLevel(f.id, i, lv.id) });
+      }
+      if (!multi && f.type === 'road') {
+        items.push({ separator: true }, { header: t('Zugang') });
+        for (const a of ROAD_ACCESS) items.push({ label: t(a.label), checked: (f.access || 'all') === a.id, action: () => actions.patchFeature(f.id, 'Zugang ändern', (x) => { x.access = a.id; }) });
+      }
+      items.push({ separator: true }, { label: t('Löschen'), danger: true, action: () => tools.deleteSelection() });
+    }
+    const rect = map.container.getBoundingClientRect();
+    ui.showContextMenu(items, { x: rect.left + info.point.x, y: rect.top + info.point.y });
+  }
+
   // --- Tastatur -----------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
     const target = e.target;
@@ -1432,6 +1518,10 @@ async function main() {
     if (ctrl && e.key.toLowerCase() === 'y') {
       e.preventDefault();
       return actions.redo();
+    }
+    if (ctrl && e.key.toLowerCase() === 'a' && tools.tool === 'select') {
+      e.preventDefault();
+      return tools.selectAll();
     }
     if (ctrl) return;
     if (e.key === 'Enter') return tools.finish();

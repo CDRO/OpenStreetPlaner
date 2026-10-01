@@ -43,10 +43,16 @@
 
       <section id="tab-draw" class="tab active">
         <div id="tool-buttons" class="tool-grid"></div>
+        <label class="check small"><input type="checkbox" id="multi-mode"> <span data-i18n>Mehrfachauswahl (sonst Shift+Klick oder mit Shift einen Rahmen ziehen)</span></label>
         <label class="field"><span data-i18n>Zeichnen auf Ebene</span><select id="active-layer"></select></label>
         <label class="field"><span data-i18n>Typ für neue Strassen</span><select id="default-kind"></select></label>
         <label class="field"><span data-i18n>Art für neue Flächen</span><select id="default-zone-kind"></select></label>
         <div id="properties" class="box"></div>
+        <details class="box" id="elements-box">
+          <summary><span data-i18n>Elemente</span> <span id="elements-count" class="muted"></span></summary>
+          <input type="search" id="element-filter" class="filter" placeholder="Nach Name, Typ oder Ebene filtern" aria-label="Elemente filtern" data-i18n-placeholder>
+          <ul id="element-list" class="element-list"></ul>
+        </details>
         <details class="box" open>
           <summary data-i18n>Karte</summary>
           <div id="map-settings"></div>
@@ -69,7 +75,8 @@
             <li><span class="swatch comment"></span> <span data-i18n>Kommentare (orange, erledigt grau)</span></li>
           </ul>
           <ul class="keys">
-            <li data-i18n-html><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung/Punkt · <kbd>R</kbd> Kreisel · <kbd>F</kbd> Fläche · <kbd>O</kbd> OSM übernehmen · <kbd>T</kbd> Route · <kbd>C</kbd> Kommentar</li>
+            <li data-i18n-html><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung/Punkt · <kbd>R</kbd> Kreisel · <kbd>F</kbd> Fläche · <kbd>O</kbd> OSM übernehmen · <kbd>T</kbd> Route · <kbd>M</kbd> Messen · <kbd>C</kbd> Kommentar</li>
+            <li data-i18n-html><kbd>Shift</kbd>+Klick oder Rahmen: Mehrfachauswahl · <kbd>Ctrl</kbd>+<kbd>A</kbd> alles · Rechtsklick/Langdruck: Kontextmenü · Ziehen auf Ausgewähltem: verschieben</li>
             <li data-i18n-html><kbd>Enter</kbd> Strasse beenden · <kbd>Esc</kbd> abbrechen / Auswahl aufheben · <kbd>⌫</kbd> letzter Punkt</li>
             <li data-i18n-html><kbd>Entf</kbd> Ausgewähltes löschen · <kbd>Ctrl</kbd>+<kbd>Z</kbd>/<kbd>Y</kbd> rückgängig/wiederholen · <kbd>Ctrl</kbd>+<kbd>S</kbd> speichern</li>
             <li data-i18n-html><kbd>Shift</kbd> (einstellbar) gedrückt halten: Einrasten für diese Aktion aussetzen</li>
@@ -132,6 +139,7 @@
     <span id="status-coords"></span>
   </footer>
 
+  <div id="context-menu" class="context-menu" role="menu" hidden></div>
   <div id="modal" class="modal" hidden>
     <div class="modal-card" role="dialog" aria-modal="true">
       <div class="modal-body"></div>

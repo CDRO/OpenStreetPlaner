@@ -9,7 +9,9 @@ import {
   normalizeRoutePairs, normalizeIsochrone,
   normalizeLines, normalizeBusLines, normalizeAccess, segmentAccess, createBusLine, BUS_COLORS, BUS_DWELL_DEFAULT,
   adoptBusRoute, normalizeOsmId, MAX_BUS_LINES,
+  translateFeatures, featuresInBounds, shiftLatLng,
 } from '../js/model.js';
+import { haversine } from '../js/geometry.js';
 
 function docWithRoad() {
   const doc = createDocument({ name: 'Test' });
@@ -365,4 +367,27 @@ test('OSM-Buslinie übernehmen: Haltestellen mit osmId wiederverwenden, Nummer, 
   assert.equal(toGeoJSON(back).features.find((f) => f.properties.id === existing.id).properties.osmId, 2);
   for (let i = doc.busLines.length; i < MAX_BUS_LINES; i++) createBusLine(doc);
   assert.equal(adoptBusRoute(doc, { id: 200, ref: '1', stops: route.stops.slice(0, 2) }, layerId), null, 'Grenze von 20 Linien');
+});
+
+test('Mehrfachauswahl: gemeinsam verschieben hält die Form, Rahmen findet Elemente sichtbarer Ebenen', () => {
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const road = createRoad({ layerId, nodes: [[47, 8], [47.001, 8.002], [47.002, 8.002]] });
+  const stop = createJunction({ layerId, at: [47, 8], kind: 'busstop' });
+  const ring = createRoundabout({ layerId, center: [47.002, 8.002], radius: 12 });
+  const zone = createZone({ layerId, nodes: [[47.01, 8.01], [47.01, 8.02], [47.02, 8.02]] });
+  doc.features.push(road, stop, ring, zone);
+  const before = [haversine(road.nodes[0], road.nodes[1]), haversine(road.nodes[1], road.nodes[2])];
+  const moved = shiftLatLng([47, 8], 50, -30);
+  translateFeatures(doc, [road.id, stop.id, ring.id, 'fehlt'], 50, -30);
+  assert.deepEqual(road.nodes[0], moved);
+  assert.deepEqual(stop.at, moved, 'Punkt und Strassenanfang bleiben zusammen');
+  assert.ok(Math.abs(haversine(road.nodes[0], road.nodes[1]) - before[0]) < 0.05 && Math.abs(haversine(road.nodes[1], road.nodes[2]) - before[1]) < 0.05, 'Form bleibt');
+  assert.deepEqual(ring.center, road.nodes[2]);
+  assert.deepEqual(zone.nodes[0], [47.01, 8.01], 'nicht ausgewählt bleibt');
+  const ids = featuresInBounds(doc, { south: 46.999, north: 47.0015, west: 7.999, east: 8.0025 });
+  assert.ok(ids.includes(road.id) && ids.includes(stop.id) && !ids.includes(zone.id), JSON.stringify(ids));
+  assert.deepEqual(featuresInBounds(doc, { north: 46.999, south: 47.0015, east: 7.999, west: 8.0025 }), ids, 'Rahmen in beliebiger Richtung');
+  doc.layers[0].visible = false;
+  assert.deepEqual(featuresInBounds(doc, { south: 46, north: 48, west: 7, east: 9 }), [], 'ausgeblendete Ebene zählt nicht');
 });

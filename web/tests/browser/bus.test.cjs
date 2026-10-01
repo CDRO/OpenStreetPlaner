@@ -235,6 +235,8 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await page.click('#transit-load');
   await page.waitForFunction(() => document.querySelectorAll('.transit-adopt').length === 2, null, { timeout: 10000 });
   assert.ok(transitCalls > before, '„Für Ansicht laden“ holt die Zellen erneut');
+  // Die zweite Zelle kann noch laden, wenn die Linien der ersten schon da sind
+  await page.waitForFunction(() => (document.querySelector('#transit-status') || {}).textContent.includes('aus OSM geladen'), null, { timeout: 10000 });
   panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
   assert.ok(panel.includes('3 Haltestellen und 2 Linien aus OSM geladen'), panel);
   assert.ok(panel.indexOf('Bus 7') < panel.indexOf('Bus 12'), '7 vor 12 (natürliche Sortierung)');

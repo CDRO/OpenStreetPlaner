@@ -357,3 +357,21 @@ details.conf > summary::after { content: ' ▸'; font-size: 10px; }
 details.conf[open] > summary::after { content: ' ▾'; }
 .conf-reasons { margin: 4px 0 0 14px; padding: 0 0 0 14px; color: var(--muted); }
 .conf-reasons li { margin: 1px 0; }
+
+/* Kontextmenü */
+.context-menu { position: fixed; z-index: 60; min-width: 190px; max-height: 80vh; overflow: auto; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 6px 24px rgba(0,0,0,0.18); padding: 4px 0; font-size: 13px; }
+.context-menu .menu-header { padding: 5px 12px 2px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.context-menu .sep { border-top: 1px solid var(--border); margin: 4px 0; }
+.context-menu button { display: block; width: 100%; text-align: left; padding: 6px 12px 6px 26px; background: none; border: 0; cursor: pointer; position: relative; color: inherit; font: inherit; }
+.context-menu button:hover:not(:disabled), .context-menu button:focus-visible { background: #f0f3f7; outline: none; }
+.context-menu button:disabled { opacity: .45; cursor: default; }
+.context-menu button.checked::before { content: '✓'; position: absolute; left: 9px; color: var(--accent); }
+.context-menu button.danger { color: var(--danger); }
+/* Elementliste */
+.filter { width: 100%; box-sizing: border-box; margin: 6px 0; }
+.element-list { list-style: none; padding: 0; margin: 0; max-height: 260px; overflow: auto; }
+.element-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.element-list li.selected { background: #fff7e8; }
+.element-list .el-row .dot { margin-right: 4px; }
+.check.small { font-size: 12px; margin: -2px 0 8px; }
+.btn.danger { color: var(--danger); border-color: #f0b8b8; }

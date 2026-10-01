@@ -1,7 +1,7 @@
 // Datenmodell eines Entwurfs: Ebenen und Elemente (Strassen, Kreuzungen, Kreisel).
 // Reine Funktionen ohne DOM, damit sie in Node getestet werden können.
 
-import { circleRing, pathLength } from './geometry.js';
+import { circleRing, pathLength, project, unproject } from './geometry.js';
 import { t } from './i18n.js';
 
 export const DOC_VERSION = 1;
@@ -570,6 +570,39 @@ export function getFeature(doc, id) {
 
 export function removeFeature(doc, id) {
   doc.features = doc.features.filter((f) => f.id !== id);
+}
+
+/** Punkt um einen Versatz in Mercator-Einheiten verschieben (Form bleibt überall gleich). */
+export function shiftLatLng(ll, dx, dy) {
+  const p = project(ll);
+  return roundCoord(unproject({ x: p.x + dx, y: p.y + dy }));
+}
+
+/** Verschiebt mehrere Elemente gemeinsam; Höhenprofil und Parzellen veralten über ihre Punktfolge-Kennung. */
+export function translateFeatures(doc, ids, dx, dy) {
+  for (const id of ids) {
+    const f = getFeature(doc, id);
+    if (!f) continue;
+    if (f.type === 'road' || f.type === 'zone') f.nodes = f.nodes.map((n) => shiftLatLng(n, dx, dy));
+    else if (f.type === 'junction') f.at = shiftLatLng(f.at, dx, dy);
+    else if (f.type === 'roundabout') f.center = shiftLatLng(f.center, dx, dy);
+  }
+}
+
+/** IDs der Elemente sichtbarer Ebenen, von denen ein Punkt im Rechteck liegt (Rahmenauswahl). */
+export function featuresInBounds(doc, b) {
+  const south = Math.min(b.south, b.north);
+  const north = Math.max(b.south, b.north);
+  const west = Math.min(b.west, b.east);
+  const east = Math.max(b.west, b.east);
+  const inside = (ll) => ll[0] >= south && ll[0] <= north && ll[1] >= west && ll[1] <= east;
+  const hidden = new Set(doc.layers.filter((l) => l.visible === false).map((l) => l.id));
+  return doc.features.filter((f) => {
+    if (hidden.has(f.layerId)) return false;
+    if (f.type === 'junction') return inside(f.at);
+    if (f.type === 'roundabout') return inside(f.center);
+    return Array.isArray(f.nodes) && f.nodes.some(inside);
+  }).map((f) => f.id);
 }
 
 export function featureLabel(f) {
