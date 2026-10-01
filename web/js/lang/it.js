@@ -810,4 +810,6 @@ export const it = {
   "Mindestens zwei Haltestellen für den Fahrplan-Abgleich.": "Almeno due fermate per il confronto con l'orario.",
   "Modell heute": "Modello oggi",
   "Ohne Zwischenhalte lässt sich keine Haltezeit kalibrieren.": "Senza fermate intermedie non è possibile calibrare il tempo di sosta.",
+  "CAD-Übergabe: Strassen, Flächen, Punkte und Kreisel in Landeskoordinaten LV95, eine DXF-Ebene je Entwurfsebene": "Consegna CAD: strade, aree, punti e rotonde in coordinate nazionali LV95, un livello DXF per livello del progetto",
+  "DXF (LV95)": "DXF (LV95)",
 };

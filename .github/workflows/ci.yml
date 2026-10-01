@@ -31,6 +31,25 @@ jobs:
       - name: Unit tests (Frontend, ohne Abhängigkeiten)
         run: node --test web/tests/*.test.mjs
 
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Playwright mit Chromium (ausserhalb des Repos, keine Abhängigkeit im Projekt)
+        run: |
+          mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm install --no-audit --no-fund playwright@1.56.1
+          npx --prefix /tmp/pw playwright install --with-deps chromium
+      - name: Browser-Tests (Go-Server, Playwright, Dienste gemockt)
+        run: NODE_PATH=/tmp/pw/node_modules node web/tests/browser/run.cjs
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
   docker:
     runs-on: ubuntu-latest
     steps:

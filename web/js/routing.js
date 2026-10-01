@@ -748,3 +748,43 @@ export function formatDuration(seconds) {
   if (m >= 60) return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
   return `${m}:${String(rest).padStart(2, '0')} min`;
 }
+
+/**
+ * Alles auf einmal (für den Web Worker oder den Hauptfaden): Hauptroute, Paare, Erreichbarkeit, Buslinien.
+ * Netze je Verkehrsmittel werden nur bei Bedarf gebaut. Fehler landen im Ergebnis, nie als Ausnahme.
+ */
+export function computeAll({ osmWays = [], doc, model = 'limit' }) {
+  const q = doc.route;
+  const pairs = (doc.routePairs || []).filter((p) => p.from && p.to);
+  const iso = doc.isochrone;
+  const busLines = (doc.busLines || []).filter((l) => l.stops.length >= 2);
+  const out = { routes: null, pairResults: [], iso: null, busResults: [] };
+  try {
+    out.busResults = busLines.length ? computeBusLines({ osmWays, doc, model }) : [];
+  } catch {
+    out.busResults = [];
+  }
+  if (!q && !pairs.length && !iso) return out;
+  try {
+    const cache = new Map();
+    const graphsFor = (vehicle) => {
+      const v = VEHICLE_IDS.includes(vehicle) ? vehicle : 'car';
+      if (!cache.has(v)) cache.set(v, buildGraphs({ osmWays, doc, model, vehicle: v }));
+      return cache.get(v);
+    };
+    if (q) {
+      const g = graphsFor(q.vehicle);
+      out.routes = { current: routeOnGraph(g.current, q.from, q.to), proposed: routeOnGraph(g.proposed, q.from, q.to), model, vehicle: q.vehicle || 'car' };
+    }
+    out.pairResults = pairs.map((p) => {
+      const g = graphsFor(p.vehicle);
+      return { id: p.id, vehicle: p.vehicle || 'car', current: routeOnGraph(g.current, p.from, p.to), proposed: routeOnGraph(g.proposed, p.from, p.to) };
+    });
+    out.iso = iso ? computeIsochrone({ osmWays, doc, from: iso.from, minutes: iso.minutes, mode: iso.mode, model, graphs: graphsFor('car') }) : null;
+  } catch (e) {
+    out.routes = { current: { error: e.message }, proposed: { error: e.message } };
+    out.pairResults = [];
+    out.iso = { error: e.message };
+  }
+  return out;
+}

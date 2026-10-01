@@ -1675,6 +1675,7 @@ export class UI {
       <div class="btn-row">
         <button type="button" id="export-png" class="btn primary">${t('PNG herunterladen')}</button>
         <button type="button" id="export-pdf" class="btn primary">${t('PDF herunterladen')}</button>
+        <button type="button" id="export-dxf" class="btn" title="${t('CAD-Übergabe: Strassen, Flächen, Punkte und Kreisel in Landeskoordinaten LV95, eine DXF-Ebene je Entwurfsebene')}">${t('DXF (LV95)')}</button>
         <button type="button" class="btn" data-close>${t('Schliessen')}</button>
       </div>`);
     const opts = () => ({
@@ -1692,7 +1693,7 @@ export class UI {
     syncScale();
     const run = async (format) => {
       const status = this.$('export-status');
-      const buttons = [this.$('export-png'), this.$('export-pdf')];
+      const buttons = [this.$('export-png'), this.$('export-pdf'), this.$('export-dxf')];
       buttons.forEach((b) => { b.disabled = true; });
       status.textContent = t('Kacheln werden geladen und die Karte gezeichnet…');
       try {
@@ -1706,6 +1707,7 @@ export class UI {
     };
     this.$('export-png').onclick = () => run('png');
     this.$('export-pdf').onclick = () => run('pdf');
+    this.$('export-dxf').onclick = () => run('dxf');
   }
 
   // --- Kommentare ------------------------------------------------------------------

@@ -54,6 +54,8 @@ go run . -data ./data
 | Etappierung | Ebenen-Tab: bis zehn Etappen mit Name und Jahr; Etappe je Element in den Eigenschaften, in der Mehrfachauswahl oder per Rechtsklick. Ansicht „bis Etappe“ zeigt den Zustand nach dieser Etappe: spätere Elemente grau gestrichelt, Routen, Paare, Buslinien und Erreichbarkeit im Netz dieses Zustands. Analyse-Tab und Bericht: Elemente, Kosten und Fahrzeit kumuliert je Etappe |
 | Ohne Farbsehen | Heute/Neu und Differenzen unterscheiden sich auch durch Muster: Route neu und Paare neu gestrichelt, nicht mehr erreichbares Netz gestrichelt, Versionsvergleich mit durchgezogen/punktiert/gestrichelt, betroffene Gebäude schraffiert (diagonal, Punkte, Kreuz), Zuversicht-Punkte mit ✓ ! ✕ |
 | Dunkelmodus | „Darstellung“ in der Karten-Box: wie das System, hell oder dunkel. Oberfläche über Farbtoken, Kacheln werden am Bildschirm invertiert gezeichnet (Export bleibt hell), native Eingabefelder folgen über `color-scheme` |
+| DXF-Export | Export-Dialog „DXF (LV95)“: AutoCAD R12 (ASCII) in Schweizer Landeskoordinaten LV95 (swisstopo-Näherungsformeln, rund 1 m), eine DXF-Ebene je Entwurfsebene mit Farbe, Strassen und Flächen als POLYLINE (Rückbau gestrichelt), Punkte als POINT, Kreisel als CIRCLE, Beschriftungen mit Typ, Status, Breite und Liniennummern – für die Übergabe an Ingenieurbüros |
+| Offline-Schale | Der Service Worker cached die App-Dateien (Liste und Version aus `GET /api/shell`, die sich mit jedem Build ändert). Ohne Netz startet die App aus dem Cache mit der lokalen Arbeitskopie; Kacheln, Suche, OSM-Daten und Speichern brauchen weiterhin das Netz |
 | Zuversicht | Jedes Ergebnis trägt eine von drei Stufen (hoch, mittel, tief) mit aufklappbaren Gründen: Fahrzeiten nach dem Anteil der Strecke mit geschätztem Tempo (OSM ohne `maxspeed`, Entwurf ohne Tempolimit), unvollständig geladenem Netz, Tempolimit- statt Geometriemodell und fehlendem Höhenprofil; Buslinien zusätzlich mit Standard-Haltezeit; OSM-Linien nach Haltepositionen, Plattformen oder fehlenden Rollen; Kosten mit Band ±25 % (eigene Ansätze) bzw. ±40 % (Standardwerte), unbekannte Breiten und pauschale Brücken/Tunnel; Parzellen hoch (amtliche Vermessung), Gebäude und Normen-Check mittel. Keine Statistik, sondern Transparenz über Annahmen. Im PDF-Bericht als Zeile je Ergebnis, im Export-Dialog abschaltbar |
 | Geschwindigkeitsmodell | Schalter im Routen-Tab: Fahrzeit aus der Strassenführung statt nur aus dem Limit. Kurvenradien aus der Geometrie (v = √(3 m/s² · R)), Steigung aus dem Höhenprofil, Wartezeiten an Kreuzungen und Kreiseln mit Streuung. Ergebnis als typische Zeit mit Band P15–P85 |
 | Glätten / Vereinfachen | Strassen per Catmull-Rom-Spline glätten (Abschnittseigenschaften bleiben) oder per Douglas-Peucker auf 1 m vereinfachen |
@@ -145,6 +147,7 @@ speichert nur einen Hash davon).
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
 | `POST` | `/api/parcels` | `{coords: [[lat, lng], …]}` → `{parcels: [{id, egrid, number, label, canton, polygons}]}` (geo.admin identify, Blöcke zu 25 Punkten, dedupliziert, 6 h Cache) |
 | `GET` | `/api/buildings?bbox=s,w,n,e` | OSM-Gebäude (`building=*`) als Umringe, bbox ≤ 0.06° |
+| `GET` | `/api/shell` | `{version, files}` der App-Schale für den Service Worker (Offline-Start) |
 | `GET` | `/api/timetable?from=lat,lng&to=lat,lng&line=12` | Fahrplan-Abgleich: `{from, to, line, trips, median, min, max, journeys}` (Sekunden) für direkte Busfahrten zwischen den nächsten Haltestellen, 10 min Cache |
 | `GET` | `/api/parking?bbox=s,w,n,e` | OSM-Parkplätze (`amenity=parking`) als Umringe mit `parking`, `capacity`, `name`, bbox ≤ 0.06° |
 | `GET` | `/api/transit?bbox=s,w,n,e` | `{stops: [{id, name, at, lines}], routes: [{id, ref, name, from, to, operator, colour, stops}]}` – Bushaltestellen im Bereich und Buslinien (`route=bus`), die ihn berühren, bbox ≤ 0.06°, höchstens 80 Linien à 60 Halte |
@@ -255,6 +258,10 @@ aus der sie übernommen wurde (optional; verhindert Doppelte beim Übernehmen).
   Fläche liegt; Fussgängerzonen sperren ihn (für Busse mit Freigabe 20 km/h).
 - Busschleusen (Zugang „Nur Bus“) fehlen im Auto-Netz; im Bus-Netz gelten sie
   mit höchstens 30 km/h. Buslinien addieren je Zwischenhalt die Haltezeit.
+- Routen, Paare, Erreichbarkeit und Buslinien werden in einem Web Worker
+  gerechnet (Modul-Worker `routing.worker.js`), damit die Oberfläche bei
+  grossen Netzen flüssig bleibt; veraltete Ergebnisse werden verworfen. Ohne
+  Worker-Unterstützung rechnet der Hauptfaden.
 - Zuversicht: jede Kante merkt sich, ob ihr Tempo aus einem Tag bzw. gesetzten
   Limit stammt oder geschätzt ist, ob sie zum Entwurf gehört und ob die
   Steigung bekannt ist. Der Pfad summiert diese Anteile; über 20 % geschätztes
@@ -276,13 +283,23 @@ aus der sie übernommen wurde (optional; verhindert Doppelte beim Übernehmen).
 
 ```sh
 make test            # go vet + go test + Frontend-Unit-Tests (node --test)
-make test-browser    # Browser-Tests (basics … edit, theme); braucht Go und Playwright mit Chromium
+make test-browser    # Browser-Tests (basics … theme, offline); braucht Go und Playwright mit Chromium; läuft auch in der CI (Job „browser“)
 make run             # Server lokal
 make docker          # Image bauen
 ```
 
 Die CI (`.github/workflows/ci.yml`) führt gofmt, vet, Go-Tests, die
 Frontend-Unit-Tests und einen Docker-Build mit Smoke-Test aus.
+
+## Später und offene Entscheide
+
+- **3D-Vorschau**: ein eigenes Fenster neben dem 2D-Editor mit Gelände aus dem
+  swisstopo-Höhendienst, aus OSM extrudierten Gebäuden (3 m je Stockwerk),
+  gezeichneten Strassen als Bänder in Querschnittsbreite, Brücken angehoben,
+  Tunnel abgesenkt, Buslinien darüber; Kamera frei drehbar, Bild exportierbar.
+  Offener Entscheid: Das Frontend ist bewusst ohne Abhängigkeiten. Eine
+  3D-Bibliothek (z. B. three.js) wäre die erste; denkbar ist ein Fork des
+  Projekts mit dieser Abhängigkeit, damit der Kern abhängigkeitsfrei bleibt.
 
 ## Grenzen
 

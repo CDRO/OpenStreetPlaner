@@ -3,13 +3,17 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,18 +33,20 @@ const (
 )
 
 type Server struct {
-	store   *store.Store
-	osm     *osm.Client
-	index   []byte
-	sw      []byte
-	static  http.Handler
-	mux     *http.ServeMux
-	logger  *log.Logger
-	limiter *limiter
-	push    *push.Sender
-	pushKey string
-	pushWG  sync.WaitGroup
-	broker  *broker
+	shellFiles   []string
+	shellVersion string
+	store        *store.Store
+	osm          *osm.Client
+	index        []byte
+	sw           []byte
+	static       http.Handler
+	mux          *http.ServeMux
+	logger       *log.Logger
+	limiter      *limiter
+	push         *push.Sender
+	pushKey      string
+	pushWG       sync.WaitGroup
+	broker       *broker
 }
 
 // RateLimit konfiguriert die Drosselung schreibender API-Aufrufe pro Client.
@@ -60,11 +66,15 @@ func New(st *store.Store, osmClient *osm.Client, webFS fs.FS, logger *log.Logger
 	if err != nil {
 		return nil, err
 	}
-	sw, _ := fs.ReadFile(sub, "sw.js") // optional: ohne Service Worker kein Push
+	sw, _ := fs.ReadFile(sub, "sw.js") // optional: ohne Service Worker kein Push und keine Offline-Schale
 	if logger == nil {
 		logger = log.Default()
 	}
-	s := &Server{store: st, osm: osmClient, index: index, sw: sw, logger: logger, mux: http.NewServeMux(), broker: newBroker()}
+	shellFiles, shellVersion := shellManifest(sub)
+	if sw != nil {
+		sw = bytes.ReplaceAll(sw, []byte("__SHELL_VERSION__"), []byte(shellVersion))
+	}
+	s := &Server{store: st, osm: osmClient, index: index, sw: sw, logger: logger, mux: http.NewServeMux(), broker: newBroker(), shellFiles: shellFiles, shellVersion: shellVersion}
 	s.static = http.StripPrefix("/static/", http.FileServerFS(sub))
 	s.routes()
 	return s, nil
@@ -119,6 +129,7 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/drafts/{id}/push", s.setPushSub)
 	m.HandleFunc("DELETE /api/drafts/{id}/push", s.deletePushSub)
 	m.HandleFunc("GET /sw.js", s.serveWorker)
+	m.HandleFunc("GET /api/shell", s.shell)
 	m.HandleFunc("GET /api/search", s.search)
 	m.HandleFunc("GET /api/roads", s.roads)
 	m.HandleFunc("POST /api/profile", s.profile)
@@ -549,6 +560,35 @@ func (s *Server) deletePushSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// shellManifest listet die App-Dateien (für die Offline-Schale) und bildet aus ihrem Inhalt eine Version.
+func shellManifest(sub fs.FS) ([]string, string) {
+	var files []string
+	h := sha256.New()
+	_ = fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path == "sw.js" || strings.HasPrefix(path, "tests/") {
+			return nil
+		}
+		data, rerr := fs.ReadFile(sub, path)
+		if rerr != nil {
+			return nil
+		}
+		h.Write([]byte(path))
+		h.Write(data)
+		if path != "index.html" {
+			files = append(files, "/static/"+path)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files, hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// shell liefert Version und Dateiliste der App-Schale für den Service Worker.
+func (s *Server) shell(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache")
+	writeJSON(w, http.StatusOK, map[string]any{"version": s.shellVersion, "files": s.shellFiles})
 }
 
 func (s *Server) serveWorker(w http.ResponseWriter, r *http.Request) {

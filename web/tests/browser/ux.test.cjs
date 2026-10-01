@@ -161,6 +161,11 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok(pdf2.includes('Massnahmen') && !pdf2.includes('Zuversicht'), 'ohne Zuversicht');
   await page.check('#export-confidence');
   await h.settle(100);
+  // DXF für die CAD-Übergabe: R12, Ebene je Entwurfsebene, Koordinaten in LV95
+  const [dxfDl] = await Promise.all([page.waitForEvent('download'), page.click('#export-dxf')]);
+  assert.equal(dxfDl.suggestedFilename(), 'Zweite_Aenderung.dxf');
+  const dxf = fs.readFileSync(await dxfDl.path()).toString('utf8');
+  assert.ok(dxf.startsWith('0\nSECTION') && dxf.includes('AC1009') && dxf.includes('\n0\nPOLYLINE\n') && /10\n26\d{5}\.\d{2}\n/.test(dxf), 'DXF mit Polylinien in LV95');
   await page.click('.modal [data-close]');
   console.log('✓ Bericht-Export');
 

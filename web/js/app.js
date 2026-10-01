@@ -12,7 +12,8 @@ import { buildSnapIndex } from './snap.js';
 import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
-import { buildGraphs, computeBusLines, computeIsochrone, computeRoutes, formatDuration, routeOnGraph } from './routing.js';
+import { computeAll, computeRoutes, formatDuration } from './routing.js';
+import { toDXF } from './dxf.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
 import { nodesKey, newId } from './model.js';
 import { exportPdf, exportPng, exportReport } from './export.js';
@@ -296,50 +297,64 @@ async function main() {
   }
 
   // --- Routen-Rechner ----------------------------------------------------------
+  // Routing im Web Worker (Hauptfaden bleibt flüssig); Fallback im Hauptfaden, wenn Worker fehlen oder scheitern.
+  let worker = null;
+  let workerBroken = false;
+  let jobCounter = 0;
+  function routingWorker() {
+    if (workerBroken || typeof globalThis.Worker === 'undefined') return null;
+    if (worker) return worker;
+    try {
+      worker = new globalThis.Worker('/static/js/routing.worker.js', { type: 'module' });
+    } catch {
+      workerBroken = true;
+      return null;
+    }
+    worker.onmessage = (e) => {
+      const { id, result, error } = e.data || {};
+      if (id !== state.routeJob) return; // veraltet
+      if (error) applyRouteResults(computeAll(state.routeJobPayload));
+      else applyRouteResults(result);
+    };
+    worker.onerror = () => {
+      // Modul-Worker nicht verfügbar oder Fehler beim Laden: ab jetzt im Hauptfaden rechnen
+      workerBroken = true;
+      try { worker.terminate(); } catch { /* egal */ }
+      worker = null;
+      if (state.routeJobPayload) applyRouteResults(computeAll(state.routeJobPayload));
+    };
+    return worker;
+  }
+
+  function applyRouteResults(res) {
+    state.busResults = res.busResults || [];
+    state.routes = res.routes;
+    state.pairResults = res.pairResults || [];
+    state.iso = res.iso;
+    state.routeJobPayload = null;
+    map.requestRender();
+    if (ui) {
+      ui.refreshRoute();
+      ui.refreshPresent();
+    }
+  }
+
   function recomputeRoutes() {
     clearTimeout(state.routeTimer);
     state.routeTimer = setTimeout(() => {
       const doc = effectiveDoc();
-      const q = doc.route;
-      const pairs = (doc.routePairs || []).filter((p) => p.from && p.to);
-      const iso = doc.isochrone;
-      const busLines = (doc.busLines || []).filter((l) => l.stops.length >= 2);
+      const job = { osmWays: osm.list(), doc, model: settings.speedModel };
+      const w = routingWorker();
+      if (!w) return applyRouteResults(computeAll(job));
+      state.routeJob = ++jobCounter;
+      state.routeJobPayload = job;
       try {
-        state.busResults = busLines.length ? computeBusLines({ osmWays: osm.list(), doc, model: settings.speedModel }) : [];
+        w.postMessage({ id: state.routeJob, job });
       } catch {
-        state.busResults = [];
+        workerBroken = true;
+        applyRouteResults(computeAll(job));
       }
-      if (!q && !pairs.length && !iso) {
-        state.routes = null;
-        state.pairResults = [];
-        state.iso = null;
-      } else {
-        try {
-          // Netze je Verkehrsmittel nur bei Bedarf bauen (Auto, Bus, Velo, zu Fuss)
-          const cache = new Map();
-          const graphsFor = (vehicle) => {
-            const v = VEHICLES.some((x) => x.id === vehicle) ? vehicle : 'car';
-            if (!cache.has(v)) cache.set(v, buildGraphs({ osmWays: osm.list(), doc, model: settings.speedModel, vehicle: v }));
-            return cache.get(v);
-          };
-          const main = q ? graphsFor(q.vehicle) : null;
-          state.routes = q ? { current: routeOnGraph(main.current, q.from, q.to), proposed: routeOnGraph(main.proposed, q.from, q.to), model: settings.speedModel, vehicle: q.vehicle || 'car' } : null;
-          state.pairResults = pairs.map((p) => {
-            const g = graphsFor(p.vehicle);
-            return { id: p.id, vehicle: p.vehicle || 'car', current: routeOnGraph(g.current, p.from, p.to), proposed: routeOnGraph(g.proposed, p.from, p.to) };
-          });
-          state.iso = iso ? computeIsochrone({ osmWays: osm.list(), doc, from: iso.from, minutes: iso.minutes, mode: iso.mode, model: settings.speedModel, graphs: graphsFor('car') }) : null;
-        } catch (e) {
-          state.routes = { current: { error: e.message }, proposed: { error: e.message } };
-          state.pairResults = [];
-          state.iso = { error: e.message };
-        }
-      }
-      map.requestRender();
-      if (ui) {
-        ui.refreshRoute();
-        ui.refreshPresent();
-      }
+      return undefined;
     }, 120);
   }
 
@@ -662,6 +677,10 @@ async function main() {
       map.requestRender();
     },
     async runExport({ format, mode, paper, orientation, dpi, scale = 2000, report = false, confidence = settings.reportConfidence !== false }) {
+      if (format === 'dxf') {
+        download(`${safeFilename(store.doc.name)}.dxf`, toDXF(store.doc), 'application/dxf');
+        return;
+      }
       const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure(), confidence: confidence ? actions.confidences() : null, variants: state.variants, parking: actions.parkingBalance(), phases: actions.phaseTable() };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
@@ -1713,6 +1732,7 @@ async function main() {
   if (state.id) loadComments({ quiet: true });
   initPush();
   initTileSources();
+  registerWorker(); // Offline-Schale: App-Dateien werden gecacht, die Arbeitskopie bleibt nutzbar
   schedulePoll();
   window.addEventListener('hashchange', () => {
     const m = /#comment=([0-9a-z]+)/.exec(location.hash);

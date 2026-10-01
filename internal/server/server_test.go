@@ -31,7 +31,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *osm.Client) {
 	web := fstest.MapFS{
 		"web/index.html":  {Data: []byte("<!doctype html><title>Stadtplaner</title>")},
 		"web/css/app.css": {Data: []byte("body{}")},
-		"web/sw.js":       {Data: []byte("self.addEventListener('push', () => {});")},
+		"web/js/app.js":   {Data: []byte("// app")},
+		"web/sw.js":       {Data: []byte("const V = '__SHELL_VERSION__'; self.addEventListener('push', () => {});")},
 	}
 	client := osm.New(t.TempDir())
 	s, err := New(st, client, web, log.New(io.Discard, "", 0))
@@ -597,5 +598,41 @@ func TestParcelsAndBuildingsEndpoints(t *testing.T) {
 	_ = json.NewDecoder(bres.Body).Decode(&list)
 	if bres.StatusCode != 200 || len(list) != 1 {
 		t.Fatalf("buildings: %d %+v", bres.StatusCode, list)
+	}
+}
+
+func TestShellManifestAndWorker(t *testing.T) {
+	ts, _ := newTestServer(t)
+	defer ts.Close()
+	res, out := call(t, "GET", ts.URL+"/api/shell", nil, nil)
+	if res.StatusCode != 200 {
+		t.Fatalf("shell: %d", res.StatusCode)
+	}
+	files, _ := out["files"].([]any)
+	version, _ := out["version"].(string)
+	if len(version) != 16 || len(files) != 2 {
+		t.Fatalf("Manifest: %q %d Dateien", version, len(files))
+	}
+	hasApp := false
+	for _, f := range files {
+		if f == "/static/js/app.js" {
+			hasApp = true
+		}
+		if f == "/static/index.html" || f == "/static/sw.js" || strings.HasPrefix(f.(string), "/static/tests/") {
+			t.Fatalf("Datei gehört nicht in die Schale: %v", f)
+		}
+	}
+	if !hasApp {
+		t.Fatalf("app.js fehlt: %v", files)
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/sw.js", nil)
+	sres, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(sres.Body)
+	sres.Body.Close()
+	if !strings.Contains(string(body), version) || strings.Contains(string(body), "__SHELL_VERSION__") {
+		t.Fatalf("Version nicht im Service Worker eingesetzt")
 	}
 }
