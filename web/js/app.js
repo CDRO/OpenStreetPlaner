@@ -23,6 +23,7 @@ import { applyImport, parseImport } from './importer.js';
 import { diffDocuments } from './diff.js';
 import { applyStatic, detectLanguage, setLanguage, t, tn } from './i18n.js';
 import { exposure as computeExposure } from './buildings.js';
+import { costConfidence, staticConfidence, travelTimeConfidence } from './confidence.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
 const POLL_INTERVAL_MS = 45000;
@@ -554,8 +555,8 @@ async function main() {
       state.showExposure = !!on;
       map.requestRender();
     },
-    async runExport({ format, mode, paper, orientation, dpi, scale = 2000, report = false }) {
-      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
+    async runExport({ format, mode, paper, orientation, dpi, scale = 2000, report = false, confidence = settings.reportConfidence !== false }) {
+      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure(), confidence: confidence ? actions.confidences() : null };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
       else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
@@ -1014,6 +1015,39 @@ async function main() {
       if (tools.routeTarget && tools.routeTarget.busLine === id) tools.cancel();
     },
     isochrone: () => state.iso,
+    /** Zuversicht eines Ergebnisses: route, pair(id), pairs, bus(id), isochrone, costs, parcels, buildings, checks. */
+    confidence(kind, id = null) {
+      const networkLoading = !!osm.pending;
+      switch (kind) {
+        case 'route': return state.routes ? travelTimeConfidence([state.routes.current, state.routes.proposed], { networkLoading }) : null;
+        case 'pair': {
+          const r = state.pairResults.find((x) => x.id === id);
+          return r ? travelTimeConfidence([r.current, r.proposed], { networkLoading }) : null;
+        }
+        case 'pairs': return travelTimeConfidence(state.pairResults.flatMap((r) => [r.current, r.proposed]), { networkLoading });
+        case 'bus': {
+          const r = state.busResults.find((x) => x.id === id);
+          const l = (store.doc.busLines || []).find((x) => x.id === id);
+          return r ? travelTimeConfidence([r.current, r.proposed], { networkLoading, dwell: l ? l.dwell : null }) : null;
+        }
+        case 'isochrone': return state.iso && !state.iso.error ? travelTimeConfidence(state.iso, { networkLoading }) : null;
+        case 'costs': return costConfidence(store.doc);
+        default: return staticConfidence(kind);
+      }
+    },
+    /** Alle Einstufungen für den Bericht. */
+    confidences() {
+      return {
+        route: actions.confidence('route'),
+        pairs: Object.fromEntries(state.pairResults.map((r) => [r.id, actions.confidence('pair', r.id)])),
+        busLines: Object.fromEntries(state.busResults.map((r) => [r.id, actions.confidence('bus', r.id)])),
+        isochrone: actions.confidence('isochrone'),
+        costs: actions.confidence('costs'),
+        parcels: staticConfidence('parcels'),
+        buildings: staticConfidence('buildings'),
+        checks: staticConfidence('checks'),
+      };
+    },
     captureIsochrone() {
       if (!actions.requireEdit()) return;
       tools.captureRoute({ isochrone: true });

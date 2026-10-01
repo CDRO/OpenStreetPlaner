@@ -402,3 +402,38 @@ test('Buslinien: Fahrzeit über alle Halte inkl. Haltezeit, heute und neu, zu we
   doc.busLines[0].stops = [s1.id, createJunction({ layerId, at: [48, 9], kind: 'busstop' }).id];
   assert.equal(computeBusLines({ osmWays: ways, doc })[0].stops, 1, 'unbekannte Haltestelle zählt nicht');
 });
+
+test('Herkunft des Tempos je Kante: Anteile geschätzt / Entwurf / ohne Profil im Pfad, in Buslinien und Isochronen', () => {
+  const ways = [
+    { id: 1, tags: { highway: 'residential', maxspeed: '50' }, geometry: [[47, 8], [47, 8.005]] },
+    { id: 2, tags: { highway: 'residential' }, geometry: [[47, 8.005], [47, 8.01]] },
+  ];
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  doc.features.push(createRoad({ layerId, nodes: [[47, 8.01], [47, 8.015]], kind: 'main' }));
+  const r = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47, 8.015] });
+  const q = r.proposed.quality;
+  assert.ok(q && Math.abs(q.dist - r.proposed.dist) < 1e-6);
+  assert.ok(Math.abs(q.assumedDist / q.dist - 2 / 3) < 0.02, `zwei Drittel geschätzt: ${q.assumedDist / q.dist}`);
+  assert.ok(Math.abs(q.draftDist / q.dist - 1 / 3) < 0.02, 'ein Drittel Entwurf');
+  assert.equal(q.noProfileDist, 0, 'im Tempolimit-Modell kein Profil-Anteil');
+  assert.equal(q.model, 'limit');
+  doc.features[0].maxspeed = 30;
+  const g = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47, 8.015], model: 'geometry' }).proposed.quality;
+  assert.ok(Math.abs(g.assumedDist / g.dist - 1 / 3) < 0.02, 'nur der OSM-Way ohne maxspeed');
+  assert.ok(Math.abs(g.noProfileDist / g.dist - 1) < 1e-6, 'Geometriemodell: ohne Höhenprofil überall');
+  assert.equal(g.model, 'geometry');
+  const cur = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47, 8.01] }).current.quality;
+  assert.equal(cur.draftDist, 0);
+  // Buslinie und Isochrone tragen die Qualität weiter
+  const s1 = createJunction({ layerId, at: [47, 8], kind: 'busstop' });
+  const s2 = createJunction({ layerId, at: [47, 8.015], kind: 'busstop' });
+  doc.features.push(s1, s2);
+  doc.busLines = [{ id: 'b1', name: '1', color: '#e53935', stops: [s1.id, s2.id], dwell: 20 }];
+  const bus = computeBusLines({ osmWays: ways, doc })[0];
+  assert.ok(bus.proposed.quality.dist > 0 && Math.abs(bus.proposed.quality.assumedDist / bus.proposed.quality.dist - 1 / 3) < 0.02);
+  const iso = computeIsochrone({ osmWays: ways, doc, from: [47, 8], minutes: [5], mode: 'proposed' });
+  assert.ok(iso.quality && iso.quality.dist > 0 && iso.quality.assumedDist > 0 && iso.quality.assumedDist < iso.quality.dist);
+  const diff = computeIsochrone({ osmWays: ways, doc, from: [47, 8], minutes: [5], mode: 'diff' });
+  assert.ok(diff.quality && diff.quality.dist > 0 && diff.quality.draftDist > 0);
+});

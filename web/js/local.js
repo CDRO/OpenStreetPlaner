@@ -20,6 +20,7 @@ export const DEFAULT_SETTINGS = {
   overlays: [], // IDs eingeschalteter Kachel-Overlays (z. B. Parzellen)
   speedModel: 'limit',
   exposureRadius: 50, // Umkreis für betroffene Gebäude (m)
+  reportConfidence: true, // Zuversicht im PDF-Bericht ausweisen
   language: '', // leer = aus dem Browser ableiten (de/fr/it) // 'limit' = Tempolimit, 'geometry' = Kurven, Steigung, Streuung
 };
 

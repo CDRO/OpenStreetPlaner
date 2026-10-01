@@ -28,7 +28,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   const total1 = await page.textContent('#analysis-panel tr.total .num');
   assert.ok(/Mio\. CHF/.test(total1), total1);
   // Einheitskosten ändern: Kreisel 1.5 Mio -> 3.5 Mio erhöht das Total um 2 Mio
-  await page.click('#analysis-panel details:nth-of-type(2) summary');
+  await page.click('#analysis-panel details:has(#cost-reset) > summary');
   await page.fill('.cost-input[data-key="roundabout"]', '3500000');
   await page.press('.cost-input[data-key="roundabout"]', 'Enter');
   await h.settle(300);

@@ -23,7 +23,7 @@ export function extractKeys(root) {
     for (const m of src.matchAll(/\b(?:commit|patch|commitDoc)\('((?:[^'\\]|\\.)*)'/g)) add(m[1]);
     for (const m of src.matchAll(/patch(?:Layer|BusLine)\([^,]+, '((?:[^'\\]|\\.)*)'/g)) add(m[1]);
     for (const m of src.matchAll(/patchLayer\([^,]+, visible \? '([^']*)' : '([^']*)'/g)) { add(m[1]); add(m[2]); }
-    if (['model.js', 'costs.js', 'tools.js', 'export.js'].includes(name)) {
+    if (['model.js', 'costs.js', 'tools.js', 'export.js', 'confidence.js'].includes(name)) {
       for (const m of src.matchAll(/\b(?:label|hint|group):\s*'((?:[^'\\]|\\.)*)'/g)) add(m[1]);
     }
     if (name === 'export.js') for (const m of src.matchAll(/\b(?:new|existing|remove):\s*'([^']+)'/g)) add(m[1]);

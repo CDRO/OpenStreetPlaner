@@ -325,7 +325,7 @@ func TestTransit(t *testing.T) {
 	if fmt.Sprint(ids) != "[1 2 4]" || r12.Colour != "#ff0000" || r12.Operator != "PostAuto" || r12.Stops[0].Name != "Dorf" {
 		t.Fatalf("Linie 12: %+v", r12)
 	}
-	if len(got.Routes[0].Stops) != 2 || got.Routes[0].Stops[0].ID != 3 {
+	if len(got.Routes[0].Stops) != 2 || got.Routes[0].Stops[0].ID != 3 || got.Routes[0].Source != "platform" || r12.Source != "stop" {
 		t.Fatalf("Linie 7 (Plattformen): %+v", got.Routes[0])
 	}
 	// Zweiter Aufruf aus dem Cache

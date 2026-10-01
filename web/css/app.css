@@ -344,3 +344,16 @@ body.present .banner { display: none !important; }
 .transit-list li { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .transit-list .transit-name { flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bus-badge { color: #fff; border-radius: 4px; padding: 0 6px; font-weight: 600; font-size: 12px; min-width: 26px; text-align: center; text-shadow: 0 0 2px rgba(0,0,0,0.5); }
+
+/* Zuversicht: drei Stufen mit Gründen */
+.conf-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #9e9e9e; vertical-align: middle; margin-right: 4px; }
+.conf-dot.conf-high, .conf.conf-high .conf-dot { background: var(--ok); }
+.conf-dot.conf-medium, .conf.conf-medium .conf-dot { background: var(--warn); }
+.conf-dot.conf-low, .conf.conf-low .conf-dot { background: var(--danger); }
+details.conf { margin: 4px 0 8px; font-size: 12px; }
+details.conf > summary { cursor: pointer; color: var(--muted); list-style: none; }
+details.conf > summary::-webkit-details-marker { display: none; }
+details.conf > summary::after { content: ' ▸'; font-size: 10px; }
+details.conf[open] > summary::after { content: ' ▾'; }
+.conf-reasons { margin: 4px 0 0 14px; padding: 0 0 0 14px; color: var(--muted); }
+.conf-reasons li { margin: 1px 0; }

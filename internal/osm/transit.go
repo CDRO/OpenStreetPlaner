@@ -36,6 +36,7 @@ type BusRoute struct {
 	To       string    `json:"to,omitempty"`
 	Operator string    `json:"operator,omitempty"`
 	Colour   string    `json:"colour,omitempty"`
+	Source   string    `json:"source"` // stop (Haltepositionen), platform (Plattformen) oder plain (ohne Rollen)
 	Stops    []BusStop `json:"stops"`
 }
 
@@ -164,12 +165,12 @@ func parseTransit(body []byte, b BBox) (*Transit, error) {
 				plain = append(plain, s)
 			}
 		}
-		seq := stops
+		seq, source := stops, "stop"
 		if len(seq) < 2 {
-			seq = platforms
+			seq, source = platforms, "platform"
 		}
 		if len(seq) < 2 {
-			seq = plain
+			seq, source = plain, "plain"
 		}
 		// Doppelte direkt nacheinander (Hin- und Rückweg in einer Relation, PTv1-Paare) zusammenfassen
 		clean := make([]BusStop, 0, len(seq))
@@ -185,7 +186,7 @@ func parseTransit(body []byte, b BBox) (*Transit, error) {
 		if len(clean) < 2 {
 			continue
 		}
-		r := BusRoute{ID: el.ID, Ref: truncate(el.Tags["ref"], 12), Name: truncate(el.Tags["name"], 80), From: truncate(el.Tags["from"], 60), To: truncate(el.Tags["to"], 60), Operator: truncate(el.Tags["operator"], 60), Stops: clean}
+		r := BusRoute{ID: el.ID, Ref: truncate(el.Tags["ref"], 12), Name: truncate(el.Tags["name"], 80), From: truncate(el.Tags["from"], 60), To: truncate(el.Tags["to"], 60), Operator: truncate(el.Tags["operator"], 60), Source: source, Stops: clean}
 		if hexColour.MatchString(el.Tags["colour"]) {
 			r.Colour = strings.ToLower(el.Tags["colour"])
 		}

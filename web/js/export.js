@@ -9,6 +9,7 @@ import { parcelLabel, validParcels } from './parcels.js';
 import { drawQR, encodeQR } from './qr.js';
 import { EARTH_RADIUS } from './geometry.js';
 import { locale, t, tn } from './i18n.js';
+import { confidenceText } from './confidence.js';
 import { haversine } from './geometry.js';
 
 /** Papierformate in Millimetern (Querformat). */
@@ -499,8 +500,10 @@ const JUNCTION_LABELS = [
 ];
 
 /** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
-export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null, busLines = null } = {}) {
+export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null, busLines = null, confidence = null } = {}) {
   const blocks = [];
+  // Zuversicht je Ergebnis (abschaltbar): eine kleine Zeile mit Stufe und Gründen
+  const conf = (c, gap = 6) => { if (confidence && c) blocks.push({ text: confidenceText(c), size: 8.5, gap }); };
   const date = new Date().toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
   blocks.push({ text: doc.name, size: 18, bold: true });
   blocks.push({ text: `${t('Planungsvorschlag')} · ${date}${link ? ` · ${link}` : ''}`, size: 9.5, gap: 10 });
@@ -530,7 +533,6 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
   points.forEach((p) => blocks.push({ text: p.type === 'roundabout' ? `${t('Kreisel')}${p.name ? ' ' + p.name : ''}, ${t('Radius')} ${p.radius} m` : `${kindLabel(JUNCTION_LABELS, p.kind)}${p.name ? ' ' + p.name : ''}`, gap: 2 }));
   const cur = routes && routes.current && !routes.current.error ? routes.current : null;
   const neu = routes && routes.proposed && !routes.proposed.error ? routes.proposed : null;
-  if (cur || neu) {
   // Betroffene Parzellen
   const withParcels = roads.map((r) => [r, validParcels(r)]).filter(([, pc]) => pc && pc.items.length);
   if (withParcels.length) {
@@ -540,13 +542,15 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
       blocks.push({ text: `${r.name || kindLabel(ROAD_KINDS_LABELS, r.kind)}: ${tn(pc.items.length, '{n} Parzelle', '{n} Parzellen')}, ${Math.round(total)} m`, bold: true, gap: 1 });
       pc.items.forEach((it) => blocks.push({ text: `  ${parcelLabel(it)}${it.egrid ? ` · ${it.egrid}` : ''} · ${Math.round(it.length)} m`, size: 9.5, gap: 1 }));
     });
+    conf(confidence && confidence.parcels, 2);
     blocks.push({ text: '', gap: 6 });
   }
   // Betroffene Gebäude
   if (exposure) {
     blocks.push({ text: t('Betroffene Gebäude (OpenStreetMap, Umkreis {r} m)', { r: exposure.radius }), size: 13, bold: true, gap: 4 });
     if (exposure.hasRoutes) blocks.push({ text: `${t('Route heute')}: ${exposure.current.count} · ${t('Route neu')}: ${exposure.proposed.count} · ${t('Differenz')}: ${exposure.delta > 0 ? '+' : ''}${exposure.delta}`, gap: 2 });
-    blocks.push({ text: `${t('Entlang neuer Strassen')}: ${exposure.roads.count}`, gap: 8 });
+    blocks.push({ text: `${t('Entlang neuer Strassen')}: ${exposure.roads.count}`, gap: 2 });
+    conf(confidence && confidence.buildings, 8);
   }
   // Kostenschätzung
   const est = estimateCosts(doc);
@@ -554,19 +558,23 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
     blocks.push({ text: t('Kostenschätzung'), size: 13, bold: true, gap: 4 });
     est.layers.forEach((l) => blocks.push({ text: `${l.name}${l.visible ? '' : ` (${t('ausgeblendet, nicht im Total')})`}: ${formatChf(l.amount)}`, gap: 2 }));
     blocks.push({ text: `${t('Total (sichtbare Ebenen)')}: ${formatChf(est.total)}`, bold: true, gap: 2 });
-    blocks.push({ text: t('Richtwerte: Strassen pro km (mit der Breite skaliert), Brücke und Tunnel als Zuschlag pro m, Knoten und Flächen pauschal; bestehende Strassen ohne Ansatz. Keine Kostenberechnung im Sinne der SIA, nur zur Einordnung.'), size: 9, gap: 10 });
+    blocks.push({ text: t('Richtwerte: Strassen pro km (mit der Breite skaliert), Brücke und Tunnel als Zuschlag pro m, Knoten und Flächen pauschal; bestehende Strassen ohne Ansatz. Keine Kostenberechnung im Sinne der SIA, nur zur Einordnung.'), size: 9, gap: 4 });
+    conf(confidence && confidence.costs, 10);
   }
   // Normen-Check
   if (checks && checks.length) {
     blocks.push({ text: t('Prüfung (Richtwerte VSS)'), size: 13, bold: true, gap: 4 });
     checks.forEach((c) => blocks.push({ text: `${c.severity === 'warn' ? t('Warnung') : t('Hinweis')}: ${c.text}`, gap: 2 }));
+    conf(confidence && confidence.checks, 2);
     blocks.push({ text: '', gap: 6 });
   }
+  if (cur || neu) {
     blocks.push({ text: t('Routenvergleich'), size: 13, bold: true, gap: 4 });
     const fmt = (r) => (r ? `${(r.dist / 1000).toFixed(2)} km, ${formatDuration(r.time)}${r.sd > 0 ? ` (P15–P85 ${formatDuration(r.p15)} – ${formatDuration(r.p85)})` : ''}` : t('keine Verbindung'));
     blocks.push({ text: `${t('Heute')}: ${fmt(cur)}`, gap: 2 });
     blocks.push({ text: `${t('Neu')}: ${fmt(neu)}`, gap: 2 });
     if (cur && neu) blocks.push({ text: `${t('Differenz')}: ${neu.dist - cur.dist >= 0 ? '+' : '−'}${(Math.abs(neu.dist - cur.dist) / 1000).toFixed(2)} km, ${neu.time - cur.time >= 0 ? '+' : '−'}${formatDuration(Math.abs(neu.time - cur.time))}` });
+    conf(confidence && confidence.route);
   }
   const tops = comments.filter((c) => !c.parentId);
   // Weitere Routenpaare
@@ -588,6 +596,7 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
         delta = ` · ${t('Differenz')} ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
       }
       blocks.push({ text: `${p.name || t('Paar')}: ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : '–'} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : '–'}${delta}`, gap: 2 });
+      conf(confidence && confidence.pairs && confidence.pairs[p.id], 3);
     });
     if (n) blocks.push({ text: t('Summe über {n} Verbindungen: {sum}, im Mittel {mean} je Fahrt', { n, sum: `${sum > 0 ? '+' : sum < 0 ? '−' : '±'}${formatDuration(Math.abs(sum))}`, mean: formatDuration(Math.abs(sum / n)) }), bold: true, gap: 8 });
   }
@@ -606,6 +615,7 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
         delta = ` · ${t('Differenz')} ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
       }
       blocks.push({ text: `${t('Linie')} ${l.name || '–'} (${tn(l.stops.length, '{n} Haltestelle', '{n} Haltestellen')}): ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : t('keine Verbindung')} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : t('keine Verbindung')}${delta}`, gap: 2 });
+      conf(confidence && confidence.busLines && confidence.busLines[l.id], 3);
     });
     blocks.push({ text: '', gap: 6 });
   }
@@ -615,6 +625,7 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
     blocks.push({ text: t('Erreichbarkeit ab Ursprung ({min} min)', { min: iso.minutes.join(' / ') }), size: 13, bold: true, gap: 4 });
     if (isochrone.mode === 'diff') blocks.push({ text: t('Netz innerhalb {min} min: neu erreichbar {gained} km, nicht mehr erreichbar {lost} km, in beiden Fällen {both} km', { min: iso.minutes[iso.minutes.length - 1], gained: isochrone.stats.gainedKm, lost: isochrone.stats.lostKm, both: isochrone.stats.bothKm }), gap: 8 });
     else blocks.push({ text: `${isochrone.mode === 'current' ? t('Heute') : t('Mit Entwurf')}: ${iso.minutes.map((m, k) => `${m} min: ${isochrone.stats.km[k]} km`).join(' · ')} ${t('erreichbares Strassennetz')}`, gap: 8 });
+    conf(confidence && confidence.isochrone, 8);
   }
   if (tops.length) {
     blocks.push({ text: `${t('Kommentare')} (${tops.length})`, size: 13, bold: true, gap: 4 });

@@ -150,6 +150,17 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   const count = Number(/\/Count (\d+)/.exec(pdf)[1]);
   assert.ok(count >= 2, `Seiten: ${count}`);
   assert.ok(pdf.includes('/DCTDecode') && pdf.includes('Massnahmen'), 'Kartenseite und Textseite');
+  assert.ok(await page.isChecked('#export-confidence'), 'Zuversicht standardmässig im Bericht');
+  assert.ok(/Zuversicht (hoch|mittel|tief) \\\(/.test(pdf), 'Zuversicht der Kostenschätzung im Bericht (Strassen ohne Breite -> tief, Standardwerte -> Band)');
+  // Abschalten: Einstellung bleibt, Bericht ohne Zuversicht
+  await page.uncheck('#export-confidence');
+  await h.settle(100);
+  assert.equal(await page.evaluate(() => window.stadtplaner.settings.reportConfidence), false);
+  const [download2] = await Promise.all([page.waitForEvent('download'), page.click('#export-pdf')]);
+  const pdf2 = fs.readFileSync(await download2.path()).toString('latin1');
+  assert.ok(pdf2.includes('Massnahmen') && !pdf2.includes('Zuversicht'), 'ohne Zuversicht');
+  await page.check('#export-confidence');
+  await h.settle(100);
   await page.click('.modal [data-close]');
   console.log('✓ Bericht-Export');
 

@@ -30,8 +30,8 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
           { id: 503, name: 'Schule', at: [47.05, 8.3125] },
         ],
         routes: [
-          { id: 9001, ref: '12', name: 'Bus 12: Dorfplatz – Kirche', colour: '#00aa00', operator: 'Ortsbus', stops: [{ id: 501, name: 'Dorfplatz', at: [47.05, 8.32] }, { id: 503, name: 'Schule', at: [47.05, 8.3125] }, { id: 502, name: 'Kirche', at: [47.04, 8.305] }] },
-          { id: 9002, ref: '7', name: 'Bus 7', stops: [{ id: 502, name: 'Kirche', at: [47.04, 8.305] }, { id: 501, name: 'Dorfplatz', at: [47.05, 8.32] }] },
+          { id: 9001, ref: '12', name: 'Bus 12: Dorfplatz – Kirche', colour: '#00aa00', operator: 'Ortsbus', source: 'stop', stops: [{ id: 501, name: 'Dorfplatz', at: [47.05, 8.32] }, { id: 503, name: 'Schule', at: [47.05, 8.3125] }, { id: 502, name: 'Kirche', at: [47.04, 8.305] }] },
+          { id: 9002, ref: '7', name: 'Bus 7', source: 'platform', stops: [{ id: 502, name: 'Kirche', at: [47.04, 8.305] }, { id: 501, name: 'Dorfplatz', at: [47.05, 8.32] }] },
         ],
       } : { stops: [], routes: [] }),
     });
@@ -85,6 +85,14 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok(res.proposed.time < res.current.time && res.proposed.dist < res.current.dist * 0.8, `Bus nutzt die Busschleuse: ${JSON.stringify({ c: res.current.time, n: res.proposed.time })}`);
   panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
   assert.ok(panel.includes('Fahrzeit') && panel.includes('inkl. Halte') && panel.includes('−'), panel);
+  // Zuversicht der Buslinie: Umweg mit Tempo 20 (maxspeed gesetzt), Schleuse mit Tempo 50, Tempolimit-Modell, Standard-Haltezeit
+  // Solange das Netz um die Haltestellen nachlädt, steht „tief“ (Netz unvollständig); danach „mittel“
+  await page.waitForFunction(() => { const d = document.querySelector('.bus-line details.conf'); return d && d.className.includes('conf-medium'); }, null, { timeout: 10000 });
+  const busConf = page.locator('.bus-line details.conf').first();
+  assert.ok((await busConf.innerText()).includes('Zuversicht mittel'), await busConf.innerText());
+  await busConf.locator('summary').click();
+  const busReasons = (await busConf.locator('.conf-reasons').innerText()).replace(/\s+/g, ' ');
+  assert.ok(busReasons.includes('Haltezeit je Zwischenhalt als Standard (20 s)') && busReasons.includes('Tempolimit-Modell'), busReasons);
   // Bestehende Haltestelle erneut anklicken: hängt sie an (nicht die letzte)
   await page.mouse.click(a.x, a.y);
   await h.settle(300);
@@ -230,6 +238,10 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
   assert.ok(panel.includes('3 Haltestellen und 2 Linien aus OSM geladen'), panel);
   assert.ok(panel.indexOf('Bus 7') < panel.indexOf('Bus 12'), '7 vor 12 (natürliche Sortierung)');
+  // Zuversicht je OSM-Linie: Haltepositionen -> hoch, Plattformen -> mittel (Tooltip nennt den Grund)
+  assert.equal(await page.locator('.transit-list .conf-dot.conf-high').count(), 1);
+  assert.equal(await page.locator('.transit-list .conf-dot.conf-medium').count(), 1);
+  assert.ok((await page.locator('.transit-list .conf-dot.conf-medium').getAttribute('title')).includes('Plattformen'));
   // OSM-Haltestelle wird gezeichnet (blauer Ring)
   const stopPx = await page.evaluate(() => window.stadtplaner.map.project([47.05, 8.3125]));
   const ring = await page.evaluate(({ x, y }) => {

@@ -14,8 +14,22 @@ import { segmentGrades } from './speedmodel.js';
 import { TOOLS } from './tools.js';
 import { formatDuration } from './routing.js';
 import { LANGUAGES, getLanguage, locale, t, tn } from './i18n.js';
+import { confidenceLabel, confidenceText, staticConfidence, transitRouteConfidence } from './confidence.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** Zuversicht als aufklappbare Zeile: Stufe, Band und die Gründe. */
+function confidenceBlock(conf) {
+  if (!conf) return '';
+  const head = `${confidenceLabel(conf.level)}${conf.band ? ` (±${conf.band} %)` : ''}`;
+  return `<details class="conf conf-${conf.level}"><summary><span class="conf-dot"></span>${esc(head)}</summary><ul class="conf-reasons">${(conf.reasons || []).map((r) => `<li>${esc(r)}</li>`).join('')}</ul></details>`;
+}
+
+/** Zuversicht als Punkt mit Tooltip (für Tabellenzellen und Listen). */
+function confidenceDot(conf) {
+  if (!conf) return '';
+  return `<span class="conf-dot conf-${conf.level}" title="${esc(confidenceText(conf))}" aria-label="${esc(confidenceLabel(conf.level))}"></span>`;
+}
 const fmtDate = (iso) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
@@ -58,7 +72,7 @@ function pairsSection(doc, actions, tools, geometry) {
       <td><input type="text" class="pair-name" data-id="${esc(p.id)}" value="${esc(p.name)}" ${dis}> ${state}</td>
       <td class="num">${cur ? `${fmtKm(cur.dist)}<br>${formatDuration(cur.time)}` : '–'}</td>
       <td class="num">${neu ? `${fmtKm(neu.dist)}<br>${formatDuration(neu.time)}` : '–'}</td>
-      <td class="num">${delta}</td>
+      <td class="num">${delta} ${confidenceDot(actions.confidence('pair', p.id))}</td>
       <td class="pair-actions"><button type="button" class="icon-btn pair-set" data-id="${esc(p.id)}" title="${t('Start und Ziel auf der Karte setzen')}" ${dis}>◎</button><button type="button" class="icon-btn pair-swap" data-id="${esc(p.id)}" title="A ↔ B" ${dis || !p.from || !p.to ? 'disabled' : ''}>⇄</button><button type="button" class="icon-btn pair-del" data-id="${esc(p.id)}" title="${t('Löschen')}" ${dis}>✕</button></td>
     </tr>`;
   }).join('');
@@ -66,7 +80,7 @@ function pairsSection(doc, actions, tools, geometry) {
   return `
     <h4>${t('Weitere Routenpaare')}</h4>
     <p class="muted small">${t('Feste Verbindungen wie Schule, Bahnhof oder Nachbardorf: heute gegen neu{typ}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte.', { typ: geometry ? t(' (typische Zeit)') : '' })}</p>
-    ${pairs.length ? `<table class="route-table pairs"><thead><tr><th>#</th><th>${t('Name')}</th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th><th></th></tr></thead><tbody>${rows}${total}</tbody></table>` : ''}
+    ${pairs.length ? `<table class="route-table pairs"><thead><tr><th>#</th><th>${t('Name')}</th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th><th></th></tr></thead><tbody>${rows}${total}</tbody></table>${confidenceBlock(actions.confidence('pairs'))}` : ''}
     <div class="btn-row"><button type="button" id="pair-add" class="btn small" ${dis}>${t('+ Paar hinzufügen')}</button>${capturing ? `<span class="muted small">${t('Start und Ziel auf der Karte anklicken (Esc bricht ab).')}</span>` : ''}</div>`;
 }
 
@@ -106,7 +120,7 @@ function busSection(doc, actions, tools) {
         ${l.stops.length >= 2 ? `<table class="route-table"><thead><tr><th></th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th></tr></thead><tbody>
           <tr><td>${t('Fahrzeit')} <span class="muted small">(${t('inkl. Halte')})</span></td><td class="num">${cur ? formatDuration(cur.time) : '–'}</td><td class="num">${neu ? formatDuration(neu.time) : '–'}</td><td class="num">${delta}</td></tr>
           <tr><td>${t('Distanz')}</td><td class="num">${cur ? fmtKm(cur.dist) : '–'}</td><td class="num">${neu ? fmtKm(neu.dist) : '–'}</td><td></td></tr>
-        </tbody></table>${err ? `<p class="muted small">${esc(t(err))}</p>` : ''}` : ''}
+        </tbody></table>${err ? `<p class="muted small">${esc(t(err))}</p>` : ''}${confidenceBlock(actions.confidence('bus', l.id))}` : ''}
       </div>`;
   }).join('');
   return `
@@ -129,7 +143,7 @@ function transitSection(doc, actions) {
     const action = adopted.has(r.id)
       ? `<span class="muted small">${t('übernommen')}</span>`
       : `<button type="button" class="btn small transit-adopt" data-id="${r.id}" ${dis}>${t('Übernehmen')}</button>`;
-    return `<li><span class="bus-badge" style="background:${esc(r.colour || '#3d5afe')}">${esc(r.ref || '–')}</span><span class="transit-name" title="${esc(r.operator || '')}">${esc(title)}</span><span class="muted small">${tn(r.stops.length, '{n} Haltestelle', '{n} Haltestellen')}</span>${action}</li>`;
+    return `<li><span class="bus-badge" style="background:${esc(r.colour || '#3d5afe')}">${esc(r.ref || '–')}</span>${confidenceDot(transitRouteConfidence(r))}<span class="transit-name" title="${esc(r.operator || '')}">${esc(title)}</span><span class="muted small">${tn(r.stops.length, '{n} Haltestelle', '{n} Haltestellen')}</span>${action}</li>`;
   }).join('');
   const more = routes.length > shown.length ? `<p class="muted small">${t('… und {n} weitere Linien; Ansicht verkleinern.', { n: routes.length - shown.length })}</p>` : '';
   return `
@@ -162,6 +176,7 @@ function isochroneSection(doc, actions, tools) {
     stats = `<table class="route-table"><thead><tr><th>${t('bis')}</th><th class="num">${t('erreichbares Netz')}</th></tr></thead><tbody>
       ${res.minutes.map((m, i) => `<tr><td><span class="dot" style="background:${ISO_COLORS[Math.min(i, ISO_COLORS.length - 1)]}"></span>${m} min</td><td class="num">${res.stats.km[i]} km</td></tr>`).join('')}</tbody></table>`;
   }
+  if (res && !res.error) stats += confidenceBlock(actions.confidence('isochrone'));
   return `
     <h4>${t('Erreichbarkeit (Isochronen)')}</h4>
     <p class="muted small">${t('Welches Strassennetz ist ab einem Punkt in 5, 10 oder 15 Minuten erreichbar – heute, mit dem Entwurf oder als Differenz (grün: nur neu, rot: nur heute).')}</p>
@@ -188,6 +203,7 @@ function parcelsBlock(road, editable) {
       ? `<ul class="parcel-list">${valid.items.map((it) => `<li><strong>${esc(parcelLabel(it))}</strong> <span class="muted small">${esc(it.egrid)}</span><span class="num">${it.length.toFixed(0)} m</span></li>`).join('')}</ul>
          <p class="muted small">${tn(valid.items.length, '{n} Parzelle', '{n} Parzellen')}, ${t('{m} m Strasse auf Privat- oder Gemeindeland (Liegenschaften der amtlichen Vermessung).', { m: total.toFixed(0) })}</p>`
       : `<p class="muted small">${t('Keine Parzellen berührt (oder ausserhalb der Schweiz).')}</p>`;
+    if (valid.items.length) body += confidenceBlock(staticConfidence('parcels'));
   } else if (stale) {
     body = `<p class="muted small">${t('Die Strasse wurde seit der Abfrage verändert; die Parzellenliste ist veraltet.')}</p>`;
   } else {
@@ -550,6 +566,7 @@ export class UI {
     el.innerHTML = `
       <h3>${t('Kostenschätzung')}</h3>
       <p class="muted small">${t('Grobe Richtwerte für Schweizer Verhältnisse: Strassen pro Kilometer (mit der Breite skaliert), Brücken und Tunnel als Zuschlag pro Meter, Knoten und Flächen pauschal. Bestehende Strassen werden nicht gerechnet; ein Umbau wird als „Neu“ markiert. Die Summe zählt nur sichtbare Ebenen, Varianten also per Ein-/Ausblenden.')}</p>
+      ${confidenceBlock(actions.confidence('costs'))}
       <table class="route-table">
         <thead><tr><th>${t('Ebene')}</th><th class="num">${t('Kosten')}</th></tr></thead>
         <tbody>
@@ -570,6 +587,7 @@ export class UI {
       <h3>${t('Normen-Check')}</h3>
       <p class="muted small">${t('Richtwerte nach VSS: Kurvenradius zum Tempo, Steigung aus dem Höhenprofil, Kreiselgrösse, Fahrstreifenbreite, Tempo in Zonen, nicht angeschlossene Enden.')} ${checks.length ? `${tn(warns, '{n} Warnung', '{n} Warnungen')}, ${tn(checks.length - warns, '{n} Hinweis', '{n} Hinweise')}.` : t('Keine Auffälligkeiten.')}</p>
       ${checks.length ? `<ul class="check-list">${checks.map((c) => `<li class="${c.severity}"><button type="button" class="linkish check-row" data-id="${esc(c.id)}">${esc(c.text)}</button></li>`).join('')}</ul>` : ''}
+      ${confidenceBlock(staticConfidence('checks'))}
       <h3>${t('Betroffene Gebäude')}</h3>
       <p class="muted small">${t('Gebäude aus OpenStreetMap im Umkreis der heutigen Route, der neuen Route und aller neuen Strassen (sichtbare Ebenen). Lärm- und Sicherheitsargument in einer Zahl.')}</p>
       <div class="btn-row">
@@ -588,7 +606,8 @@ export class UI {
           <tr><td>${t('Entlang neuer Strassen')}</td><td class="num">${exp.roads.count}</td></tr>
         </tbody>
       </table>
-      <label class="check"><input type="checkbox" id="exp-show" ${actions.showExposure() ? 'checked' : ''}> ${t('Auf der Karte hervorheben')} <span class="muted small">${t('(rot: neu betroffen, grün: entlastet, orange: beides)')}</span></label>` : ''}`;
+      <label class="check"><input type="checkbox" id="exp-show" ${actions.showExposure() ? 'checked' : ''}> ${t('Auf der Karte hervorheben')} <span class="muted small">${t('(rot: neu betroffen, grün: entlastet, orange: beides)')}</span></label>
+      ${confidenceBlock(staticConfidence('buildings'))}` : ''}`;
     el.querySelectorAll('details').forEach((d, i) => { if (openState[i]) d.open = true; });
     el.querySelectorAll('.cost-row').forEach((b) => {
       b.onclick = () => {
@@ -1394,6 +1413,7 @@ export class UI {
         <label class="field">${t('Auflösung')}<select id="export-dpi">${DPI.map((d) => `<option value="${d}" ${d === 150 ? 'selected' : ''}>${d} dpi${d === 96 ? ` (${t('Bildschirm')})` : d === 300 ? ` (${t('Druck')})` : ''}</option>`).join('')}</select></label>
       </div>
       <label class="check"><input type="checkbox" id="export-report"> ${t('Bericht anhängen (nur PDF): Massnahmenliste, Routenvergleich, Kommentare und Link auf weiteren Seiten')}</label>
+      <label class="check"><input type="checkbox" id="export-confidence" ${this.ctx.settings.reportConfidence !== false ? 'checked' : ''}> ${t('Zuversicht im Bericht ausweisen (Stufe und Gründe je Ergebnis)')}</label>
       <p class="muted small" id="export-status"></p>
       <div class="btn-row">
         <button type="button" id="export-png" class="btn primary">${t('PNG herunterladen')}</button>
@@ -1407,7 +1427,9 @@ export class UI {
       dpi: Number(this.$('export-dpi').value),
       scale: Number(this.$('export-scale').value),
       report: this.$('export-report').checked,
+      confidence: this.$('export-confidence').checked,
     });
+    this.$('export-confidence').onchange = (e) => this.ctx.actions.updateSettings({ reportConfidence: e.target.checked });
     const syncScale = () => { this.$('export-scale').disabled = this.$('export-mode').value !== 'scale'; };
     this.$('export-mode').onchange = syncScale;
     syncScale();
@@ -1594,6 +1616,7 @@ export class UI {
             <tr><td>${t('Fahrzeit')}${geometry ? ` <span class="muted small">${t('(typisch, P15–P85)')}</span>` : ''}</td><td>${cur ? formatDuration(cur.time) + band(cur) : '–'}</td><td>${neu ? formatDuration(neu.time) + band(neu) : '–'}</td><td>${diff(cur && cur.time, neu && neu.time, formatDuration)}</td></tr>
           </tbody>
         </table>
+        ${confidenceBlock(actions.confidence('route'))}
         ${routes.current && routes.current.error ? `<p class="muted small">${t('Heute')}: ${esc(t(routes.current.error))}</p>` : ''}
         ${routes.proposed && routes.proposed.error ? `<p class="muted small">${t('Neu')}: ${esc(t(routes.proposed.error))}</p>` : ''}`;
     }

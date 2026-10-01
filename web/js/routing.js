@@ -162,7 +162,7 @@ export class Graph {
    * Verbindet a und b; dir 0 = beide Richtungen, 1 = nur a->b, -1 = nur b->a.
    * geo = { radiusA, radiusB, grade } fliesst nur im Geometriemodell ein.
    */
-  link(a, b, speedKmh, dir = 0, geo = null) {
+  link(a, b, speedKmh, dir = 0, geo = null, meta = null) {
     if (this.speedCap) {
       const cap = this.speedCap([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
       if (cap !== null) speedKmh = Math.min(speedKmh, cap);
@@ -182,27 +182,32 @@ export class Graph {
     } else {
       time = dist / (speedKmh / 3.6);
     }
-    if (dir >= 0) this.nodes.get(ka).edges.push({ to: kb, dist, time, variance });
-    if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time, variance });
+    // Herkunft für die Zuversicht: assumed = Tempo geschätzt (kein maxspeed-Tag / kein Limit gesetzt),
+    // draft = gezeichnete Strasse, noProfile = Steigung unbekannt (nur im Geometriemodell relevant)
+    const assumed = !!(meta && meta.assumed);
+    const draft = !!(meta && meta.draft);
+    const noProfile = !!(meta && meta.noProfile);
+    if (dir >= 0) this.nodes.get(ka).edges.push({ to: kb, dist, time, variance, assumed, draft, noProfile });
+    if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time, variance, assumed, draft, noProfile });
     this.degree.set(ka, (this.degree.get(ka) || 0) + 1);
     this.degree.set(kb, (this.degree.get(kb) || 0) + 1);
     this.segments.push({ a, b, ka, kb, speed: speedKmh, dir });
   }
 
   /** Linienzug mit einer Geschwindigkeit; im Geometriemodell mit Kurvenradien. */
-  addPolyline(points, speedKmh, dir = 0, grades = null) {
-    this.addPolylineSpeeds(points, points.slice(1).map(() => speedKmh), dir, grades);
+  addPolyline(points, speedKmh, dir = 0, grades = null, meta = null) {
+    this.addPolylineSpeeds(points, points.slice(1).map(() => speedKmh), dir, grades, meta);
   }
 
-  /** Linienzug mit Geschwindigkeit je Abschnitt (speeds.length = points.length - 1). */
-  addPolylineSpeeds(points, speeds, dir = 0, grades = null) {
+  /** Linienzug mit Geschwindigkeit je Abschnitt (speeds.length = points.length - 1); meta als Objekt oder je Abschnitt. */
+  addPolylineSpeeds(points, speeds, dir = 0, grades = null, meta = null) {
     const radii = this.model === 'geometry' ? polylineRadii(points) : null;
     for (let i = 1; i < points.length; i++) {
       const geo = radii ? { radiusA: radii[i - 1], radiusB: radii[i], grade: grades ? grades[i - 1] : 0 } : null;
       // Steigung wirkt in Fahrtrichtung; bei beiden Richtungen nehmen wir den Betrag konservativ als bergauf.
       if (geo && dir === 0 && geo.grade) geo.grade = Math.abs(geo.grade);
       if (geo && dir === -1 && geo.grade) geo.grade = -geo.grade;
-      this.link(points[i - 1], points[i], speeds[i - 1], dir, geo);
+      this.link(points[i - 1], points[i], speeds[i - 1], dir, geo, Array.isArray(meta) ? meta[i - 1] : meta);
     }
   }
 
@@ -270,7 +275,7 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
   for (const w of osmWays) {
     if (replaced.has(w.id) || !isDrivable(w.tags, vehicle)) continue;
     const pts = draftNodes.length ? insertPointsOnLine(w.geometry, draftNodes) : w.geometry;
-    g.addPolyline(pts, waySpeed(w.tags), wayDirection(w.tags));
+    g.addPolyline(pts, waySpeed(w.tags), wayDirection(w.tags), null, { assumed: parseMaxspeed(w.tags.maxspeed) === null, noProfile: geometry });
   }
   if (mode === 'proposed' && doc) {
     const roundabouts = visible.filter((f) => f.type === 'roundabout');
@@ -289,7 +294,8 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
         for (let i = 1; i < r.nodes.length; i++) dists.push(dists[i - 1] + haversine(r.nodes[i - 1], r.nodes[i]));
         grades = segmentGrades(dists, profile.points);
       }
-      g.addPolylineSpeeds(r.nodes, speeds, r.oneway ? 1 : 0, grades);
+      const metas = r.segments.map((seg) => ({ draft: true, assumed: !(seg && seg.maxspeed) && !r.maxspeed, noProfile: geometry && !profile }));
+      g.addPolylineSpeeds(r.nodes, speeds, r.oneway ? 1 : 0, grades, metas);
     }
     for (const k of roundabouts) {
       const c = project(k.center);
@@ -390,7 +396,7 @@ class MinHeap {
  */
 export function search(g, fromKey, { toKey = null, maxCost = Infinity } = {}) {
   const stateKey = (node, prev) => (prev ? `${node}|${prev}` : node);
-  const best = new Map([[fromKey, { node: fromKey, prev: null, cost: 0, dist: 0, variance: 0, from: null }]]);
+  const best = new Map([[fromKey, { node: fromKey, prev: null, cost: 0, dist: 0, variance: 0, from: null, assumedDist: 0, draftDist: 0, noProfileDist: 0 }]]);
   const nodeCost = new Map([[fromKey, 0]]);
   const heap = new MinHeap();
   heap.push({ state: fromKey, node: fromKey, prev: null, cost: 0 });
@@ -421,7 +427,10 @@ export function search(g, fromKey, { toKey = null, maxCost = Infinity } = {}) {
       const next = stateKey(e.to, key);
       const cur = best.get(next);
       if (!cur || c < cur.cost) {
-        best.set(next, { node: e.to, prev: key, cost: c, dist: here.dist + e.dist, variance: here.variance + penVar + turn.variance + (e.variance || 0), from: state });
+        best.set(next, {
+          node: e.to, prev: key, cost: c, dist: here.dist + e.dist, variance: here.variance + penVar + turn.variance + (e.variance || 0), from: state,
+          assumedDist: here.assumedDist + (e.assumed ? e.dist : 0), draftDist: here.draftDist + (e.draft ? e.dist : 0), noProfileDist: here.noProfileDist + (e.noProfile ? e.dist : 0),
+        });
         heap.push({ state: next, node: e.to, prev: key, cost: c });
       }
     }
@@ -439,7 +448,7 @@ export function shortestPath(g, fromKey, toKey) {
   for (let st = endState; st; st = best.get(st).from) path.push(g.nodes.get(best.get(st).node).latlng);
   path.reverse();
   const band = summarize(end.cost, end.variance);
-  return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85 };
+  return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85, quality: { dist: end.dist, assumedDist: end.assumedDist, draftDist: end.draftDist, noProfileDist: end.noProfileDist, model: g.model } };
 }
 
 /** Fahrzeit (s) zu jedem erreichbaren Knoten bis maxSeconds: Map Knoten-Key -> Sekunden. */
@@ -460,7 +469,7 @@ export function isochronePieces(g, times, bands) {
   const pieces = [];
   const maxT = bands[bands.length - 1];
   const seen = new Set();
-  const emit = (a, b, t0, tEnd, T, dist) => {
+  const emit = (a, b, t0, tEnd, T, dist, assumed = false) => {
     // Stücke von a (Zeit t0) Richtung b bis zur Zeit tEnd (höchstens t0 + T)
     let lo = t0;
     const stop = Math.min(tEnd, t0 + T, maxT);
@@ -470,6 +479,7 @@ export function isochronePieces(g, times, bands) {
       const f0 = (lo - t0) / T;
       const f1 = (hi - t0) / T;
       pieces.push({
+        assumed: !!assumed,
         a: [a[0] + (b[0] - a[0]) * f0, a[1] + (b[1] - a[1]) * f0],
         b: [a[0] + (b[0] - a[0]) * f1, a[1] + (b[1] - a[1]) * f1],
         band: i,
@@ -491,8 +501,8 @@ export function isochronePieces(g, times, bands) {
       const Tback = back && back.time > 0 ? back.time : e.time;
       // Treffpunkt in der Zeit, wenn beide Enden erreicht sind
       const tm = Number.isFinite(tv) ? (tu + tv + Math.min(e.time, Tback)) / 2 : Infinity;
-      emit(node.latlng, other.latlng, tu, tm, e.time, e.dist);
-      if (Number.isFinite(tv) && back) emit(other.latlng, node.latlng, tv, tm, Tback, e.dist);
+      emit(node.latlng, other.latlng, tu, tm, e.time, e.dist, e.assumed);
+      if (Number.isFinite(tv) && back) emit(other.latlng, node.latlng, tv, tm, Tback, e.dist, e.assumed);
     }
   }
   return pieces;
@@ -519,9 +529,15 @@ export function computeIsochrone({ osmWays, doc, from, minutes = [5, 10, 15], mo
     if (!r) return { error: 'Der Ursprung liegt nicht in der Nähe einer befahrbaren Strasse.' };
     const pieces = isochronePieces(r.g, r.times, bands);
     const km = bands.map(() => 0);
-    for (const p of pieces) km[p.band] += p.dist / 1000;
+    let assumedDist = 0;
+    let dist = 0;
+    for (const p of pieces) {
+      km[p.band] += p.dist / 1000;
+      dist += p.dist;
+      if (p.assumed) assumedDist += p.dist;
+    }
     for (let i = 1; i < km.length; i++) km[i] += km[i - 1];
-    return { mode, minutes, pieces, stats: { km: km.map((v) => Math.round(v * 10) / 10) } };
+    return { mode, minutes, pieces, stats: { km: km.map((v) => Math.round(v * 10) / 10) }, quality: { dist, assumedDist, draftDist: 0, noProfileDist: 0, model } };
   }
   const cur = run('current');
   const neu = run('proposed');
@@ -529,6 +545,7 @@ export function computeIsochrone({ osmWays, doc, from, minutes = [5, 10, 15], mo
   // Vergleich auf den Kanten des Netzes mit Entwurf (es enthält auch die heutigen Strassen ausser Rückbau)
   const pieces = [];
   const stats = { gainedKm: 0, lostKm: 0, bothKm: 0 };
+  const quality = { dist: 0, assumedDist: 0, draftDist: 0, noProfileDist: 0, model };
   const seen = new Set();
   // Eine Kante gilt in einem Netz als erreicht, wenn sie dort existiert und eines ihrer Enden erreicht ist
   const edgeReached = (g, times, u, v) => {
@@ -546,6 +563,10 @@ export function computeIsochrone({ osmWays, doc, from, minutes = [5, 10, 15], mo
         seen.add(id);
         const status = edgeReached(otherG, other, key, e.to) ? 'both' : statusIfOnly;
         pieces.push({ a: node.latlng, b: g.nodes.get(e.to).latlng, status, dist: e.dist });
+        quality.dist += e.dist;
+        if (e.assumed) quality.assumedDist += e.dist;
+        if (e.draft) quality.draftDist += e.dist;
+        if (e.noProfile) quality.noProfileDist += e.dist;
         if (status === 'both') stats.bothKm += e.dist / 1000;
         else if (status === 'gained') stats.gainedKm += e.dist / 1000;
         else stats.lostKm += e.dist / 1000;
@@ -555,7 +576,7 @@ export function computeIsochrone({ osmWays, doc, from, minutes = [5, 10, 15], mo
   classify(neu.g, neu.times, cur.g, cur.times, 'gained');
   classify(cur.g, cur.times, neu.g, neu.times, 'lost');
   for (const k of Object.keys(stats)) stats[k] = Math.round(stats[k] * 10) / 10;
-  return { mode, minutes, pieces, stats };
+  return { mode, minutes, pieces, stats, quality };
 }
 
 /** Baut beide Netze einmal; Routen und Isochronen teilen sie sich. */
@@ -592,6 +613,7 @@ export function computeBusLines({ osmWays, doc, model = 'limit', graphs = null }
       let dist = 0;
       const path = [];
       const legs = [];
+      const quality = { dist: 0, assumedDist: 0, draftDist: 0, noProfileDist: 0, model: g[mode].model };
       let error = null;
       for (let i = 1; i < stops.length; i++) {
         const r = routeOnGraph(g[mode], stops[i - 1], stops[i]);
@@ -603,10 +625,11 @@ export function computeBusLines({ osmWays, doc, model = 'limit', graphs = null }
         time += r.time;
         dist += r.dist;
         legs.push({ time: r.time, dist: r.dist });
+        if (r.quality) for (const k of ['dist', 'assumedDist', 'draftDist', 'noProfileDist']) quality[k] += r.quality[k];
         for (const p of r.path) if (!path.length || path[path.length - 1][0] !== p[0] || path[path.length - 1][1] !== p[1]) path.push(p);
       }
       time += dwell * Math.max(0, stops.length - 2);
-      entry[mode] = error ? { error, time, dist, path, legs } : { time, dist, path, legs };
+      entry[mode] = error ? { error, time, dist, path, legs, quality } : { time, dist, path, legs, quality };
     }
     out.push(entry);
   }

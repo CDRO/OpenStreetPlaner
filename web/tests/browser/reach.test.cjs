@@ -55,6 +55,26 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await page.press('.pair-name', 'Enter');
   await h.settle(200);
   assert.equal((await h.doc()).routePairs[0].name, 'Schule');
+  // Zuversicht: OSM-Ways mit maxspeed, Entwurf mit Tempo 80, aber Tempolimit-Modell -> mittel mit Gründen
+  await page.waitForSelector('#route-panel details.conf');
+  const conf = page.locator('#route-panel details.conf').first();
+  assert.ok((await conf.innerText()).includes('Zuversicht mittel'), await conf.innerText());
+  assert.ok(await conf.locator('.conf-dot').count() === 1 && (await conf.getAttribute('class')).includes('conf-medium'));
+  await conf.locator('summary').click();
+  const reasons = (await conf.locator('.conf-reasons').innerText()).replace(/\s+/g, ' ');
+  assert.ok(reasons.includes('Tempolimit-Modell') && reasons.includes('Ampeln und Vortritt') && !reasons.includes('geschätztem Tempo'), reasons);
+  assert.equal(await page.locator('#route-panel .pairs .conf-dot.conf-medium').count(), 1, 'Punkt je Paar');
+  // Geometriemodell ohne Höhenprofil: Steigung unbekannt -> bleibt mittel, anderer Grund
+  await page.check('#route-model');
+  await page.waitForFunction(() => { const r = window.stadtplaner.actions.pairResults(); return r.length === 1 && r[0].proposed && r[0].proposed.quality && r[0].proposed.quality.model === 'geometry'; }, null, { timeout: 10000 });
+  await h.settle(200);
+  const conf2 = (await page.locator('#route-panel details.conf').first().innerText()).replace(/\s+/g, ' ');
+  assert.ok(conf2.includes('Zuversicht mittel'), conf2);
+  await page.locator('#route-panel details.conf').first().locator('summary').click();
+  const reasons2 = (await page.locator('#route-panel details.conf').first().locator('.conf-reasons').innerText()).replace(/\s+/g, ' ');
+  assert.ok(reasons2.includes('kein Höhenprofil') && !reasons2.includes('Tempolimit-Modell'), reasons2);
+  await page.uncheck('#route-model');
+  await h.settle(300);
   console.log('✓ Routenpaare');
 
   // --- Isochrone ----------------------------------------------------------------------
@@ -86,6 +106,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
     return [d[0], d[1], d[2]];
   }, mid);
   assert.ok(px[1] > px[0] + 30 && px[1] > px[2] + 30, `grün: rgb(${px})`);
+  assert.ok((await page.locator('#route-panel details.conf').last().innerText()).includes('Zuversicht'), 'Zuversicht auch bei der Erreichbarkeit');
   await page.click('#iso-clear');
   await h.settle(200);
   assert.equal((await h.doc()).isochrone, null);

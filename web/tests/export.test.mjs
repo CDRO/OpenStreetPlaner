@@ -118,6 +118,24 @@ test('reportBlocks fasst Massnahmen, Route und Kommentare zusammen', () => {
   const bus = reportBlocks(doc, { busLines: [{ id: 'b1', stops: 2, current: { dist: 1800, time: 240 }, proposed: { dist: 1100, time: 150 } }] }).map((b) => b.text).join('\n');
   assert.ok(bus.includes('Nur Bus'), bus);
   assert.ok(bus.includes('Buslinien') && bus.includes('Linie 12 (2 Haltestellen): heute 1.80 km, 4:00 min · neu 1.10 km, 2:30 min · Differenz −1:30 min'), bus);
+  assert.ok(!bus.includes('Zuversicht'), 'ohne Option keine Zuversicht');
+  // Zuversicht je Ergebnis, abschaltbar
+  const conf = { route: { level: 'medium', reasons: ['Tempolimit-Modell'] }, busLines: { b1: { level: 'low', reasons: ['Netz unvollständig'] } }, costs: { level: 'medium', band: 40, reasons: ['Standardwerte'] }, checks: { level: 'medium', reasons: ['VSS'] } };
+  const withConf = reportBlocks(doc, {
+    routes: { current: { dist: 1500, time: 120, sd: 0 }, proposed: { dist: 1200, time: 100, sd: 0 } },
+    busLines: [{ id: 'b1', stops: 2, current: { dist: 1800, time: 240 }, proposed: { dist: 1100, time: 150 } }],
+    confidence: conf,
+  });
+  const texts = withConf.map((b) => b.text);
+  assert.ok(texts.includes('Zuversicht mittel: Tempolimit-Modell'), texts.join('\n'));
+  assert.ok(texts.includes('Zuversicht tief: Netz unvollständig'));
+  assert.ok(texts.includes('Zuversicht mittel (±40 %): Standardwerte'));
+  assert.ok(withConf.find((b) => b.text === 'Zuversicht mittel: Tempolimit-Modell').size < 9, 'kleine Schrift');
+  // Ohne Route erscheinen Kosten, Prüfung und Zuversicht trotzdem (Regression: Blöcke sassen im Routen-if)
+  const noRoute = reportBlocks(doc, { confidence: conf, checks: [{ severity: 'warn', text: 'eng' }] }).map((b) => b.text);
+  assert.ok(noRoute.includes('Kostenschätzung') && noRoute.includes('Zuversicht mittel (±40 %): Standardwerte') && noRoute.includes('Warnung: eng'), noRoute.join('\n'));
+  assert.ok(!noRoute.includes('Routenvergleich'));
+  assert.ok(texts.indexOf('Zuversicht mittel: Tempolimit-Modell') > texts.findIndex((x) => x.startsWith('Differenz:')), 'direkt nach dem Routenvergleich');
 });
 
 test('Fester Massstab: Zoom aus Massstab und zurück', () => {
