@@ -18,6 +18,8 @@ import { nodesKey } from './model.js';
 import { exportPdf, exportPng, exportReport } from './export.js';
 import { estimateCosts } from './costs.js';
 import { runChecks } from './checks.js';
+import { summarizeParcels, validParcels } from './parcels.js';
+import { exposure as computeExposure } from './buildings.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
 const POLL_INTERVAL_MS = 45000;
@@ -79,6 +81,8 @@ async function main() {
     pendingComment: loc.comment,
     push: { serverEnabled: false, publicKey: '', subscribed: false, role: null },
     clientId: local.clientId(),
+    parcelGeoms: new Map(), // Parzellen-Umringe je EGRID/ID für die Hervorhebung (nur in dieser Sitzung)
+    showExposure: false, // betroffene Gebäude auf der Karte hervorheben
     present: loc.present, // Präsentationsmodus: nur Karte, Legende und Routenvergleich
     events: null, // EventSource für Live-Änderungen
     remoteUpdate: null, // Serverstand, der neuer ist als unserer
@@ -138,6 +142,7 @@ async function main() {
     attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende',
   });
   const osm = new OsmRoadCache((b) => api.roads(b));
+  const buildings = new OsmRoadCache((b) => api.buildings(b)); // gleiche Zellen-Logik, andere Daten
 
   const canEdit = () => !state.present && (!state.id || !!state.token);
 
@@ -222,11 +227,28 @@ async function main() {
     snap: tools.snapPoint,
     showHandles: tools.tool === 'select' && canEdit(),
     routes: store.doc.route ? state.routes : null,
+    parcels: selectedParcelPolygons(),
+    buildings: state.showExposure ? exposureForDrawing() : null,
     routeDraft: tools.routeDraft,
     comments: settings.showComments ? state.comments : [],
     activeCommentId: state.activeCommentId,
     commentDraft: tools.commentDraft,
   }));
+
+  // --- Parzellen und Gebäude -------------------------------------------------------
+  function selectedParcelPolygons() {
+    if (!tools.selection) return null;
+    const f = getFeature(store.doc, tools.selection.featureId);
+    if (!f || f.type !== 'road') return null;
+    const info = validParcels(f);
+    if (!info) return null;
+    const polys = [];
+    for (const it of info.items) {
+      const g = state.parcelGeoms.get(it.egrid || it.number);
+      if (g) polys.push(...g);
+    }
+    return polys.length ? polys : null;
+  }
 
   // --- Routen-Rechner ----------------------------------------------------------
   function recomputeRoutes() {
@@ -406,8 +428,63 @@ async function main() {
       store.commit('Einheitskosten zurücksetzen', (d) => { d.costs = {}; });
     },
     runChecks: () => runChecks(store.doc, { osmWays: osm.list() }),
+    parcelsFor: (roadId) => {
+      const r = getFeature(store.doc, roadId);
+      return r && r.type === 'road' ? validParcels(r) : null;
+    },
+    async loadParcels(roadId) {
+      if (!actions.requireEdit()) return;
+      const road = getFeature(store.doc, roadId);
+      if (!road || road.type !== 'road') return;
+      ui.toast('Parzellen werden abgefragt…');
+      try {
+        const res = await api.parcels(road.nodes);
+        for (const p of res.parcels || []) {
+          if (p.polygons && p.polygons.length) state.parcelGeoms.set(p.egrid || p.number || p.id, p.polygons);
+        }
+        const summary = summarizeParcels(road, res.parcels || []);
+        store.commit('Parzellen ermitteln', (d) => {
+          const r = getFeature(d, roadId);
+          if (r) r.parcels = summary;
+        });
+        ui.toast(summary.items.length ? `${summary.items.length} Parzelle${summary.items.length === 1 ? '' : 'n'} berührt.` : 'Keine Parzellen gefunden (amtliche Vermessung deckt nur die Schweiz ab).', 'ok', 5000);
+      } catch (e) {
+        ui.toast(`Parzellen: ${e.message}`, 'error', 7000);
+      }
+    },
+    clearParcels(roadId) {
+      actions.patchFeature(roadId, 'Parzellen entfernen', (r) => { r.parcels = null; });
+    },
+    buildingsStatus() {
+      if (buildings.pending) return `Gebäude werden geladen… (${buildings.remaining} Zellen offen)`;
+      if (buildings.lastError) return `Gebäude: ${buildings.lastError.message}`;
+      return buildings.ways.size ? `${buildings.ways.size} Gebäude geladen.` : 'Noch keine Gebäude geladen.';
+    },
+    buildingsLoaded: () => buildings.ways.size,
+    loadBuildings() {
+      const b = map.getBounds();
+      const n = cellsFor(b).length;
+      if (n > MAX_CELLS) {
+        ui.toast(`Ansicht zu gross (${n} Zellen, erlaubt ${MAX_CELLS}) – näher heranzoomen.`, 'error', 5000);
+        return;
+      }
+      buildings.ensureArea(b);
+      if (store.doc.route) buildings.ensureArea(routeBounds(store.doc.route.from, store.doc.route.to, { factor: 0.1 }));
+      ui.refreshAnalysis();
+    },
+    exposure() {
+      if (!buildings.ways.size) return null;
+      const hidden = new Set(store.doc.layers.filter((l) => l.visible === false).map((l) => l.id));
+      const roads = store.doc.features.filter((f) => f.type === 'road' && !hidden.has(f.layerId));
+      return computeExposure({ buildings: buildings.list(), routes: store.doc.route ? state.routes : null, roads, radiusM: settings.exposureRadius });
+    },
+    showExposure: () => state.showExposure,
+    setShowExposure(on) {
+      state.showExposure = !!on;
+      map.requestRender();
+    },
     async runExport({ format, mode, paper, orientation, dpi, report = false }) {
-      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks() };
+      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
       else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
@@ -440,6 +517,7 @@ async function main() {
         recomputeRoutes();
         ui.refreshRoute();
       }
+      if ('exposureRadius' in patch) ui.refreshAnalysis();
       if ('showOsm' in patch || 'snapOsm' in patch) ensureOsm();
       map.requestRender();
       ui.refreshTools();
@@ -790,6 +868,12 @@ async function main() {
 
   tools.onCommentSelect = (id) => actions.focusComment(id);
 
+  function exposureForDrawing() {
+    const e = actions.exposure();
+    if (!e) return null;
+    return { list: buildings.list(), current: e.current.ids, proposed: e.proposed.ids, roads: e.roads.ids };
+  }
+
   // --- Kommentare ---------------------------------------------------------------
   async function loadComments({ quiet = false } = {}) {
     if (!state.id) {
@@ -1048,6 +1132,10 @@ async function main() {
     if (info.status !== 'loading') recomputeRoutes();
     ui.refreshRoute();
   });
+  buildings.subscribe(() => {
+    map.requestRender();
+    ui.refreshAnalysis();
+  });
 
   map.on('moveend', () => {
     scheduleAutosave();
@@ -1100,7 +1188,7 @@ async function main() {
   });
 
   // --- Start ----------------------------------------------------------------------
-  window.stadtplaner = { map, store, tools, local, osm, settings, actions, api, routes: () => state.routes, comments: () => state.comments, pollComments: () => loadComments(), state };
+  window.stadtplaner = { map, store, tools, local, osm, buildings, settings, actions, api, routes: () => state.routes, comments: () => state.comments, pollComments: () => loadComments(), state };
   if (state.present) {
     document.body.classList.add('present', 'sidebar-hidden');
     tools.setTool('select');

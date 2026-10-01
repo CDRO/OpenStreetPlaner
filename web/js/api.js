@@ -51,6 +51,8 @@ export const api = {
   pushKey: () => request('GET', '/api/push/key'),
   tileSources: () => request('GET', '/api/tiles/sources'),
   profile: (coords) => request('POST', '/api/profile', { body: { coords } }),
+  parcels: (coords) => request('POST', '/api/parcels', { body: { coords } }),
+  buildings: (b) => request('GET', `/api/buildings?bbox=${[b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',')}`),
   setPushSub: (id, body, token) => request('PUT', `/api/drafts/${encodeURIComponent(id)}/push`, { body, token }),
   deletePushSub: (id, clientId) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/push?clientId=${encodeURIComponent(clientId)}`),
   search: (q) => request('GET', `/api/search?q=${encodeURIComponent(q)}&limit=8`),

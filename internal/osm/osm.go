@@ -126,6 +126,7 @@ type Client struct {
 	TileURL      string
 	TileDir      string
 	ProfileURL   string
+	ParcelURL    string
 
 	searchCache  *memCache
 	roadsCache   *memCache
@@ -136,6 +137,15 @@ type Client struct {
 	sources      map[string]TileSource
 	sourceOrder  []string
 	profileCache *memCache
+	parcelCache  *memCache
+	bldgCache    *memCache
+}
+
+// Building ist ein Gebäude aus OSM: geschlossener Umring als [lat, lng].
+type Building struct {
+	ID       int64             `json:"id"`
+	Tags     map[string]string `json:"tags"`
+	Geometry [][2]float64      `json:"geometry"`
 }
 
 func New(tileDir string) *Client {
@@ -147,6 +157,7 @@ func New(tileDir string) *Client {
 		TileURL:      DefaultTileURL,
 		TileDir:      tileDir,
 		ProfileURL:   DefaultProfileURL,
+		ParcelURL:    DefaultParcelURL,
 		searchCache:  newMemCache(searchCacheTTL),
 		roadsCache:   newMemCache(roadsCacheTTL),
 		tileInFly:    map[string]chan struct{}{},
@@ -303,6 +314,65 @@ func (c *Client) Roads(ctx context.Context, b BBox) ([]Way, error) {
 	}
 	data, _ := json.Marshal(out)
 	c.roadsCache.set(key, data)
+	return out, nil
+}
+
+// Buildings liefert die Gebäude-Umringe (OSM building=*) eines Bereichs (max. 0.06°).
+func (c *Client) Buildings(ctx context.Context, b BBox) ([]Building, error) {
+	if c.bldgCache == nil {
+		c.bldgCache = newMemCache(roadsCacheTTL)
+	}
+	key := fmt.Sprintf("b:%.4f,%.4f,%.4f,%.4f", b.South, b.West, b.North, b.East)
+	if data, ok := c.bldgCache.get(key); ok {
+		var out []Building
+		_ = json.Unmarshal(data, &out)
+		return out, nil
+	}
+	query := fmt.Sprintf(`[out:json][timeout:25];way["building"](%.6f,%.6f,%.6f,%.6f);out geom;`, b.South, b.West, b.North, b.East)
+	form := url.Values{"data": {query}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.OverpassURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	body, _, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Gebäude laden: %w", err)
+	}
+	var raw struct {
+		Elements []struct {
+			Type     string            `json:"type"`
+			ID       int64             `json:"id"`
+			Tags     map[string]string `json:"tags"`
+			Geometry []struct {
+				Lat float64 `json:"lat"`
+				Lon float64 `json:"lon"`
+			} `json:"geometry"`
+		} `json:"elements"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("Gebäude laden: unlesbare Antwort")
+	}
+	out := make([]Building, 0, len(raw.Elements))
+	for _, el := range raw.Elements {
+		if el.Type != "way" || len(el.Geometry) < 4 {
+			continue
+		}
+		bld := Building{ID: el.ID, Geometry: make([][2]float64, len(el.Geometry))}
+		// Nur die für die Analyse nötigen Tags behalten
+		bld.Tags = map[string]string{}
+		for _, k := range []string{"building", "name", "addr:street", "addr:housenumber", "building:levels"} {
+			if v, ok := el.Tags[k]; ok {
+				bld.Tags[k] = v
+			}
+		}
+		for i, g := range el.Geometry {
+			bld.Geometry[i] = [2]float64{g.Lat, g.Lon}
+		}
+		out = append(out, bld)
+	}
+	data, _ := json.Marshal(out)
+	c.bldgCache.set(key, data)
 	return out, nil
 }
 

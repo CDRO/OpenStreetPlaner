@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -549,5 +550,38 @@ func TestConflictAndEvents(t *testing.T) {
 	}
 	if !strings.Contains(collected, "event: comment") {
 		t.Fatalf("comment-Event fehlt: %q", collected)
+	}
+}
+
+func TestParcelsAndBuildingsEndpoints(t *testing.T) {
+	ts, client := newTestServer(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			fmt.Fprint(w, `{"elements":[{"type":"way","id":1,"tags":{"building":"yes"},"geometry":[{"lat":47,"lon":8},{"lat":47,"lon":8.001},{"lat":47.001,"lon":8.001},{"lat":47,"lon":8}]}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"results":[{"featureId":"X","attributes":{"egris_egrid":"CH9","number":"9"},"geometry":{"type":"Polygon","coordinates":[[[8,47],[8.01,47],[8.01,47.01],[8,47]]]}}]}`)
+	}))
+	defer up.Close()
+	client.ParcelURL = up.URL
+	client.OverpassURL = up.URL
+	res, out := call(t, "POST", ts.URL+"/api/parcels", map[string]any{"coords": [][2]float64{{47, 8}, {47, 8.005}}}, nil)
+	if res.StatusCode != 200 || out["parcels"] == nil || len(out["parcels"].([]any)) != 1 {
+		t.Fatalf("parcels: %d %+v", res.StatusCode, out)
+	}
+	res, _ = call(t, "POST", ts.URL+"/api/parcels", map[string]any{"coords": [][2]float64{{47, 8}}}, nil)
+	if res.StatusCode != 400 {
+		t.Fatalf("ein Punkt: %d", res.StatusCode)
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/api/buildings?bbox=47,8,47.01,8.01", nil)
+	bres, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bres.Body.Close()
+	var list []map[string]any
+	_ = json.NewDecoder(bres.Body).Decode(&list)
+	if bres.StatusCode != 200 || len(list) != 1 {
+		t.Fatalf("buildings: %d %+v", bres.StatusCode, list)
 	}
 }

@@ -17,7 +17,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -44,6 +44,10 @@ export function drawScene(ctx, map, s) {
     if (f.type !== 'zone') continue;
     drawZone(ctx, P, f, colorOf(f), zoom);
   }
+
+  // Betroffene Gebäude (rot: neu betroffen, grün: entlastet, orange: beides) und Parzellen der gewählten Strasse
+  if (buildings) drawBuildings(ctx, P, buildings);
+  if (parcels) drawParcels(ctx, P, parcels);
 
   const selected = selection ? visible.find((f) => f.id === selection.featureId) : null;
   if (selected) drawSelectionHalo(ctx, P, selected, selection, mpp, lineScale);
@@ -235,6 +239,58 @@ function stroke(ctx, pts, color, width, cap = 'round') {
   ctx.lineCap = cap;
   ctx.lineJoin = 'round';
   strokePath(ctx, pts);
+}
+
+/** Parzellen-Umringe (erster Ring aussen, weitere Löcher) als orange Flächen. */
+function drawParcels(ctx, P, polygons) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 193, 7, 0.18)';
+  ctx.strokeStyle = '#e08a00';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 3]);
+  for (const rings of polygons) {
+    ctx.beginPath();
+    for (const ring of rings) {
+      ring.forEach((ll, i) => {
+        const p = P(ll);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.closePath();
+    }
+    ctx.fill('evenodd');
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+export const BUILDING_COLORS = { proposed: 'rgba(198, 40, 40, 0.6)', relieved: 'rgba(42, 157, 63, 0.6)', both: 'rgba(224, 138, 0, 0.65)', other: 'rgba(120, 120, 120, 0.18)' };
+
+/** Gebäude-Umringe: betroffene farbig, übrige blass. */
+function drawBuildings(ctx, P, { list, current, proposed, roads }) {
+  ctx.save();
+  for (const b of list) {
+    const g = b.geometry;
+    if (!g || g.length < 3) continue;
+    const hitNew = proposed.has(b.id) || roads.has(b.id);
+    const hitCur = current.has(b.id);
+    const color = hitNew && hitCur ? BUILDING_COLORS.both : hitNew ? BUILDING_COLORS.proposed : hitCur ? BUILDING_COLORS.relieved : BUILDING_COLORS.other;
+    ctx.beginPath();
+    g.forEach((ll, i) => {
+      const p = P(ll);
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    if (hitNew || hitCur) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 
 /** Raute (kreuzungsfreier Anschluss). */

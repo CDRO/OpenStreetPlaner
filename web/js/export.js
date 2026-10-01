@@ -5,6 +5,7 @@
 import { LEVELS, ZONE_KINDS, roadWidthMeters, sectionSummary } from './model.js';
 import { formatDuration } from './routing.js';
 import { estimateCosts, formatChf } from './costs.js';
+import { parcelLabel, validParcels } from './parcels.js';
 import { haversine } from './geometry.js';
 
 /** Papierformate in Millimetern (Querformat). */
@@ -417,7 +418,7 @@ const JUNCTION_LABELS = [
 ];
 
 /** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
-export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null } = {}) {
+export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null } = {}) {
   const blocks = [];
   const date = new Date().toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
   blocks.push({ text: doc.name, size: 18, bold: true });
@@ -437,6 +438,8 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
     const special = r.segments.filter((s) => s.level !== 'ground').length;
     if (special) parts.push(`${special} Abschnitt(e) Brücke/Tunnel`);
     if (r.oneway) parts.push('Einbahn');
+    const pc = validParcels(r);
+    if (pc) parts.push(`${pc.items.length} Parzelle${pc.items.length === 1 ? '' : 'n'}`);
     parts.push(`Ebene ${layerName(r.layerId)}`);
     blocks.push({ text: parts.join(' · ') + (r.note ? ` – ${r.note}` : ''), gap: 2 });
   });
@@ -445,6 +448,23 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
   const cur = routes && routes.current && !routes.current.error ? routes.current : null;
   const neu = routes && routes.proposed && !routes.proposed.error ? routes.proposed : null;
   if (cur || neu) {
+  // Betroffene Parzellen
+  const withParcels = roads.map((r) => [r, validParcels(r)]).filter(([, pc]) => pc && pc.items.length);
+  if (withParcels.length) {
+    blocks.push({ text: 'Betroffene Parzellen (amtliche Vermessung)', size: 13, bold: true, gap: 4 });
+    withParcels.forEach(([r, pc]) => {
+      const total = pc.items.reduce((s, it) => s + it.length, 0);
+      blocks.push({ text: `${r.name || kindLabel(ROAD_KINDS_LABELS, r.kind)}: ${pc.items.length} Parzellen, ${Math.round(total)} m`, bold: true, gap: 1 });
+      pc.items.forEach((it) => blocks.push({ text: `  ${parcelLabel(it)}${it.egrid ? ` · ${it.egrid}` : ''} · ${Math.round(it.length)} m`, size: 9.5, gap: 1 }));
+    });
+    blocks.push({ text: '', gap: 6 });
+  }
+  // Betroffene Gebäude
+  if (exposure) {
+    blocks.push({ text: `Betroffene Gebäude (OpenStreetMap, Umkreis ${exposure.radius} m)`, size: 13, bold: true, gap: 4 });
+    if (exposure.hasRoutes) blocks.push({ text: `Route heute: ${exposure.current.count} · Route neu: ${exposure.proposed.count} · Differenz: ${exposure.delta > 0 ? '+' : ''}${exposure.delta}`, gap: 2 });
+    blocks.push({ text: `Entlang neuer Strassen: ${exposure.roads.count}`, gap: 8 });
+  }
   // Kostenschätzung
   const est = estimateCosts(doc);
   if (est.rows.length) {

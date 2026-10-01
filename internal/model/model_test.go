@@ -258,3 +258,20 @@ func TestCosts(t *testing.T) {
 		t.Fatalf("leere Kosten sollten nil sein: %+v", d.Costs)
 	}
 }
+
+func TestParcelsField(t *testing.T) {
+	d := sample()
+	d.Features[0].Parcels = &ParcelInfo{Key: "3:abc", Items: []ParcelItem{{Egrid: "CH1", Number: "12", Length: 12.345}, {Length: math.NaN()}}}
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	p := d.Features[0].Parcels
+	if p == nil || len(p.Items) != 2 || p.Items[0].Length != 12.3 || p.Items[1].Length != 0 {
+		t.Fatalf("Parzellen: %+v", p)
+	}
+	d.Features[0].Parcels = &ParcelInfo{Key: strings.Repeat("k", 65)}
+	_ = Normalize(d)
+	if d.Features[0].Parcels != nil {
+		t.Fatalf("zu langer Schlüssel nicht verworfen")
+	}
+}

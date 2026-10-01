@@ -155,6 +155,19 @@ export function normalizeProfile(raw) {
   return { points, key: raw.key };
 }
 
+/** Parzellenliste einer Strasse (Rohdaten prüfen; die Logik steht in parcels.js). */
+export function normalizeParcelInfo(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.key !== 'string' || raw.key.length > 64 || !Array.isArray(raw.items) || raw.items.length > 500) return null;
+  const items = [];
+  for (const it of raw.items) {
+    if (!it || typeof it !== 'object') return null;
+    const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+    const length = Number(it.length);
+    items.push({ egrid: str(it.egrid, 64), number: str(it.number, 64), label: str(it.label, 120), canton: str(it.canton, 16), length: Number.isFinite(length) && length > 0 ? Math.round(length * 10) / 10 : 0 });
+  }
+  return { key: raw.key, items };
+}
+
 /** Höhenprofil einer Strasse, falls vorhanden und noch zur Geometrie passend. */
 export function validProfile(road) {
   return road.profile && road.profile.key === nodesKey(road.nodes) ? road.profile : null;
@@ -344,6 +357,7 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     nodes: pts,
     segments: pts.slice(1).map(() => ({ level, maxspeed: null })),
     profile: null,
+    parcels: null,
     note: '',
   };
 }
@@ -581,6 +595,7 @@ export function normalizeDocument(raw) {
         nodes,
         segments,
         profile: normalizeProfile(f.profile),
+        parcels: normalizeParcelInfo(f.parcels),
       });
     } else if (f.type === 'junction') {
       if (!isLatLng(f.at)) throw new Error(`Kreuzung ${f.id} hat keine Position`);

@@ -4,6 +4,7 @@
 import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, SECTION_LIMITS, STATUSES, ZONE_KINDS, defaultSection, docStats, featureLabel, getFeature, junctionKind, junctionTurns, roadKind, roadSpeed, roadWidthMeters, sectionSummary, sectionWidth, segmentSpeed, splitRoadAtNode, validProfile } from './model.js';
 import { DPI, PAPER } from './export.js';
 import { COST_ITEMS, costValue, formatChf } from './costs.js';
+import { parcelLabel, validParcels } from './parcels.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
 import { TOOLS } from './tools.js';
@@ -16,6 +17,34 @@ const fmtDate = (iso) => {
 };
 const fmtLen = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
 const options = (list, value) => list.map((o) => `<option value="${o.id}"${o.id === value ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+
+/** Parzellen-Block der Strassen-Eigenschaften: Abfrage, Liste mit Länge je Parzelle, Hinweis bei veralteter Geometrie. */
+function parcelsBlock(road, editable) {
+  const dis = editable ? '' : 'disabled';
+  const valid = validParcels(road);
+  const stale = road.parcels && !valid;
+  let body = '';
+  if (valid) {
+    const total = valid.items.reduce((s, it) => s + it.length, 0);
+    body = valid.items.length
+      ? `<ul class="parcel-list">${valid.items.map((it) => `<li><strong>${esc(parcelLabel(it))}</strong> <span class="muted small">${esc(it.egrid)}</span><span class="num">${it.length.toFixed(0)} m</span></li>`).join('')}</ul>
+         <p class="muted small">${valid.items.length} Parzelle${valid.items.length === 1 ? '' : 'n'}, ${total.toFixed(0)} m Strasse auf Privat- oder Gemeindeland (Liegenschaften der amtlichen Vermessung).</p>`
+      : '<p class="muted small">Keine Parzellen berührt (oder ausserhalb der Schweiz).</p>';
+  } else if (stale) {
+    body = '<p class="muted small">Die Strasse wurde seit der Abfrage verändert; die Parzellenliste ist veraltet.</p>';
+  } else {
+    body = '<p class="muted small">Ermittelt über die amtliche Vermessung (geo.admin), welche Liegenschaften die Strasse berührt und wie viele Meter darauf liegen. Nur Schweiz.</p>';
+  }
+  return `
+    <details class="box" ${valid ? 'open' : ''}>
+      <summary>Betroffene Parzellen${valid ? ` <span class="muted">(${valid.items.length})</span>` : stale ? ' <span class="muted">(veraltet)</span>' : ''}</summary>
+      ${body}
+      <div class="btn-row">
+        <button type="button" id="parcels-load" class="btn small" ${dis}>${valid || stale ? 'Neu ermitteln' : 'Betroffene Parzellen ermitteln'}</button>
+        ${road.parcels ? `<button type="button" id="parcels-clear" class="btn small" ${dis}>Entfernen</button>` : ''}
+      </div>
+    </details>`;
+}
 
 /** Querschnitt-Block der Strassen-Eigenschaften: Standard-Hinweis oder Editor. */
 function sectionBlock(road, editable) {
@@ -339,7 +368,7 @@ export class UI {
   // --- Analyse: Kosten und Normen-Check ---------------------------------------------------
 
   refreshAnalysis() {
-    const { store, actions, tools, map } = this.ctx;
+    const { store, actions, tools, map, settings } = this.ctx;
     const el = this.$('analysis-panel');
     if (!el) return;
     const doc = store.doc;
@@ -347,6 +376,7 @@ export class UI {
     const dis = editable ? '' : 'disabled';
     const est = actions.costEstimate();
     const checks = actions.runChecks();
+    const exp = actions.exposure();
     const warns = checks.filter((c) => c.severity === 'warn').length;
     const groups = [];
     for (const item of COST_ITEMS) {
@@ -381,7 +411,26 @@ export class UI {
       </details>
       <h3>Normen-Check</h3>
       <p class="muted small">Richtwerte nach VSS: Kurvenradius zum Tempo, Steigung aus dem Höhenprofil, Kreiselgrösse, Fahrstreifenbreite, Tempo in Zonen, nicht angeschlossene Enden. ${checks.length ? `${warns} Warnung${warns === 1 ? '' : 'en'}, ${checks.length - warns} Hinweis${checks.length - warns === 1 ? '' : 'e'}.` : 'Keine Auffälligkeiten.'}</p>
-      ${checks.length ? `<ul class="check-list">${checks.map((c) => `<li class="${c.severity}"><button type="button" class="linkish check-row" data-id="${esc(c.id)}">${esc(c.text)}</button></li>`).join('')}</ul>` : ''}`;
+      ${checks.length ? `<ul class="check-list">${checks.map((c) => `<li class="${c.severity}"><button type="button" class="linkish check-row" data-id="${esc(c.id)}">${esc(c.text)}</button></li>`).join('')}</ul>` : ''}
+      <h3>Betroffene Gebäude</h3>
+      <p class="muted small">Gebäude aus OpenStreetMap im Umkreis der heutigen Route, der neuen Route und aller neuen Strassen (sichtbare Ebenen). Lärm- und Sicherheitsargument in einer Zahl.</p>
+      <div class="btn-row">
+        <label class="field inline">Umkreis<select id="exp-radius">${[25, 50, 100].map((r) => `<option value="${r}" ${settings.exposureRadius === r ? 'selected' : ''}>${r} m</option>`).join('')}</select></label>
+        <button type="button" id="exp-load" class="btn small">Gebäude für die Ansicht laden</button>
+      </div>
+      <p class="muted small" id="exp-status">${esc(actions.buildingsStatus())}</p>
+      ${exp ? `
+      <table class="route-table">
+        <thead><tr><th></th><th class="num">Gebäude ≤ ${exp.radius} m</th></tr></thead>
+        <tbody>
+          ${exp.hasRoutes ? `
+          <tr><td><span class="dot" style="background:#1b6ac9"></span>Route heute</td><td class="num">${exp.current.count}</td></tr>
+          <tr><td><span class="dot" style="background:#2a9d3f"></span>Route neu</td><td class="num">${exp.proposed.count}</td></tr>
+          <tr class="total"><td>Differenz</td><td class="num"><strong>${exp.delta > 0 ? '+' : ''}${exp.delta}</strong></td></tr>` : '<tr><td colspan="2" class="muted">Für heute/neu Start und Ziel im Routen-Tab setzen.</td></tr>'}
+          <tr><td>Entlang neuer Strassen</td><td class="num">${exp.roads.count}</td></tr>
+        </tbody>
+      </table>
+      <label class="check"><input type="checkbox" id="exp-show" ${actions.showExposure() ? 'checked' : ''}> Auf der Karte hervorheben <span class="muted small">(rot: neu betroffen, grün: entlastet, orange: beides)</span></label>` : ''}`;
     el.querySelectorAll('details').forEach((d, i) => { if (openState[i]) d.open = true; });
     el.querySelectorAll('.cost-row').forEach((b) => {
       b.onclick = () => {
@@ -394,6 +443,10 @@ export class UI {
     });
     const reset = this.$('cost-reset');
     if (reset) reset.onclick = () => actions.resetCosts();
+    this.$('exp-radius').onchange = (e) => actions.updateSettings({ exposureRadius: Number(e.target.value) });
+    this.$('exp-load').onclick = () => actions.loadBuildings();
+    const expShow = this.$('exp-show');
+    if (expShow) expShow.onchange = (e) => actions.setShowExposure(e.target.checked);
     el.querySelectorAll('.check-row').forEach((b) => {
       b.onclick = () => {
         const c = checks.find((x) => x.id === b.dataset.id);
@@ -621,6 +674,7 @@ export class UI {
           <span class="muted small">${f.nodes.length} Punkte</span>
         </div>
         ${profileBlock(f)}
+        ${parcelsBlock(f, editable)}
         <div class="segments">
           <div class="seg-head">Abschnitte <span class="muted">(${f.segments.length}, ${fmtLen(pathLength(f.nodes))})</span></div>
           <div class="seg-chips">${chips}</div>
@@ -678,6 +732,10 @@ export class UI {
       if (clearBtn) clearBtn.onclick = () => patch('Höhenprofil entfernen', (x) => { x.profile = null; });
       const canvas = this.$('prop-profile-chart');
       if (canvas) drawProfileChart(canvas, f);
+      const parcelsLoad = this.$('parcels-load');
+      if (parcelsLoad) parcelsLoad.onclick = () => actions.loadParcels(f.id);
+      const parcelsClear = this.$('parcels-clear');
+      if (parcelsClear) parcelsClear.onclick = () => actions.clearParcels(f.id);
     }
     this.$('prop-name').onchange = (e) => patch('Name ändern', (x) => { x.name = e.target.value.trim(); });
     this.$('prop-layer').onchange = (e) => patch('Ebene wechseln', (x) => { x.layerId = e.target.value; });

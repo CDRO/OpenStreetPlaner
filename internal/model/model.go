@@ -170,12 +170,47 @@ type Feature struct {
 	Segments []Segment `json:"segments,omitempty"`
 	// Höhenprofil einer Strasse (vom Profil-Dienst), mit Kennung der Punktfolge
 	Profile *Profile `json:"profile,omitempty"`
+	// Berührte Parzellen einer Strasse, mit Kennung der Punktfolge
+	Parcels *ParcelInfo `json:"parcels,omitempty"`
 	// Kreuzung / Punkt-Massnahme
 	At    *LatLng `json:"at,omitempty"`
 	Turns *Turns  `json:"turns,omitempty"` // Abbiegeregeln; nil = Standard
 	// Kreisel
 	Center *LatLng `json:"center,omitempty"`
 	Radius float64 `json:"radius,omitempty"`
+}
+
+// ParcelInfo sind die ermittelten Parzellen einer Strasse (amtliche Vermessung) mit Kennung der Geometrie.
+type ParcelInfo struct {
+	Key   string       `json:"key"`
+	Items []ParcelItem `json:"items"`
+}
+
+// ParcelItem ist eine berührte Parzelle mit der Länge der Strasse darauf (m).
+type ParcelItem struct {
+	Egrid  string  `json:"egrid"`
+	Number string  `json:"number"`
+	Label  string  `json:"label"`
+	Canton string  `json:"canton"`
+	Length float64 `json:"length"`
+}
+
+const MaxParcels = 500
+
+func normalizeParcels(p *ParcelInfo) *ParcelInfo {
+	if p == nil || len(p.Key) > 64 || len(p.Items) > MaxParcels {
+		return nil
+	}
+	items := make([]ParcelItem, 0, len(p.Items))
+	for _, it := range p.Items {
+		if math.IsNaN(it.Length) || math.IsInf(it.Length, 0) || it.Length < 0 {
+			it.Length = 0
+		}
+		it.Length = math.Round(it.Length*10) / 10
+		it.Egrid, it.Number, it.Label, it.Canton = truncate(it.Egrid, 64), truncate(it.Number, 64), truncate(it.Label, 120), truncate(it.Canton, 16)
+		items = append(items, it)
+	}
+	return &ParcelInfo{Key: p.Key, Items: items}
 }
 
 // Profile ist ein Höhenprofil: Punkte [Distanz m, Höhe m ü. M.] und Kennung der Geometrie.
@@ -372,6 +407,7 @@ func Normalize(d *Document) error {
 				f.Width = &v
 			}
 			f.Section = normalizeSection(f.Section)
+			f.Parcels = normalizeParcels(f.Parcels)
 			if f.Profile != nil {
 				if len(f.Profile.Points) < 2 || len(f.Profile.Points) > 1000 || len(f.Profile.Key) > 64 {
 					f.Profile = nil
@@ -394,7 +430,7 @@ func Normalize(d *Document) error {
 			f.Kind = oneOf(JunctionKinds, f.Kind, "plain")
 			f.Turns = normalizeTurns(f.Turns)
 			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius = "", nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile = nil, 0, nil, nil, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile, f.Parcels = nil, 0, nil, nil, nil, nil
 		case "roundabout":
 			if f.Center == nil || !validLatLng(*f.Center) {
 				return invalid("Kreisel %s hat kein gültiges Zentrum", f.ID)
@@ -409,7 +445,7 @@ func Normalize(d *Document) error {
 			}
 			f.Radius = math.Round(f.Radius*10) / 10
 			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At, f.Turns = "", "", nil, nil, nil, nil, nil
-			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile = nil, 0, nil, nil, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile, f.Parcels = nil, 0, nil, nil, nil, nil
 		case "zone":
 			if len(f.Nodes) < 3 {
 				return invalid("Zone %s braucht mindestens drei Punkte", f.ID)
@@ -425,7 +461,7 @@ func Normalize(d *Document) error {
 			}
 			f.Kind = oneOf(ZoneKinds, f.Kind, "other")
 			f.Status, f.Oneway, f.Segments, f.At, f.Turns, f.Center, f.Radius = "", nil, nil, nil, nil, nil, 0
-			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile = nil, 0, nil, nil, nil
+			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile, f.Parcels = nil, 0, nil, nil, nil, nil
 		default:
 			return invalid("unbekannter Elementtyp %q", f.Type)
 		}

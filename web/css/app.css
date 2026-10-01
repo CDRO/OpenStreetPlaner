@@ -301,3 +301,9 @@ body.present .banner { display: none !important; }
 .check-list li { padding: 6px 8px; margin: 4px 0; border-left: 4px solid #9aa3ad; background: #f6f7f9; border-radius: 4px; font-size: 13px; }
 .check-list li.warn { border-left-color: #e08a00; background: #fff7e8; }
 .check-list li .linkish { color: inherit; }
+
+/* Parzellen und Gebäude */
+.parcel-list { list-style: none; margin: 4px 0; padding: 0; }
+.parcel-list li { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; border-bottom: 1px dotted var(--border); font-size: 12.5px; }
+.parcel-list li .num { margin-left: auto; white-space: nowrap; }
+.field.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0; }

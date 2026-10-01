@@ -2,7 +2,9 @@ package osm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -195,5 +197,80 @@ func TestProfile(t *testing.T) {
 	c.ProfileURL = ""
 	if _, err := c.Profile(context.Background(), [][2]float64{{47, 8}, {47.001, 8.001}}); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("deaktiviert: %v", err)
+	}
+}
+
+func TestParcelsChunksAndDedupes(t *testing.T) {
+	calls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Query().Get("geometryType") != "esriGeometryPolyline" || r.URL.Query().Get("layers") != "all:"+ParcelLayer {
+			t.Errorf("Parameter: %s", r.URL.RawQuery)
+		}
+		var geom struct {
+			Paths [][][2]float64 `json:"paths"`
+		}
+		if err := json.Unmarshal([]byte(r.URL.Query().Get("geometry")), &geom); err != nil || len(geom.Paths) != 1 || len(geom.Paths[0]) > parcelChunk {
+			t.Errorf("Geometrie: %s", r.URL.Query().Get("geometry"))
+		}
+		// Jede Anfrage liefert dieselbe Parzelle 1 und eine eigene Parzelle je Aufruf
+		fmt.Fprintf(w, `{"results":[
+		  {"featureId":"P1","attributes":{"egris_egrid":"CH1","number":"101","ak":"BE","label":"Liegenschaft"},"geometry":{"type":"Polygon","coordinates":[[[8.0,47.0],[8.01,47.0],[8.01,47.01],[8.0,47.01],[8.0,47.0]]]}},
+		  {"featureId":"P%d","attributes":{"egris_egrid":"CH%d","number":"%d"},"geometry":{"type":"MultiPolygon","coordinates":[[[[8.0,47.0],[8.001,47.0],[8.001,47.001],[8.0,47.0]]]]}}
+		]}`, calls+1, calls+1, calls+1)
+	}))
+	defer up.Close()
+	c := New(t.TempDir())
+	c.ParcelURL = up.URL
+	coords := make([][2]float64, 60)
+	for i := range coords {
+		coords[i] = [2]float64{47, 8 + float64(i)*0.0001}
+	}
+	got, err := c.Parcels(context.Background(), coords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("60 Punkte in Blöcken zu %d: %d Aufrufe", parcelChunk, calls)
+	}
+	if len(got) != 4 {
+		t.Fatalf("Parzellen (dedupliziert): %d", len(got))
+	}
+	if got[0].Egrid != "CH1" || got[0].Number != "101" || got[0].Canton != "BE" || len(got[0].Polygons) != 1 || len(got[0].Polygons[0][0]) != 5 {
+		t.Fatalf("Parzelle 1: %+v", got[0])
+	}
+	if got[0].Polygons[0][0][1] != [2]float64{47.0, 8.01} {
+		t.Fatalf("lat/lng vertauscht: %v", got[0].Polygons[0][0][1])
+	}
+	if len(got[1].Polygons) != 1 || got[1].Number != "2" {
+		t.Fatalf("MultiPolygon: %+v", got[1])
+	}
+	// Cache: zweite Abfrage ohne Aufruf
+	_, _ = c.Parcels(context.Background(), coords)
+	if calls != 3 {
+		t.Fatalf("Cache nicht genutzt: %d", calls)
+	}
+	c.ParcelURL = ""
+	if _, err := c.Parcels(context.Background(), coords); err == nil {
+		t.Fatal("deaktiviert sollte einen Fehler liefern")
+	}
+}
+
+func TestBuildings(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"elements":[
+		  {"type":"way","id":5,"tags":{"building":"house","name":"Haus","source":"x"},"geometry":[{"lat":47,"lon":8},{"lat":47,"lon":8.0001},{"lat":47.0001,"lon":8.0001},{"lat":47,"lon":8}]},
+		  {"type":"way","id":6,"tags":{"building":"yes"},"geometry":[{"lat":47,"lon":8},{"lat":47,"lon":8.0001}]}
+		]}`)
+	}))
+	defer up.Close()
+	c := New(t.TempDir())
+	c.OverpassURL = up.URL
+	got, err := c.Buildings(context.Background(), BBox{South: 47, West: 8, North: 47.01, East: 8.01})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != 5 || len(got[0].Geometry) != 4 || got[0].Tags["name"] != "Haus" || got[0].Tags["source"] != "" {
+		t.Fatalf("Gebäude: %+v", got)
 	}
 }

@@ -44,6 +44,8 @@ go run . -data ./data
 | Abschnitte | Jeder Abschnitt zwischen zwei Punkten hat seine eigene Führung: **Ebenerdig, Brücke oder Tunnel** |
 | Kreuzungen / Punkte | Punkt mit Art (Kreuzung, Ampel, Vortritt, Stop, Anschluss (kreuzungsfrei, Raute), Fussgängerstreifen, Bushaltestelle) und **Abbiegeregeln** (links, geradeaus, rechts, wenden erlaubt; Verbote werden als rote Marken gezeichnet) |
 | Flächen | Polygone als Tempo-30-Zone, Begegnungszone (20), Fussgängerzone, Parkplatz oder sonstige Fläche; Eckpunkte ziehen, einfügen, löschen. Zonen mit Tempolimit deckeln im Routen-Rechner alle Strassen darin, Fussgängerzonen sperren sie |
+| Parzellen | Pro Strasse „Betroffene Parzellen ermitteln“: fragt über den Identify-Dienst von geo.admin die Liegenschaften der amtlichen Vermessung ab, die die Strasse berührt, und rechnet die Meter je Parzelle (Abtastung alle 1 m). Liste mit Nummer, Kanton und EGRID in den Eigenschaften und im Bericht, Umringe während der Sitzung orange auf der Karte; nach einer Geometrieänderung als veraltet markiert. Nur Schweiz, `PARCEL_URL` leer schaltet ab |
+| Betroffene Gebäude | Tab „Analyse“: Gebäude aus OpenStreetMap für die Ansicht laden, dann Zahl der Gebäude innerhalb 25/50/100 m der heutigen Route, der neuen Route und aller neuen Strassen; Differenz heute/neu als Kennzahl, Hervorhebung auf der Karte (rot neu betroffen, grün entlastet, orange beides), Zahlen im Bericht |
 | Kostenschätzung | Tab „Analyse“: Richtwerte je Strassentyp pro Kilometer (mit der Breite skaliert), Brücke und Tunnel als Zuschlag pro Meter, Kreisel, Kreuzungen und Flächen pauschal, Parkplätze pro m². Einheitskosten sind pro Entwurf anpassbar (`costs`), bestehende Strassen zählen nicht, das Total umfasst nur sichtbare Ebenen (Varianten per Ein-/Ausblenden). Positionen und Summen stehen auch im Bericht |
 | Normen-Check | Tab „Analyse“: Kurvenradius gegen das Tempo (Richtwerte 25 m bei 30, 80 m bei 50, 240 m bei 80 km/h), Steigung aus dem Höhenprofil (über 8 % Hinweis, über 12 % Warnung), Kreiselradius 11–25 m, Fahrstreifenbreite je Strassentyp, Trottoir auf Autobahnen, Tempo über dem Zonenlimit, nicht angeschlossene Enden, Kreuzungen abseits des Netzes. Klick springt zum Element; die Liste steht auch im Bericht |
 | Kommentare | Wer den Ansichtslink hat, heftet Kommentare an Kartenpunkte und antwortet auf Kommentare (eine Ebene). Besitzer und Verfasser können erledigen oder löschen; Löschen eines Kommentars nimmt seine Antworten mit. Kommentare liegen getrennt vom Entwurf auf dem Server |
@@ -78,6 +80,7 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 | `NOMINATIM_URL` | `https://nominatim.openstreetmap.org/search` | Geocoder |
 | `OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Strassengeometrie |
 | `PROFILE_URL` | `https://api3.geo.admin.ch/rest/services/profile.json` | Höhenprofil-Dienst (swisstopo, nur Schweiz); leer schaltet ab |
+| `PARCEL_URL` | `https://api3.geo.admin.ch/rest/services/api/MapServer/identify` | Identify-Dienst für Parzellen der amtlichen Vermessung (geo.admin, nur Schweiz); leer schaltet ab |
 | `USER_AGENT` | `Stadtplaner/1.0 (+…)` | User-Agent gegenüber den OSM-Diensten – bitte auf die eigene Installation anpassen |
 | `MAX_VERSIONS` | `30` | Versionen pro Entwurf |
 | `WRITE_RATE` | `60` | Schreibende API-Aufrufe pro Minute und Client-IP (Burst 20); `0` schaltet die Drosselung aus |
@@ -118,6 +121,8 @@ speichert nur einen Hash davon).
 | `GET` | `/sw.js` | Service Worker (Push-Empfang, Klick öffnet den Kommentar) |
 | `GET` | `/api/search?q=` | Ortssuche |
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
+| `POST` | `/api/parcels` | `{coords: [[lat, lng], …]}` → `{parcels: [{id, egrid, number, label, canton, polygons}]}` (geo.admin identify, Blöcke zu 25 Punkten, dedupliziert, 6 h Cache) |
+| `GET` | `/api/buildings?bbox=s,w,n,e` | OSM-Gebäude (`building=*`) als Umringe, bbox ≤ 0.06° |
 | `POST` | `/api/profile` | `{coords: [[lat,lng],…]}` → `{points: [[dist,height],…]}` Höhenprofil |
 | `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache (Standardquelle) |
 | `GET` | `/tiles/{source}/{z}/{x}/{y}.png` | Kachel einer benannten Quelle |
