@@ -2,6 +2,7 @@
 // Reine Funktionen ohne DOM, damit sie in Node getestet werden können.
 
 import { circleRing, pathLength } from './geometry.js';
+import { t } from './i18n.js';
 
 export const DOC_VERSION = 1;
 
@@ -108,10 +109,10 @@ export function sectionWidth(s) {
 
 /** Kurzbeschreibung, z. B. „2 Fahrstreifen à 3.25 m, Velostreifen rechts, Trottoir beidseitig“. */
 export function sectionSummary(s) {
-  const parts = [`${s.lanes} Fahrstreifen à ${s.laneWidth} m`];
-  const both = (l, r, name) => (l && r ? `${name} beidseitig` : l ? `${name} links` : r ? `${name} rechts` : null);
-  if (s.median > 0) parts.push(`Mittelstreifen ${s.median} m`);
-  if (s.shoulder > 0) parts.push(`Pannenstreifen ${s.shoulder} m`);
+  const parts = [t('{n} Fahrstreifen à {w} m', { n: s.lanes, w: s.laneWidth })];
+  const both = (l, r, name) => (l && r ? t('{name} beidseitig', { name: t(name) }) : l ? t('{name} links', { name: t(name) }) : r ? t('{name} rechts', { name: t(name) }) : null);
+  if (s.median > 0) parts.push(`${t('Mittelstreifen')} ${s.median} m`);
+  if (s.shoulder > 0) parts.push(`${t('Pannenstreifen')} ${s.shoulder} m`);
   for (const p of [both(s.bikeLeft, s.bikeRight, 'Velostreifen'), both(s.parkLeft, s.parkRight, 'Parkstreifen'), both(s.walkLeft, s.walkRight, 'Trottoir')]) if (p) parts.push(p);
   return parts.join(', ');
 }

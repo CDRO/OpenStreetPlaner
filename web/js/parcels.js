@@ -3,6 +3,7 @@
 
 import { haversine } from './geometry.js';
 import { nodesKey, pointInPolygon } from './model.js';
+import { t } from './i18n.js';
 
 /** Liegt der Punkt im Polygon (erster Ring aussen, weitere Ringe sind Löcher)? */
 export function pointInRings(latlng, rings) {
@@ -60,8 +61,8 @@ export function validParcels(road) {
 
 /** Anzeigename einer Parzelle: „Nr. 1234 (BE)“ oder EGRID. */
 export function parcelLabel(p) {
-  if (p.number) return `Nr. ${p.number}${p.canton ? ` (${p.canton})` : ''}`;
-  return p.egrid || p.label || 'Parzelle';
+  if (p.number) return `${t('Nr.')} ${p.number}${p.canton ? ` (${p.canton})` : ''}`;
+  return p.egrid || p.label || t('Parzelle');
 }
 
 export { normalizeParcelInfo as normalizeParcels } from './model.js';

@@ -5,6 +5,7 @@
 
 import { COST_KEYS, getLayer, roadKind, roadWidthMeters, zoneKind } from './model.js';
 import { mercatorScale, pathLength, project } from './geometry.js';
+import { t } from './i18n.js';
 
 /** Einheitskosten: key, Beschriftung, Einheit, Standardwert in CHF. */
 export const COST_ITEMS = [
@@ -79,17 +80,17 @@ export function estimateCosts(doc) {
     if (f.type === 'road') {
       const kind = roadKind(f);
       const len = pathLength(f.nodes);
-      label = f.name || kind.label;
+      label = f.name || t(kind.label);
       if (f.status === 'remove') {
         amount = (len / 1000) * v('remove');
-        detail.push(`Rückbau ${Math.round(len)} m`);
+        detail.push(`${t('Rückbau')} ${Math.round(len)} m`);
       } else if (f.status === 'existing') {
-        detail.push('bestehend, nicht gerechnet');
+        detail.push(t('bestehend, nicht gerechnet'));
       } else {
         const widthFactor = roadWidthMeters(f) / kind.widthM;
         const base = (len / 1000) * v(`road.${kind.id}`) * widthFactor;
         amount += base;
-        detail.push(`${Math.round(len)} m ${kind.label}${Math.abs(widthFactor - 1) > 0.05 ? ` × ${widthFactor.toFixed(2)} Breite` : ''}`);
+        detail.push(`${Math.round(len)} m ${t(kind.label)}${Math.abs(widthFactor - 1) > 0.05 ? ` × ${widthFactor.toFixed(2)} ${t('Breite')}` : ''}`);
         let bridge = 0;
         let tunnel = 0;
         f.segments.forEach((s, i) => {
@@ -99,23 +100,23 @@ export function estimateCosts(doc) {
         });
         if (bridge > 0) {
           amount += bridge * v('bridge');
-          detail.push(`Brücke ${Math.round(bridge)} m`);
+          detail.push(`${t('Brücke')} ${Math.round(bridge)} m`);
         }
         if (tunnel > 0) {
           amount += tunnel * v('tunnel');
-          detail.push(`Tunnel ${Math.round(tunnel)} m`);
+          detail.push(`${t('Tunnel')} ${Math.round(tunnel)} m`);
         }
       }
     } else if (f.type === 'roundabout') {
-      label = f.name || 'Kreisel';
+      label = f.name || t('Kreisel');
       amount = v('roundabout');
     } else if (f.type === 'junction') {
       const key = { signals: 'junction.signals', interchange: 'junction.interchange', crossing: 'junction.crossing', busstop: 'junction.busstop' }[f.kind] || 'junction.plain';
-      label = f.name || ITEM_BY_KEY[key].label;
+      label = f.name || t(ITEM_BY_KEY[key].label);
       amount = v(key);
     } else if (f.type === 'zone') {
       const k = zoneKind(f);
-      label = f.name || k.label;
+      label = f.name || t(k.label);
       if (f.kind === 'parking') {
         const area = ringAreaM2(f.nodes);
         amount = area * v('zone.parking');
@@ -123,7 +124,7 @@ export function estimateCosts(doc) {
       } else if (ITEM_BY_KEY[`zone.${f.kind}`]) {
         amount = v(`zone.${f.kind}`);
       } else {
-        detail.push('ohne Ansatz');
+        detail.push(t('ohne Ansatz'));
       }
     }
     rows.push({ featureId: f.id, layerId: f.layerId, type: f.type, label, detail: detail.join(', '), amount: Math.round(amount) });

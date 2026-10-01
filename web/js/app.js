@@ -21,6 +21,7 @@ import { runChecks } from './checks.js';
 import { summarizeParcels, validParcels } from './parcels.js';
 import { applyImport, parseImport } from './importer.js';
 import { diffDocuments } from './diff.js';
+import { applyStatic, detectLanguage, setLanguage, t, tn } from './i18n.js';
 import { exposure as computeExposure } from './buildings.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
@@ -61,6 +62,9 @@ async function main() {
   const settings = local.loadSettings();
   const loc = parseLocation();
   setClientId(local.clientId());
+  if (!settings.language) settings.language = detectLanguage();
+  setLanguage(settings.language);
+  applyStatic();
   const state = {
     id: null,
     token: null,
@@ -110,7 +114,7 @@ async function main() {
           await api.authDraft(loc.id, loc.token);
           local.rememberDraft({ id: loc.id, name: doc.name, token: loc.token, updatedAt: res.updatedAt });
         } catch {
-          loadError = 'Der Bearbeitungs-Link ist ungültig; der Entwurf wird nur angezeigt.';
+          loadError = t('Der Bearbeitungs-Link ist ungültig; der Entwurf wird nur angezeigt.');
         }
         history.replaceState(null, '', `/d/${loc.id}${loc.present ? '?present=1' : ''}`);
       } else if (loc.comment) {
@@ -120,7 +124,7 @@ async function main() {
       state.savedKey = contentKey(doc);
       openedFromLink = true;
     } catch (e) {
-      loadError = `Entwurf ${loc.id} konnte nicht geladen werden: ${e.message}`;
+      loadError = t('Entwurf {id} konnte nicht geladen werden: {error}', { id: loc.id, error: e.message });
       history.replaceState(null, '', '/');
     }
   }
@@ -198,7 +202,7 @@ async function main() {
       if (!ui) return;
       if (latlng && !state.id) {
         tools.clearCommentDraft();
-        ui.toast('Kommentare brauchen einen gespeicherten Entwurf. Zuerst speichern.', 'error', 5000);
+        ui.toast(t('Kommentare brauchen einen gespeicherten Entwurf. Zuerst speichern.'), 'error', 5000);
         return;
       }
       ui.showTab('comments');
@@ -214,10 +218,10 @@ async function main() {
     }
     const f = getFeature(store.doc, h.featureId);
     if (!f) return '';
-    const base = f.name || { road: 'Strasse', junction: 'Kreuzung', roundabout: 'Kreisel' }[f.type];
+    const base = f.name || t({ road: 'Strasse', junction: 'Kreuzung', roundabout: 'Kreisel', zone: 'Fläche' }[f.type]);
     if (f.type === 'road' && h.segIndex !== null) {
       const level = f.segments[h.segIndex] && f.segments[h.segIndex].level;
-      return level && level !== 'ground' ? `${base} · ${level === 'bridge' ? 'Brücke' : 'Tunnel'}` : base;
+      return level && level !== 'ground' ? `${base} · ${level === 'bridge' ? t('Brücke') : t('Tunnel')}` : base;
     }
     if (f.type === 'roundabout') return `${base} · r = ${f.radius} m`;
     if (f.type === 'zone') return f.name ? `${f.name} · ${base}` : base;
@@ -312,14 +316,14 @@ async function main() {
     for (const q of queries) {
       const b = routeBounds(q.from, q.to);
       if (b.tooLarge) {
-        ui.toast(`Start und Ziel liegen zu weit auseinander (${b.cells} Zellen, erlaubt ${MAX_CELLS}). Näher zusammenliegende Punkte wählen.`, 'error', 6000);
+        ui.toast(t('Start und Ziel liegen zu weit auseinander ({n} Zellen, erlaubt {max}). Näher zusammenliegende Punkte wählen.', { n: b.cells, max: MAX_CELLS }), 'error', 6000);
         continue;
       }
       osm.ensureArea(b);
     }
     if (doc.isochrone) {
       const b = isochroneBounds(doc.isochrone);
-      if (b.tooLarge) ui.toast(`Erreichbarkeit: Bereich zu gross (${b.cells} Zellen, erlaubt ${MAX_CELLS}). Weniger Minuten wählen.`, 'error', 6000);
+      if (b.tooLarge) ui.toast(t('Erreichbarkeit: Bereich zu gross ({n} Zellen, erlaubt {max}). Weniger Minuten wählen.', { n: b.cells, max: MAX_CELLS }), 'error', 6000);
       else osm.ensureArea(b);
     }
   }
@@ -364,7 +368,7 @@ async function main() {
       const draft = tools.commentDraft;
       if (!state.id || (!parentId && !draft)) return;
       const clean = text.trim();
-      if (!clean) return ui.toast('Bitte einen Text eingeben.', 'error');
+      if (!clean) return ui.toast(t('Bitte einen Text eingeben.'), 'error');
       if (author.trim() !== settings.author) actions.updateSettings({ author: author.trim() });
       try {
         const body = { author: author.trim(), text: clean, clientId: state.clientId };
@@ -380,10 +384,10 @@ async function main() {
         state.activeCommentId = parentId || res.comment.id;
         if (state.knownCommentIds) state.knownCommentIds.add(res.comment.id);
         await loadComments({ quiet: true });
-        ui.toast(parentId ? 'Antwort gespeichert.' : 'Kommentar gespeichert.', 'ok');
+        ui.toast(parentId ? t('Antwort gespeichert.') : t('Kommentar gespeichert.'), 'ok');
         if (!parentId && state.push.subscribed && state.push.role === 'replies') actions.enablePush({ silent: true });
       } catch (e) {
-        ui.toast(`${parentId ? 'Antwort' : 'Kommentar'} fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${parentId ? t('Antwort') : t('Kommentar')} ${t('fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     pushStatus: () => ({ ...state.push, supported: pushSupported(), permission: permissionState() }),
@@ -396,10 +400,10 @@ async function main() {
         local.setPushState(state.id, { role: res.role });
         state.push.subscribed = true;
         state.push.role = res.role;
-        if (!silent) ui.toast(res.role === 'all' ? 'Du wirst bei neuen Kommentaren benachrichtigt.' : 'Du wirst bei Antworten auf deine Kommentare benachrichtigt.', 'ok', 5000);
+        if (!silent) ui.toast(res.role === 'all' ? t('Du wirst bei neuen Kommentaren benachrichtigt.') : t('Du wirst bei Antworten auf deine Kommentare benachrichtigt.'), 'ok', 5000);
       } catch (e) {
         state.push.subscribed = false;
-        if (!silent) ui.toast(`Benachrichtigungen: ${e.message}`, 'error', 7000);
+        if (!silent) ui.toast(`${t('Benachrichtigungen')}: ${e.message}`, 'error', 7000);
       }
       ui.refreshComments();
     },
@@ -433,17 +437,17 @@ async function main() {
         await api.resolveComment(state.id, id, resolved, { token: state.token, commentToken: local.commentToken(id) });
         await loadComments();
       } catch (e) {
-        ui.toast(`Ändern fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('Ändern fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     async deleteComment(id) {
-      if (!confirm('Kommentar löschen?')) return;
+      if (!confirm(t('Kommentar löschen?'))) return;
       try {
         await api.deleteComment(state.id, id, { token: state.token, commentToken: local.commentToken(id) });
         if (state.activeCommentId === id) state.activeCommentId = null;
         await loadComments();
       } catch (e) {
-        ui.toast(`Löschen fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('Löschen fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     focusComment(id) {
@@ -477,7 +481,7 @@ async function main() {
       if (!actions.requireEdit()) return;
       const road = getFeature(store.doc, roadId);
       if (!road || road.type !== 'road') return;
-      ui.toast('Parzellen werden abgefragt…');
+      ui.toast(t('Parzellen werden abgefragt…'));
       try {
         const res = await api.parcels(road.nodes);
         for (const p of res.parcels || []) {
@@ -488,25 +492,25 @@ async function main() {
           const r = getFeature(d, roadId);
           if (r) r.parcels = summary;
         });
-        ui.toast(summary.items.length ? `${summary.items.length} Parzelle${summary.items.length === 1 ? '' : 'n'} berührt.` : 'Keine Parzellen gefunden (amtliche Vermessung deckt nur die Schweiz ab).', 'ok', 5000);
+        ui.toast(summary.items.length ? tn(summary.items.length, '{n} Parzelle berührt.', '{n} Parzellen berührt.') : t('Keine Parzellen gefunden (amtliche Vermessung deckt nur die Schweiz ab).'), 'ok', 5000);
       } catch (e) {
-        ui.toast(`Parzellen: ${e.message}`, 'error', 7000);
+        ui.toast(`${t('Parzellen')}: ${e.message}`, 'error', 7000);
       }
     },
     clearParcels(roadId) {
       actions.patchFeature(roadId, 'Parzellen entfernen', (r) => { r.parcels = null; });
     },
     buildingsStatus() {
-      if (buildings.pending) return `Gebäude werden geladen… (${buildings.remaining} Zellen offen)`;
-      if (buildings.lastError) return `Gebäude: ${buildings.lastError.message}`;
-      return buildings.ways.size ? `${buildings.ways.size} Gebäude geladen.` : 'Noch keine Gebäude geladen.';
+      if (buildings.pending) return t('Gebäude werden geladen… ({n} Zellen offen)', { n: buildings.remaining });
+      if (buildings.lastError) return `${t('Gebäude')}: ${buildings.lastError.message}`;
+      return buildings.ways.size ? t('{n} Gebäude geladen.', { n: buildings.ways.size }) : t('Noch keine Gebäude geladen.');
     },
     buildingsLoaded: () => buildings.ways.size,
     loadBuildings() {
       const b = map.getBounds();
       const n = cellsFor(b).length;
       if (n > MAX_CELLS) {
-        ui.toast(`Ansicht zu gross (${n} Zellen, erlaubt ${MAX_CELLS}) – näher heranzoomen.`, 'error', 5000);
+        ui.toast(t('Ansicht zu gross ({n} Zellen, erlaubt {max}) – näher heranzoomen.', { n, max: MAX_CELLS }), 'error', 5000);
         return;
       }
       buildings.ensureArea(b);
@@ -543,9 +547,9 @@ async function main() {
       try {
         const res = await api.getDraft(state.id);
         applyServerDoc(res);
-        ui.toast('Aktueller Stand vom Server geladen.', 'ok');
+        ui.toast(t('Aktueller Stand vom Server geladen.'), 'ok');
       } catch (e) {
-        ui.toast(`Laden fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('Laden fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     tileSources: () => state.tileSources,
@@ -559,6 +563,13 @@ async function main() {
         ui.refreshRoute();
       }
       if ('exposureRadius' in patch) ui.refreshAnalysis();
+      if ('language' in patch) {
+        setLanguage(patch.language);
+        applyStatic();
+        ui.refreshAll();
+        ui.setStatus(tools.toolInfo().hint);
+        updateOsmStatus();
+      }
       if ('showOsm' in patch || 'snapOsm' in patch) ensureOsm();
       map.requestRender();
       ui.refreshTools();
@@ -567,7 +578,7 @@ async function main() {
     },
     requireEdit() {
       if (canEdit()) return true;
-      ui.toast('Nur Ansicht: Lege zuerst eine eigene Kopie an.');
+      ui.toast(t('Nur Ansicht: Lege zuerst eine eigene Kopie an.'));
       return false;
     },
     rename(name) {
@@ -579,12 +590,12 @@ async function main() {
     undo() {
       if (!actions.requireEdit()) return;
       const label = store.undo();
-      if (label) ui.toast(`Rückgängig: ${label}`);
+      if (label) ui.toast(`${t('Rückgängig')}: ${t(label)}`);
     },
     redo() {
       if (!actions.requireEdit()) return;
       const label = store.redo();
-      if (label) ui.toast(`Wiederholt: ${label}`);
+      if (label) ui.toast(`${t('Wiederholt')}: ${t(label)}`);
     },
     commitDoc(label, fn) {
       if (!actions.requireEdit()) return;
@@ -598,13 +609,13 @@ async function main() {
       if (!actions.requireEdit()) return;
       let changed = false;
       store.commit('Strasse vereinfachen', (d) => { changed = simplifyRoad(getFeature(d, id), 1); });
-      if (!changed) ui.toast('Nichts zu vereinfachen (Toleranz 1 m).');
+      if (!changed) ui.toast(t('Nichts zu vereinfachen (Toleranz 1 m).'));
     },
     async loadProfile(id) {
       if (!actions.requireEdit()) return;
       const road = getFeature(store.doc, id);
       if (!road || road.type !== 'road') return;
-      ui.toast('Höhenprofil wird geladen…');
+      ui.toast(t('Höhenprofil wird geladen…'));
       try {
         const res = await api.profile(road.nodes);
         const key = nodesKey(road.nodes);
@@ -612,9 +623,9 @@ async function main() {
           const r = getFeature(d, id);
           if (r) r.profile = { points: res.points, key };
         });
-        ui.toast('Höhenprofil geladen.', 'ok');
+        ui.toast(t('Höhenprofil geladen.'), 'ok');
       } catch (e) {
-        ui.toast(`Höhenprofil: ${e.message}`, 'error', 7000);
+        ui.toast(`${t('Höhenprofil')}: ${e.message}`, 'error', 7000);
       }
     },
     patchFeature(id, label, fn) {
@@ -633,7 +644,7 @@ async function main() {
     },
     addLayer() {
       if (!actions.requireEdit()) return;
-      const name = prompt('Name der neuen Ebene:', `Ebene ${store.doc.layers.length + 1}`);
+      const name = prompt(t('Name der neuen Ebene:'), `${t('Ebene')} ${store.doc.layers.length + 1}`);
       if (name === null) return;
       let id = null;
       store.commit('Ebene hinzufügen', (d) => { id = createLayer(d, name.trim() || undefined).id; });
@@ -647,7 +658,7 @@ async function main() {
       if (!actions.requireEdit() || store.doc.layers.length <= 1) return;
       const count = store.doc.features.filter((f) => f.layerId === id).length;
       const layer = getLayer(store.doc, id);
-      if (count && !confirm(`Ebene „${layer.name}“ mit ${count} Element(en) löschen?`)) return;
+      if (count && !confirm(t('Ebene „{name}“ mit {n} Element(en) löschen?', { name: layer.name, n: count }))) return;
       store.commit('Ebene löschen', (d) => removeLayer(d, id));
     },
     zoomToFeature(id) {
@@ -664,21 +675,21 @@ async function main() {
       }
     },
     confirmDiscard() {
-      return !actions.isDirty() || store.doc.features.length === 0 || confirm('Der aktuelle Entwurf hat ungespeicherte Änderungen. Trotzdem fortfahren?');
+      return !actions.isDirty() || store.doc.features.length === 0 || confirm(t('Der aktuelle Entwurf hat ungespeicherte Änderungen. Trotzdem fortfahren?'));
     },
     newDraft() {
       if (!actions.confirmDiscard()) return;
       bind(null, null);
       loadDocument(createDocument({ center: map.getCenter(), zoom: map.getZoom() }), { keepView: true });
       history.replaceState(null, '', '/');
-      ui.toast('Neuer Entwurf angelegt.');
+      ui.toast(t('Neuer Entwurf angelegt.'));
     },
     async saveDraft(label, { force = false } = {}) {
       store.doc.view = currentView();
       try {
         if (state.id && state.token) {
           if (label === undefined) {
-            label = prompt('Kurze Beschreibung dieser Version (optional):', '') ?? '';
+            label = prompt(t('Kurze Beschreibung dieser Version (optional):'), '') ?? '';
           }
           let res;
           try {
@@ -690,7 +701,7 @@ async function main() {
             if (choice === 'overwrite') return actions.saveDraft(label || 'Gespeichert', { force: true });
             if (choice === 'reload') {
               applyServerDoc(e.data);
-              ui.toast('Serverstand übernommen; deine Fassung liegt im Verlauf unter „Rückgängig“.', 'info', 6000);
+              ui.toast(t('Serverstand übernommen; deine Fassung liegt im Verlauf unter „Rückgängig“.'), 'info', 6000);
             }
             return undefined;
           }
@@ -711,15 +722,15 @@ async function main() {
         local.rememberDraft({ id: state.id, name: store.doc.name, token: state.token, updatedAt: state.serverUpdatedAt });
         saveWorking();
         ui.refreshAll();
-        ui.toast(`„${store.doc.name}“ gespeichert.`, 'ok');
+        ui.toast(t('„{name}“ gespeichert.', { name: store.doc.name }), 'ok');
       } catch (e) {
-        ui.toast(`Speichern fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('Speichern fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     async makeOwnCopy() {
       if (!state.id) return actions.saveDraft();
       try {
-        const name = prompt('Name deiner Kopie:', `${store.doc.name} (Kopie)`);
+        const name = prompt(t('Name deiner Kopie:'), `${store.doc.name} (${t('Kopie')})`);
         if (name === null) return;
         const res = await api.forkDraft(state.id, name.trim());
         const copy = deserialize(JSON.stringify(res.doc));
@@ -732,14 +743,14 @@ async function main() {
         saveWorking();
         ui.showBanner(null);
         ui.refreshAll();
-        ui.toast('Eigene Kopie angelegt – du kannst jetzt bearbeiten.', 'ok');
+        ui.toast(t('Eigene Kopie angelegt – du kannst jetzt bearbeiten.'), 'ok');
       } catch (e) {
-        ui.toast(`Kopie fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('Kopie fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     async saveCopy() {
       if (!state.id) return actions.saveDraft();
-      const name = prompt('Name der Kopie:', `${store.doc.name} (Kopie)`);
+      const name = prompt(t('Name der Kopie:'), `${store.doc.name} (${t('Kopie')})`);
       if (name === null) return;
       const copy = cloneDocument(store.doc);
       copy.name = name.trim() || copy.name;
@@ -753,9 +764,9 @@ async function main() {
         history.replaceState(null, '', `/d/${res.id}`);
         saveWorking();
         ui.refreshAll();
-        ui.toast(`Kopie „${copy.name}“ gespeichert.`, 'ok');
+        ui.toast(t('Kopie „{name}“ gespeichert.', { name: copy.name }), 'ok');
       } catch (e) {
-        ui.toast(`Kopie fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('Kopie fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     openDraft(id) {
@@ -765,7 +776,7 @@ async function main() {
     },
     openByLink(text) {
       const m = /([0-9a-z]{6,32})(?:\/?(?:#.*)?)?$/.exec(text.trim());
-      if (!m) return ui.toast('Das sieht nicht nach einem Entwurfs-Link aus.', 'error');
+      if (!m) return ui.toast(t('Das sieht nicht nach einem Entwurfs-Link aus.'), 'error');
       const hash = /#(edit=[0-9a-f]+)/.exec(text);
       if (!actions.confirmDiscard()) return;
       location.href = `/d/${m[1]}${hash ? '#' + hash[1] : ''}`;
@@ -775,13 +786,13 @@ async function main() {
       if (!entry) return;
       const own = !!entry.token;
       const msg = own
-        ? `Entwurf „${entry.name}“ auf dem Server samt Versionen endgültig löschen?`
-        : `„${entry.name}“ aus deiner Liste entfernen? (Der Entwurf bleibt auf dem Server, du hast kein Bearbeitungsrecht.)`;
+        ? t('Entwurf „{name}“ auf dem Server samt Versionen endgültig löschen?', { name: entry.name })
+        : t('„{name}“ aus deiner Liste entfernen? (Der Entwurf bleibt auf dem Server, du hast kein Bearbeitungsrecht.)', { name: entry.name });
       if (!confirm(msg)) return;
       try {
         if (own) await api.deleteDraft(id, entry.token);
       } catch (e) {
-        if (e.status !== 404) return ui.toast(`Löschen fehlgeschlagen: ${e.message}`, 'error', 6000);
+        if (e.status !== 404) return ui.toast(`${t('Löschen fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
       local.forgetDraft(id);
       if (id === state.id) {
@@ -808,9 +819,9 @@ async function main() {
           d.layers = restored.layers;
           d.features = restored.features;
         });
-        ui.toast('Version wiederhergestellt (mit Rückgängig widerrufbar).');
+        ui.toast(t('Version wiederhergestellt (mit Rückgängig widerrufbar).'));
       } catch (e) {
-        ui.toast(`Version konnte nicht geladen werden: ${e.message}`, 'error');
+        ui.toast(`${t('Version konnte nicht geladen werden')}: ${e.message}`, 'error');
       }
     },
     exportJson() {
@@ -830,12 +841,12 @@ async function main() {
           bind(null, null);
           loadDocument(d);
           history.replaceState(null, '', '/');
-          ui.toast(`„${d.name}“ importiert – speichern, um ihn auf dem Server abzulegen.`);
+          ui.toast(t('„{name}“ importiert – speichern, um ihn auf dem Server abzulegen.', { name: d.name }));
           return;
         }
         if (!actions.requireEdit()) return;
-        if (!parsed.items.length) return ui.toast('Keine Linien, Punkte oder Flächen in der Datei gefunden.', 'error', 6000);
-        const name = `Import ${file.name.replace(/\.[^.]+$/, '')}`.slice(0, 60);
+        if (!parsed.items.length) return ui.toast(t('Keine Linien, Punkte oder Flächen in der Datei gefunden.'), 'error', 6000);
+        const name = `${t('Import')} ${file.name.replace(/\.[^.]+$/, '')}`.slice(0, 60);
         let counts = null;
         store.commit(`Import ${parsed.format.toUpperCase()}`, (d) => { counts = applyImport(d, parsed.items, { layerName: name }); });
         actions.setActiveLayer(counts.layerId);
@@ -844,9 +855,9 @@ async function main() {
         const lngs = [];
         for (const f of layerFeatures) for (const p of f.nodes || [f.at]) { lats.push(p[0]); lngs.push(p[1]); }
         if (lats.length) map.fitBounds({ south: Math.min(...lats), west: Math.min(...lngs), north: Math.max(...lats), east: Math.max(...lngs) }, { padding: 60, maxZoom: 17 });
-        ui.toast(`${parsed.format.toUpperCase()} importiert: ${counts.roads} Strassen, ${counts.junctions} Punkte, ${counts.zones} Flächen auf Ebene „${name}“ (Status „bestehend“).`, 'ok', 7000);
+        ui.toast(t('{format} importiert: {roads} Strassen, {junctions} Punkte, {zones} Flächen auf Ebene „{name}“ (Status „bestehend“).', { format: parsed.format.toUpperCase(), roads: counts.roads, junctions: counts.junctions, zones: counts.zones, name }), 'ok', 7000);
       } catch (e) {
-        ui.toast(`Import fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('Import fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     diff: () => state.diff,
@@ -861,7 +872,7 @@ async function main() {
       map.requestRender();
     },
     async compareVersions(a, b) {
-      if (!state.id) throw new Error('Entwurf ist nicht gespeichert');
+      if (!state.id) throw new Error(t('Entwurf ist nicht gespeichert'));
       const load = async (which) => (which === 'current' ? store.doc : deserialize(JSON.stringify((await api.version(state.id, Number(which))).doc)));
       const [docA, docB] = await Promise.all([load(a), load(b)]);
       state.diff = { a, b, result: diffDocuments(docA, docB) };
@@ -895,11 +906,11 @@ async function main() {
     addPair() {
       if (!actions.requireEdit()) return;
       const n = (store.doc.routePairs || []).length;
-      if (n >= 20) return ui.toast('Höchstens 20 Routenpaare.', 'error');
+      if (n >= 20) return ui.toast(t('Höchstens 20 Routenpaare.'), 'error');
       const id = newId('p');
       store.commit('Routenpaar hinzufügen', (d) => {
         if (!d.routePairs) d.routePairs = [];
-        d.routePairs.push({ id, name: `Paar ${n + 1}`, from: null, to: null });
+        d.routePairs.push({ id, name: `${t('Paar')} ${n + 1}`, from: null, to: null });
       });
       tools.captureRoute({ pairId: id });
       ui.refreshRoute();
@@ -940,9 +951,9 @@ async function main() {
       actions.commitDoc('Erreichbarkeit löschen', (d) => { d.isochrone = null; });
     },
     routeNetworkStatus() {
-      if (osm.pending) return `Strassennetz wird geladen… (${osm.remaining} Zellen offen)`;
-      if (osm.lastError) return `Strassennetz: ${osm.lastError.message}`;
-      return osm.ways.size ? `${osm.ways.size} OSM-Strassen im Speicher.` : 'Noch kein Strassennetz geladen – Start und Ziel setzen oder „Netz für Ansicht laden“.';
+      if (osm.pending) return t('Strassennetz wird geladen… ({n} Zellen offen)', { n: osm.remaining });
+      if (osm.lastError) return `${t('Strassennetz')}: ${osm.lastError.message}`;
+      return osm.ways.size ? t('{n} OSM-Strassen im Speicher.', { n: osm.ways.size }) : t('Noch kein Strassennetz geladen – Start und Ziel setzen oder „Netz für Ansicht laden“.');
     },
     swapRoute() {
       const q = store.doc.route;
@@ -961,7 +972,7 @@ async function main() {
       const b = map.getBounds();
       const n = cellsFor(b).length;
       if (n > MAX_CELLS) {
-        ui.toast(`Ansicht zu gross (${n} Zellen, erlaubt ${MAX_CELLS}) – näher heranzoomen.`, 'error', 5000);
+        ui.toast(t('Ansicht zu gross ({n} Zellen, erlaubt {max}) – näher heranzoomen.', { n, max: MAX_CELLS }), 'error', 5000);
         return;
       }
       osm.ensureArea(b);
@@ -971,14 +982,14 @@ async function main() {
       try {
         await actions.runExport({ format: 'png', mode: 'view', paper: 'a4', orientation: 'landscape', dpi: 150 });
       } catch (e) {
-        ui.toast(`PNG-Export fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('PNG-Export fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     async exportPdf() {
       try {
         await actions.runExport({ format: 'pdf', mode: 'view', paper: 'a4', orientation: 'landscape', dpi: 150 });
       } catch (e) {
-        ui.toast(`PDF-Export fehlgeschlagen: ${e.message}`, 'error', 6000);
+        ui.toast(`${t('PDF-Export fehlgeschlagen')}: ${e.message}`, 'error', 6000);
       }
     },
     search: (q) => api.search(q),
@@ -991,10 +1002,10 @@ async function main() {
       ui.setPin({ latlng: [result.lat, result.lng], label: result.label });
     },
     locate() {
-      if (!navigator.geolocation) return ui.toast('Standortbestimmung nicht verfügbar.', 'error');
+      if (!navigator.geolocation) return ui.toast(t('Standortbestimmung nicht verfügbar.'), 'error');
       navigator.geolocation.getCurrentPosition(
         (pos) => map.flyTo([pos.coords.latitude, pos.coords.longitude], 16),
-        () => ui.toast('Standort konnte nicht bestimmt werden.', 'error'),
+        () => ui.toast(t('Standort konnte nicht bestimmt werden.'), 'error'),
         { enableHighAccuracy: true, timeout: 8000 },
       );
     },
@@ -1022,14 +1033,14 @@ async function main() {
         const fresh = list.filter((c) => !state.knownCommentIds.has(c.id) && !local.commentToken(c.id));
         if (fresh.length && !quiet) {
           const c = fresh[fresh.length - 1];
-          ui.toast(`${fresh.length === 1 ? 'Neuer Kommentar' : `${fresh.length} neue Kommentare`}: ${c.author}: ${c.text.slice(0, 60)}${c.text.length > 60 ? '…' : ''}`, 'info', 6000);
+          ui.toast(`${tn(fresh.length, 'Neuer Kommentar', '{n} neue Kommentare')}: ${c.author}: ${c.text.slice(0, 60)}${c.text.length > 60 ? '…' : ''}`, 'info', 6000);
         }
       }
       state.comments = list;
       state.knownCommentIds = new Set(list.map((c) => c.id));
       state.commentsLoadedFor = state.id;
     } catch (e) {
-      if (e.status !== 404 && !quiet) ui.toast(`Kommentare: ${e.message}`, 'error');
+      if (e.status !== 404 && !quiet) ui.toast(`${t('Kommentare')}: ${e.message}`, 'error');
       state.comments = [];
     }
     map.requestRender();
@@ -1164,13 +1175,13 @@ async function main() {
         try {
           const res = await api.getDraft(state.id);
           applyServerDoc(res);
-          ui.toast('Der Entwurf wurde von jemand anderem gespeichert – Ansicht aktualisiert.', 'info', 5000);
+          ui.toast(t('Der Entwurf wurde von jemand anderem gespeichert – Ansicht aktualisiert.'), 'info', 5000);
         } catch {
           // beim nächsten Speichern meldet der Server den Konflikt
         }
       } else {
         state.remoteUpdate = { updatedAt: data.updatedAt, versionCount: data.versionCount };
-        ui.showBanner('Jemand anderes hat diesen Entwurf inzwischen gespeichert. Beim Speichern wirst du gefragt, welcher Stand gilt.', 'Serverstand laden', () => actions.reloadFromServer());
+        ui.showBanner(t('Jemand anderes hat diesen Entwurf inzwischen gespeichert. Beim Speichern wirst du gefragt, welcher Stand gilt.'), t('Serverstand laden'), () => actions.reloadFromServer());
       }
     });
     es.addEventListener('comment', (e) => {
@@ -1229,10 +1240,10 @@ async function main() {
   function updateOsmStatus(info) {
     const zoom = map.getZoom();
     if (!settings.snapOsm && !settings.showOsm) return ui.setOsmStatus('');
-    if (zoom < OSM_MIN_ZOOM) return ui.setOsmStatus(`OSM-Strassen ab Zoom ${OSM_MIN_ZOOM}`, 'muted');
-    if (info && info.status === 'loading') return ui.setOsmStatus(`Lade OSM-Strassen… (${info.remaining || osm.remaining} Zellen)`, 'muted');
-    if (info && info.status === 'error') return ui.setOsmStatus(`OSM-Strassen: ${info.error.message}`, 'error');
-    ui.setOsmStatus(`${osm.ways.size} OSM-Strassen geladen`, 'ok');
+    if (zoom < OSM_MIN_ZOOM) return ui.setOsmStatus(t('OSM-Strassen ab Zoom {z}', { z: OSM_MIN_ZOOM }), 'muted');
+    if (info && info.status === 'loading') return ui.setOsmStatus(t('Lade OSM-Strassen… ({n} Zellen)', { n: info.remaining || osm.remaining }), 'muted');
+    if (info && info.status === 'error') return ui.setOsmStatus(`${t('OSM-Strassen')}: ${info.error.message}`, 'error');
+    ui.setOsmStatus(t('{n} OSM-Strassen geladen', { n: osm.ways.size }), 'ok');
   }
 
   ui = new UI({ store, local, settings, tools, actions, map });
@@ -1366,7 +1377,7 @@ async function main() {
       map.fitBounds({ south: Math.min(...lats), west: Math.min(...lngs), north: Math.max(...lats), east: Math.max(...lngs) }, { padding: 80, maxZoom: 17 });
     }
   } else if (openedFromLink && !canEdit()) {
-    ui.showBanner('Nur Ansicht: Dieser Entwurf wurde mit dir geteilt. Lege eine eigene Kopie an, um ihn zu bearbeiten.', 'Eigene Kopie anlegen', () => actions.makeOwnCopy());
+    ui.showBanner(t('Nur Ansicht: Dieser Entwurf wurde mit dir geteilt. Lege eine eigene Kopie an, um ihn zu bearbeiten.'), t('Eigene Kopie anlegen'), () => actions.makeOwnCopy());
   } else if (openedFromLink) {
     ui.showTab('drafts');
   }
@@ -1374,5 +1385,5 @@ async function main() {
 
 main().catch((e) => {
   console.error(e);
-  alert(`Der Stadtplaner konnte nicht starten: ${e.message}`);
+  alert(`Der Stadtplaner konnte nicht starten / n'a pas pu démarrer / non è partito: ${e.message}`);
 });

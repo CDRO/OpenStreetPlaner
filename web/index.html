@@ -11,86 +11,86 @@
 </head>
 <body>
   <header class="topbar">
-    <button id="sidebar-toggle" class="icon-btn" title="Seitenleiste ein-/ausblenden" aria-label="Seitenleiste">☰</button>
+    <button id="sidebar-toggle" class="icon-btn" title="Seitenleiste ein-/ausblenden" aria-label="Seitenleiste" data-i18n-title>☰</button>
     <div class="brand" title="Stadtplaner">Stadtplaner</div>
-    <input id="draft-name" class="draft-name" type="text" placeholder="Name des Entwurfs" spellcheck="false" aria-label="Name des Entwurfs">
-    <span id="dirty-indicator" class="dirty" title="Ungespeicherte Änderungen" hidden>●</span>
-    <span id="readonly-indicator" class="badge muted" title="Du hast kein Bearbeitungsrecht für diesen Entwurf" hidden>nur Ansicht</span>
+    <input id="draft-name" class="draft-name" type="text" placeholder="Name des Entwurfs" spellcheck="false" aria-label="Name des Entwurfs" data-i18n-placeholder>
+    <span id="dirty-indicator" class="dirty" title="Ungespeicherte Änderungen" data-i18n-title hidden>●</span>
+    <span id="readonly-indicator" class="badge muted" title="Du hast kein Bearbeitungsrecht für diesen Entwurf" data-i18n-title data-i18n hidden>nur Ansicht</span>
     <div class="search">
-      <input id="search-input" type="search" placeholder="Ort oder Adresse suchen…" autocomplete="off" aria-label="Ort suchen">
+      <input id="search-input" type="search" placeholder="Ort oder Adresse suchen…" autocomplete="off" aria-label="Ort suchen" data-i18n-placeholder>
       <ul id="search-results" class="search-results" hidden></ul>
     </div>
     <div class="topbar-actions">
-      <button id="btn-undo" class="icon-btn" title="Rückgängig (Ctrl+Z)" aria-label="Rückgängig">↶</button>
-      <button id="btn-redo" class="icon-btn" title="Wiederholen (Ctrl+Y)" aria-label="Wiederholen">↷</button>
-      <button id="btn-locate" class="icon-btn" title="Zu meinem Standort" aria-label="Mein Standort">◎</button>
-      <button id="btn-save" class="btn" title="Speichern (Ctrl+S)">Speichern</button>
-      <button id="btn-share" class="btn primary">Teilen</button>
+      <button id="btn-undo" class="icon-btn" title="Rückgängig (Ctrl+Z)" aria-label="Rückgängig" data-i18n-title>↶</button>
+      <button id="btn-redo" class="icon-btn" title="Wiederholen (Ctrl+Y)" aria-label="Wiederholen" data-i18n-title>↷</button>
+      <button id="btn-locate" class="icon-btn" title="Zu meinem Standort" aria-label="Mein Standort" data-i18n-title>◎</button>
+      <button id="btn-save" class="btn" title="Speichern (Ctrl+S)" data-i18n-title>Speichern</button>
+      <button id="btn-share" class="btn primary" data-i18n>Teilen</button>
     </div>
   </header>
 
   <div class="workspace">
     <aside id="sidebar" class="sidebar">
       <nav class="tabs" role="tablist">
-        <button type="button" data-tab="draw" class="active">Zeichnen</button>
-        <button type="button" data-tab="layers">Ebenen</button>
-        <button type="button" data-tab="drafts">Entwürfe</button>
-        <button type="button" data-tab="history">Verlauf</button>
-        <button type="button" data-tab="route">Route</button>
-        <button type="button" data-tab="comments">Kommentare</button>
-        <button type="button" data-tab="analysis">Analyse</button>
+        <button type="button" data-tab="draw" class="active" data-i18n>Zeichnen</button>
+        <button type="button" data-tab="layers" data-i18n>Ebenen</button>
+        <button type="button" data-tab="drafts" data-i18n>Entwürfe</button>
+        <button type="button" data-tab="history" data-i18n>Verlauf</button>
+        <button type="button" data-tab="route" data-i18n>Route</button>
+        <button type="button" data-tab="comments" data-i18n>Kommentare</button>
+        <button type="button" data-tab="analysis" data-i18n>Analyse</button>
       </nav>
 
       <section id="tab-draw" class="tab active">
         <div id="tool-buttons" class="tool-grid"></div>
-        <label class="field">Zeichnen auf Ebene<select id="active-layer"></select></label>
-        <label class="field">Typ für neue Strassen<select id="default-kind"></select></label>
-        <label class="field">Art für neue Flächen<select id="default-zone-kind"></select></label>
+        <label class="field"><span data-i18n>Zeichnen auf Ebene</span><select id="active-layer"></select></label>
+        <label class="field"><span data-i18n>Typ für neue Strassen</span><select id="default-kind"></select></label>
+        <label class="field"><span data-i18n>Art für neue Flächen</span><select id="default-zone-kind"></select></label>
         <div id="properties" class="box"></div>
         <details class="box" open>
-          <summary>Karte</summary>
+          <summary data-i18n>Karte</summary>
           <div id="map-settings"></div>
         </details>
         <details class="box" open>
-          <summary>Einrasten</summary>
+          <summary data-i18n>Einrasten</summary>
           <div id="snap-settings"></div>
         </details>
         <details class="box">
-          <summary>Legende &amp; Tastenkürzel</summary>
+          <summary data-i18n-html>Legende &amp; Tastenkürzel</summary>
           <ul class="legend">
-            <li><span class="swatch ground"></span> Ebenerdig</li>
-            <li><span class="swatch bridge"></span> Brücke (dunkle Einfassung)</li>
-            <li><span class="swatch tunnel"></span> Tunnel (gestrichelt, halbtransparent)</li>
-            <li><span class="swatch remove"></span> Rückbau (rot gestrichelt)</li>
-            <li><span class="swatch osm"></span> Geladene OSM-Strassen (Einrast-Ziele)</li>
-            <li><span class="swatch route-cur"></span> Route heute · <span class="swatch route-new"></span> Route neu</li>
-            <li><span class="sign">30</span> Tempolimit (ab Zoom 16)</li>
-            <li><span class="swatch zone"></span> Flächen: Tempo-30 blau, Begegnungszone violett, Fussgängerzone grün, Parkplatz grau</li>
-            <li><span class="swatch comment"></span> Kommentare (orange, erledigt grau)</li>
+            <li><span class="swatch ground"></span> <span data-i18n>Ebenerdig</span></li>
+            <li><span class="swatch bridge"></span> <span data-i18n>Brücke (dunkle Einfassung)</span></li>
+            <li><span class="swatch tunnel"></span> <span data-i18n>Tunnel (gestrichelt, halbtransparent)</span></li>
+            <li><span class="swatch remove"></span> <span data-i18n>Rückbau (rot gestrichelt)</span></li>
+            <li><span class="swatch osm"></span> <span data-i18n>Geladene OSM-Strassen (Einrast-Ziele)</span></li>
+            <li><span class="swatch route-cur"></span> <span data-i18n>Route heute</span> · <span class="swatch route-new"></span> <span data-i18n>Route neu</span></li>
+            <li><span class="sign">30</span> <span data-i18n>Tempolimit (ab Zoom 16)</span></li>
+            <li><span class="swatch zone"></span> <span data-i18n>Flächen: Tempo-30 blau, Begegnungszone violett, Fussgängerzone grün, Parkplatz grau</span></li>
+            <li><span class="swatch comment"></span> <span data-i18n>Kommentare (orange, erledigt grau)</span></li>
           </ul>
           <ul class="keys">
-            <li><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung/Punkt · <kbd>R</kbd> Kreisel · <kbd>F</kbd> Fläche · <kbd>O</kbd> OSM übernehmen · <kbd>T</kbd> Route · <kbd>C</kbd> Kommentar</li>
-            <li><kbd>Enter</kbd> Strasse beenden · <kbd>Esc</kbd> abbrechen / Auswahl aufheben · <kbd>⌫</kbd> letzter Punkt</li>
-            <li><kbd>Entf</kbd> Ausgewähltes löschen · <kbd>Ctrl</kbd>+<kbd>Z</kbd>/<kbd>Y</kbd> rückgängig/wiederholen · <kbd>Ctrl</kbd>+<kbd>S</kbd> speichern</li>
-            <li><kbd>Shift</kbd> (einstellbar) gedrückt halten: Einrasten für diese Aktion aussetzen</li>
-            <li>Karte: ziehen, Mausrad, Doppelklick, Pfeiltasten, <kbd>+</kbd>/<kbd>−</kbd>, Pinch auf Touch</li>
+            <li data-i18n-html><kbd>V</kbd> Auswählen · <kbd>S</kbd> Strasse · <kbd>K</kbd> Kreuzung/Punkt · <kbd>R</kbd> Kreisel · <kbd>F</kbd> Fläche · <kbd>O</kbd> OSM übernehmen · <kbd>T</kbd> Route · <kbd>C</kbd> Kommentar</li>
+            <li data-i18n-html><kbd>Enter</kbd> Strasse beenden · <kbd>Esc</kbd> abbrechen / Auswahl aufheben · <kbd>⌫</kbd> letzter Punkt</li>
+            <li data-i18n-html><kbd>Entf</kbd> Ausgewähltes löschen · <kbd>Ctrl</kbd>+<kbd>Z</kbd>/<kbd>Y</kbd> rückgängig/wiederholen · <kbd>Ctrl</kbd>+<kbd>S</kbd> speichern</li>
+            <li data-i18n-html><kbd>Shift</kbd> (einstellbar) gedrückt halten: Einrasten für diese Aktion aussetzen</li>
+            <li data-i18n-html>Karte: ziehen, Mausrad, Doppelklick, Pfeiltasten, <kbd>+</kbd>/<kbd>−</kbd>, Pinch auf Touch</li>
           </ul>
         </details>
       </section>
 
       <section id="tab-layers" class="tab">
-        <p class="muted">Ebenen lassen sich ein- und ausblenden, umbenennen und einfärben. Neue Elemente landen auf der aktiven Ebene (Punkt links).</p>
+        <p class="muted" data-i18n>Ebenen lassen sich ein- und ausblenden, umbenennen und einfärben. Neue Elemente landen auf der aktiven Ebene (Punkt links).</p>
         <div id="layer-list"></div>
-        <button type="button" id="btn-add-layer" class="btn">+ Neue Ebene</button>
+        <button type="button" id="btn-add-layer" class="btn" data-i18n>+ Neue Ebene</button>
       </section>
 
       <section id="tab-drafts" class="tab">
         <div id="draft-current" class="box"></div>
-        <h3>Meine Entwürfe</h3>
-        <p class="muted small">Entwürfe liegen auf dem Server; dieser Browser merkt sich, welche dir gehören.</p>
+        <h3 data-i18n>Meine Entwürfe</h3>
+        <p class="muted small" data-i18n>Entwürfe liegen auf dem Server; dieser Browser merkt sich, welche dir gehören.</p>
         <div id="draft-list"></div>
-        <h3>Entwurf per Link öffnen</h3>
-        <div class="link-row"><input type="text" id="open-link" placeholder="Link oder ID einfügen"><button type="button" id="open-link-btn" class="btn">Öffnen</button></div>
+        <h3 data-i18n>Entwurf per Link öffnen</h3>
+        <div class="link-row"><input type="text" id="open-link" placeholder="Link oder ID einfügen" data-i18n-placeholder><button type="button" id="open-link-btn" class="btn" data-i18n>Öffnen</button></div>
       </section>
 
       <section id="tab-history" class="tab">
@@ -99,12 +99,12 @@
       </section>
 
       <section id="tab-route" class="tab">
-        <h3>Routen-Rechner: heute vs. neu</h3>
+        <h3 data-i18n>Routen-Rechner: heute vs. neu</h3>
         <div id="route-panel"></div>
       </section>
 
       <section id="tab-comments" class="tab">
-        <h3>Kommentare</h3>
+        <h3 data-i18n>Kommentare</h3>
         <div id="comments-panel"></div>
       </section>
 
@@ -117,12 +117,12 @@
       <div id="map" class="map" role="application" aria-label="Karte"></div>
       <div id="tooltip" class="tooltip" hidden></div>
       <div id="draw-actions" class="draw-actions" hidden>
-        <button type="button" id="da-finish" class="btn small primary">Fertig</button>
-        <button type="button" id="da-undo-point" class="btn small">Letzter Punkt</button>
-        <button type="button" id="da-cancel" class="btn small">Abbrechen</button>
+        <button type="button" id="da-finish" class="btn small primary" data-i18n>Fertig</button>
+        <button type="button" id="da-undo-point" class="btn small" data-i18n>Letzter Punkt</button>
+        <button type="button" id="da-cancel" class="btn small" data-i18n>Abbrechen</button>
       </div>
       <div id="present-panel" class="present-panel" hidden></div>
-      <div id="pin" class="pin" hidden><div class="pin-marker"></div><div class="pin-label"><span id="pin-label"></span> <button type="button" id="pin-close" class="icon-btn" title="Markierung entfernen">✕</button></div></div>
+      <div id="pin" class="pin" hidden><div class="pin-marker"></div><div class="pin-label"><span id="pin-label"></span> <button type="button" id="pin-close" class="icon-btn" title="Markierung entfernen" data-i18n-title>✕</button></div></div>
     </div>
   </div>
 

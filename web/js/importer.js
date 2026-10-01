@@ -5,6 +5,7 @@
 import { createJunction, createLayer, createRoad, createZone } from './model.js';
 import { roadKindFromHighway } from './osm.js';
 import { parseMaxspeed } from './routing.js';
+import { t } from './i18n.js';
 
 export const MAX_IMPORT_FEATURES = 2000;
 export const MAX_IMPORT_POINTS = 5000;
@@ -136,7 +137,7 @@ export function parseKML(text) {
 /** Liest eine Datei: { format, doc } für Stadtplaner-JSON, sonst { format, items }. */
 export function parseImport(text, filename = '') {
   const format = detectFormat(text, filename);
-  if (!format) throw new Error('Format nicht erkannt (unterstützt: Stadtplaner-JSON, GeoJSON, GPX, KML)');
+  if (!format) throw new Error(t('Format nicht erkannt (unterstützt: Stadtplaner-JSON, GeoJSON, GPX, KML)'));
   if (format === 'stadtplaner') return { format, raw: JSON.parse(text) };
   if (format === 'geojson') return { format, items: parseGeoJSON(JSON.parse(text)) };
   if (format === 'gpx') return { format, items: parseGPX(text) };

@@ -19,7 +19,8 @@ export const DEFAULT_SETTINGS = {
   basemap: 'osm',
   overlays: [], // IDs eingeschalteter Kachel-Overlays (z. B. Parzellen)
   speedModel: 'limit',
-  exposureRadius: 50, // Umkreis für betroffene Gebäude (m) // 'limit' = Tempolimit, 'geometry' = Kurven, Steigung, Streuung
+  exposureRadius: 50, // Umkreis für betroffene Gebäude (m)
+  language: '', // leer = aus dem Browser ableiten (de/fr/it) // 'limit' = Tempolimit, 'geometry' = Kurven, Steigung, Streuung
 };
 
 export class LocalState {

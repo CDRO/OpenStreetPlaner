@@ -8,6 +8,7 @@ import { estimateCosts, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
 import { drawQR, encodeQR } from './qr.js';
 import { EARTH_RADIUS } from './geometry.js';
+import { locale, t, tn } from './i18n.js';
 import { haversine } from './geometry.js';
 
 /** Papierformate in Millimetern (Querformat). */
@@ -125,9 +126,9 @@ export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link 
   ctx.fillText(doc.name, pad, 30 * dpr);
   ctx.fillStyle = '#6b7480';
   ctx.font = `${12 * dpr}px system-ui, sans-serif`;
-  const date = new Date().toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
+  const date = new Date().toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
   const drawn = scaleDenominator(mpp);
-  const scaleText = scale ? (Math.abs(drawn - scale) / scale > 0.02 ? `Massstab 1:${scale} (gezeichnet 1:${drawn}, Kachelgrenze)` : `Massstab 1:${scale}`) : `ca. 1:${drawn}`;
+  const scaleText = scale ? (Math.abs(drawn - scale) / scale > 0.02 ? t('Massstab 1:{scale} (gezeichnet 1:{drawn}, Kachelgrenze)', { scale, drawn }) : `${t('Massstab')} 1:${scale}`) : `ca. 1:${drawn}`;
   ctx.fillText(`Stadtplaner · ${date} · ${scaleText}${link ? ` · ${link}` : ''}`, pad, 52 * dpr);
 
   // Karte
@@ -138,7 +139,7 @@ export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link 
 
   // Attribution und Massstab auf der Karte
   ctx.font = `${11 * dpr}px system-ui, sans-serif`;
-  const attr = '© OpenStreetMap-Mitwirkende';
+  const attr = t('© OpenStreetMap-Mitwirkende');
   const aw = ctx.measureText(attr).width + 12 * dpr;
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.fillRect(W - aw, header + mapH - 18 * dpr, aw, 18 * dpr);
@@ -218,14 +219,14 @@ export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link 
     if (l.visible === false) continue;
     item(l.name, line(l.color, 4));
   }
-  item(LEVELS[1].label, line('#d7263d', 4, [], '#1a1a1a'));
-  item(LEVELS[2].label, line('rgba(215,38,61,0.55)', 4, [8, 6]));
-  item('Rückbau', line('#c62828', 4, [5, 5]));
+  item(t(LEVELS[1].label), line('#d7263d', 4, [], '#1a1a1a'));
+  item(t(LEVELS[2].label), line('rgba(215,38,61,0.55)', 4, [8, 6]));
+  item(t('Rückbau'), line('#c62828', 4, [5, 5]));
   const zoneKinds = new Set(doc.features.filter((f) => f.type === 'zone').map((f) => f.kind));
   for (const k of ZONE_KINDS) {
     if (!zoneKinds.has(k.id)) continue;
     const color = k.color || '#d7263d';
-    item(k.label, (sx, sy) => {
+    item(t(k.label), (sx, sy) => {
       ctx.save();
       ctx.fillStyle = color;
       ctx.globalAlpha = 0.25;
@@ -243,8 +244,8 @@ export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link 
     x = pad;
     const cur = routes.current && !routes.current.error ? routes.current : null;
     const neu = routes.proposed && !routes.proposed.error ? routes.proposed : null;
-    item(cur ? `Route heute: ${(cur.dist / 1000).toFixed(2)} km, ${formatDuration(cur.time)}` : 'Route heute: keine Verbindung', line('#1b6ac9', 5));
-    item(neu ? `Route neu: ${(neu.dist / 1000).toFixed(2)} km, ${formatDuration(neu.time)}` : 'Route neu: keine Verbindung', line('#2a9d3f', 5));
+    item(`${t('Route heute')}: ${cur ? `${(cur.dist / 1000).toFixed(2)} km, ${formatDuration(cur.time)}` : t('keine Verbindung')}`, line('#1b6ac9', 5));
+    item(`${t('Route neu')}: ${neu ? `${(neu.dist / 1000).toFixed(2)} km, ${formatDuration(neu.time)}` : t('keine Verbindung')}`, line('#2a9d3f', 5));
   }
   return out;
 }
@@ -489,7 +490,7 @@ function pdfTextString(s) {
 
 const ROAD_KINDS_LABELS = [
   { id: 'motorway', label: 'Autobahn' }, { id: 'trunk', label: 'Autostrasse' }, { id: 'main', label: 'Hauptstrasse' }, { id: 'secondary', label: 'Nebenstrasse' },
-  { id: 'residential', label: 'Quartierstrasse' }, { id: 'service', label: 'Zufahrt' }, { id: 'path', label: 'Fuss-/Veloweg' }, { id: 'other', label: 'Sonstiges' },
+  { id: 'residential', label: 'Quartierstrasse' }, { id: 'service', label: 'Zufahrt' }, { id: 'path', label: 'Fuss- / Veloweg' }, { id: 'other', label: 'Sonstiges' },
 ];
 const STATUS_LABELS = { new: 'neu', existing: 'bestehend', remove: 'Rückbau' };
 const JUNCTION_LABELS = [
@@ -500,76 +501,76 @@ const JUNCTION_LABELS = [
 /** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
 export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null } = {}) {
   const blocks = [];
-  const date = new Date().toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
+  const date = new Date().toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
   blocks.push({ text: doc.name, size: 18, bold: true });
-  blocks.push({ text: `Planungsvorschlag · ${date}${link ? ` · ${link}` : ''}`, size: 9.5, gap: 10 });
+  blocks.push({ text: `${t('Planungsvorschlag')} · ${date}${link ? ` · ${link}` : ''}`, size: 9.5, gap: 10 });
   const layerName = (id) => (doc.layers.find((l) => l.id === id) || {}).name || '';
-  const kindLabel = (list, id) => (list.find((k) => k.id === id) || {}).label || id;
+  const kindLabel = (list, id) => t((list.find((k) => k.id === id) || {}).label || id);
   const roads = doc.features.filter((f) => f.type === 'road');
   const zones = doc.features.filter((f) => f.type === 'zone');
   const points = doc.features.filter((f) => f.type === 'junction' || f.type === 'roundabout');
-  blocks.push({ text: 'Massnahmen', size: 13, bold: true });
-  if (!roads.length && !zones.length && !points.length) blocks.push({ text: 'Keine Elemente.' });
+  blocks.push({ text: t('Massnahmen'), size: 13, bold: true });
+  if (!roads.length && !zones.length && !points.length) blocks.push({ text: t('Keine Elemente.') });
   roads.forEach((r, i) => {
     const len = Math.round(pathLengthLL(r.nodes));
-    const parts = [`${i + 1}. ${r.name || 'Strasse'} (${kindLabel(ROAD_KINDS_LABELS, r.kind)}, ${STATUS_LABELS[r.status] || r.status})`, `${len} m`];
-    if (r.maxspeed) parts.push(`Tempo ${r.maxspeed}`);
-    parts.push(`Breite ${roadWidthMeters(r)} m${r.section ? ` (${sectionSummary(r.section)})` : ''}`);
+    const parts = [`${i + 1}. ${r.name || t('Strasse')} (${kindLabel(ROAD_KINDS_LABELS, r.kind)}, ${t(STATUS_LABELS[r.status] || r.status)})`, `${len} m`];
+    if (r.maxspeed) parts.push(`${t('Tempo')} ${r.maxspeed}`);
+    parts.push(`${t('Breite')} ${roadWidthMeters(r)} m${r.section ? ` (${sectionSummary(r.section)})` : ''}`);
     const special = r.segments.filter((s) => s.level !== 'ground').length;
-    if (special) parts.push(`${special} Abschnitt(e) Brücke/Tunnel`);
-    if (r.oneway) parts.push('Einbahn');
+    if (special) parts.push(t('{n} Abschnitt(e) Brücke/Tunnel', { n: special }));
+    if (r.oneway) parts.push(t('Einbahn'));
     const pc = validParcels(r);
-    if (pc) parts.push(`${pc.items.length} Parzelle${pc.items.length === 1 ? '' : 'n'}`);
-    parts.push(`Ebene ${layerName(r.layerId)}`);
+    if (pc) parts.push(tn(pc.items.length, '{n} Parzelle', '{n} Parzellen'));
+    parts.push(`${t('Ebene')} ${layerName(r.layerId)}`);
     blocks.push({ text: parts.join(' · ') + (r.note ? ` – ${r.note}` : ''), gap: 2 });
   });
-  zones.forEach((z) => blocks.push({ text: `Fläche: ${z.name ? z.name + ' – ' : ''}${kindLabel(ZONE_KINDS, z.kind)} (${z.nodes.length} Eckpunkte)${z.note ? ` – ${z.note}` : ''}`, gap: 2 }));
-  points.forEach((p) => blocks.push({ text: p.type === 'roundabout' ? `Kreisel${p.name ? ' ' + p.name : ''}, Radius ${p.radius} m` : `${kindLabel(JUNCTION_LABELS, p.kind)}${p.name ? ' ' + p.name : ''}`, gap: 2 }));
+  zones.forEach((z) => blocks.push({ text: `${t('Fläche')}: ${z.name ? z.name + ' – ' : ''}${kindLabel(ZONE_KINDS, z.kind)} (${tn(z.nodes.length, '{n} Eckpunkt', '{n} Eckpunkte')})${z.note ? ` – ${z.note}` : ''}`, gap: 2 }));
+  points.forEach((p) => blocks.push({ text: p.type === 'roundabout' ? `${t('Kreisel')}${p.name ? ' ' + p.name : ''}, ${t('Radius')} ${p.radius} m` : `${kindLabel(JUNCTION_LABELS, p.kind)}${p.name ? ' ' + p.name : ''}`, gap: 2 }));
   const cur = routes && routes.current && !routes.current.error ? routes.current : null;
   const neu = routes && routes.proposed && !routes.proposed.error ? routes.proposed : null;
   if (cur || neu) {
   // Betroffene Parzellen
   const withParcels = roads.map((r) => [r, validParcels(r)]).filter(([, pc]) => pc && pc.items.length);
   if (withParcels.length) {
-    blocks.push({ text: 'Betroffene Parzellen (amtliche Vermessung)', size: 13, bold: true, gap: 4 });
+    blocks.push({ text: t('Betroffene Parzellen (amtliche Vermessung)'), size: 13, bold: true, gap: 4 });
     withParcels.forEach(([r, pc]) => {
       const total = pc.items.reduce((s, it) => s + it.length, 0);
-      blocks.push({ text: `${r.name || kindLabel(ROAD_KINDS_LABELS, r.kind)}: ${pc.items.length} Parzellen, ${Math.round(total)} m`, bold: true, gap: 1 });
+      blocks.push({ text: `${r.name || kindLabel(ROAD_KINDS_LABELS, r.kind)}: ${tn(pc.items.length, '{n} Parzelle', '{n} Parzellen')}, ${Math.round(total)} m`, bold: true, gap: 1 });
       pc.items.forEach((it) => blocks.push({ text: `  ${parcelLabel(it)}${it.egrid ? ` · ${it.egrid}` : ''} · ${Math.round(it.length)} m`, size: 9.5, gap: 1 }));
     });
     blocks.push({ text: '', gap: 6 });
   }
   // Betroffene Gebäude
   if (exposure) {
-    blocks.push({ text: `Betroffene Gebäude (OpenStreetMap, Umkreis ${exposure.radius} m)`, size: 13, bold: true, gap: 4 });
-    if (exposure.hasRoutes) blocks.push({ text: `Route heute: ${exposure.current.count} · Route neu: ${exposure.proposed.count} · Differenz: ${exposure.delta > 0 ? '+' : ''}${exposure.delta}`, gap: 2 });
-    blocks.push({ text: `Entlang neuer Strassen: ${exposure.roads.count}`, gap: 8 });
+    blocks.push({ text: t('Betroffene Gebäude (OpenStreetMap, Umkreis {r} m)', { r: exposure.radius }), size: 13, bold: true, gap: 4 });
+    if (exposure.hasRoutes) blocks.push({ text: `${t('Route heute')}: ${exposure.current.count} · ${t('Route neu')}: ${exposure.proposed.count} · ${t('Differenz')}: ${exposure.delta > 0 ? '+' : ''}${exposure.delta}`, gap: 2 });
+    blocks.push({ text: `${t('Entlang neuer Strassen')}: ${exposure.roads.count}`, gap: 8 });
   }
   // Kostenschätzung
   const est = estimateCosts(doc);
   if (est.rows.length) {
-    blocks.push({ text: 'Kostenschätzung', size: 13, bold: true, gap: 4 });
-    est.layers.forEach((l) => blocks.push({ text: `${l.name}${l.visible ? '' : ' (ausgeblendet, nicht im Total)'}: ${formatChf(l.amount)}`, gap: 2 }));
-    blocks.push({ text: `Total (sichtbare Ebenen): ${formatChf(est.total)}`, bold: true, gap: 2 });
-    blocks.push({ text: 'Richtwerte: Strassen pro km (mit der Breite skaliert), Brücke und Tunnel als Zuschlag pro m, Knoten und Flächen pauschal; bestehende Strassen ohne Ansatz. Keine Kostenberechnung im Sinne der SIA, nur zur Einordnung.', size: 9, gap: 10 });
+    blocks.push({ text: t('Kostenschätzung'), size: 13, bold: true, gap: 4 });
+    est.layers.forEach((l) => blocks.push({ text: `${l.name}${l.visible ? '' : ` (${t('ausgeblendet, nicht im Total')})`}: ${formatChf(l.amount)}`, gap: 2 }));
+    blocks.push({ text: `${t('Total (sichtbare Ebenen)')}: ${formatChf(est.total)}`, bold: true, gap: 2 });
+    blocks.push({ text: t('Richtwerte: Strassen pro km (mit der Breite skaliert), Brücke und Tunnel als Zuschlag pro m, Knoten und Flächen pauschal; bestehende Strassen ohne Ansatz. Keine Kostenberechnung im Sinne der SIA, nur zur Einordnung.'), size: 9, gap: 10 });
   }
   // Normen-Check
   if (checks && checks.length) {
-    blocks.push({ text: 'Prüfung (Richtwerte VSS)', size: 13, bold: true, gap: 4 });
-    checks.forEach((c) => blocks.push({ text: `${c.severity === 'warn' ? 'Warnung' : 'Hinweis'}: ${c.text}`, gap: 2 }));
+    blocks.push({ text: t('Prüfung (Richtwerte VSS)'), size: 13, bold: true, gap: 4 });
+    checks.forEach((c) => blocks.push({ text: `${c.severity === 'warn' ? t('Warnung') : t('Hinweis')}: ${c.text}`, gap: 2 }));
     blocks.push({ text: '', gap: 6 });
   }
-    blocks.push({ text: 'Routenvergleich', size: 13, bold: true, gap: 4 });
-    const fmt = (r) => (r ? `${(r.dist / 1000).toFixed(2)} km, ${formatDuration(r.time)}${r.sd > 0 ? ` (P15–P85 ${formatDuration(r.p15)} – ${formatDuration(r.p85)})` : ''}` : 'keine Verbindung');
-    blocks.push({ text: `Heute: ${fmt(cur)}`, gap: 2 });
-    blocks.push({ text: `Neu: ${fmt(neu)}`, gap: 2 });
-    if (cur && neu) blocks.push({ text: `Differenz: ${neu.dist - cur.dist >= 0 ? '+' : '−'}${(Math.abs(neu.dist - cur.dist) / 1000).toFixed(2)} km, ${neu.time - cur.time >= 0 ? '+' : '−'}${formatDuration(Math.abs(neu.time - cur.time))}` });
+    blocks.push({ text: t('Routenvergleich'), size: 13, bold: true, gap: 4 });
+    const fmt = (r) => (r ? `${(r.dist / 1000).toFixed(2)} km, ${formatDuration(r.time)}${r.sd > 0 ? ` (P15–P85 ${formatDuration(r.p15)} – ${formatDuration(r.p85)})` : ''}` : t('keine Verbindung'));
+    blocks.push({ text: `${t('Heute')}: ${fmt(cur)}`, gap: 2 });
+    blocks.push({ text: `${t('Neu')}: ${fmt(neu)}`, gap: 2 });
+    if (cur && neu) blocks.push({ text: `${t('Differenz')}: ${neu.dist - cur.dist >= 0 ? '+' : '−'}${(Math.abs(neu.dist - cur.dist) / 1000).toFixed(2)} km, ${neu.time - cur.time >= 0 ? '+' : '−'}${formatDuration(Math.abs(neu.time - cur.time))}` });
   }
   const tops = comments.filter((c) => !c.parentId);
   // Weitere Routenpaare
   const pairDefs = (doc.routePairs || []).filter((p) => p.from && p.to);
   if (pairDefs.length && pairs && pairs.length) {
-    blocks.push({ text: 'Weitere Verbindungen', size: 13, bold: true, gap: 4 });
+    blocks.push({ text: t('Weitere Verbindungen'), size: 13, bold: true, gap: 4 });
     let sum = 0;
     let n = 0;
     pairDefs.forEach((p) => {
@@ -582,24 +583,24 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
         const d = neu.time - cur.time;
         sum += d;
         n++;
-        delta = ` · Differenz ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
+        delta = ` · ${t('Differenz')} ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
       }
-      blocks.push({ text: `${p.name || 'Paar'}: heute ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : '–'} · neu ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : '–'}${delta}`, gap: 2 });
+      blocks.push({ text: `${p.name || t('Paar')}: ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : '–'} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : '–'}${delta}`, gap: 2 });
     });
-    if (n) blocks.push({ text: `Summe über ${n} Verbindungen: ${sum > 0 ? '+' : sum < 0 ? '−' : '±'}${formatDuration(Math.abs(sum))}, im Mittel ${formatDuration(Math.abs(sum / n))} je Fahrt`, bold: true, gap: 8 });
+    if (n) blocks.push({ text: t('Summe über {n} Verbindungen: {sum}, im Mittel {mean} je Fahrt', { n, sum: `${sum > 0 ? '+' : sum < 0 ? '−' : '±'}${formatDuration(Math.abs(sum))}`, mean: formatDuration(Math.abs(sum / n)) }), bold: true, gap: 8 });
   }
   // Erreichbarkeit
   if (doc.isochrone && isochrone && !isochrone.error) {
     const iso = doc.isochrone;
-    blocks.push({ text: `Erreichbarkeit ab Ursprung (${iso.minutes.join(' / ')} min)`, size: 13, bold: true, gap: 4 });
-    if (isochrone.mode === 'diff') blocks.push({ text: `Netz innerhalb ${iso.minutes[iso.minutes.length - 1]} min: neu erreichbar ${isochrone.stats.gainedKm} km, nicht mehr erreichbar ${isochrone.stats.lostKm} km, in beiden Fällen ${isochrone.stats.bothKm} km`, gap: 8 });
-    else blocks.push({ text: `${isochrone.mode === 'current' ? 'Heute' : 'Mit Entwurf'}: ${iso.minutes.map((m, k) => `${m} min: ${isochrone.stats.km[k]} km`).join(' · ')} erreichbares Strassennetz`, gap: 8 });
+    blocks.push({ text: t('Erreichbarkeit ab Ursprung ({min} min)', { min: iso.minutes.join(' / ') }), size: 13, bold: true, gap: 4 });
+    if (isochrone.mode === 'diff') blocks.push({ text: t('Netz innerhalb {min} min: neu erreichbar {gained} km, nicht mehr erreichbar {lost} km, in beiden Fällen {both} km', { min: iso.minutes[iso.minutes.length - 1], gained: isochrone.stats.gainedKm, lost: isochrone.stats.lostKm, both: isochrone.stats.bothKm }), gap: 8 });
+    else blocks.push({ text: `${isochrone.mode === 'current' ? t('Heute') : t('Mit Entwurf')}: ${iso.minutes.map((m, k) => `${m} min: ${isochrone.stats.km[k]} km`).join(' · ')} ${t('erreichbares Strassennetz')}`, gap: 8 });
   }
   if (tops.length) {
-    blocks.push({ text: `Kommentare (${tops.length})`, size: 13, bold: true, gap: 4 });
+    blocks.push({ text: `${t('Kommentare')} (${tops.length})`, size: 13, bold: true, gap: 4 });
     tops.forEach((c, i) => {
-      const when = new Date(c.at).toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
-      blocks.push({ text: `${i + 1}. ${c.author}, ${when}${c.resolved ? ' (erledigt)' : ''}: ${c.text}`, gap: 1 });
+      const when = new Date(c.at).toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
+      blocks.push({ text: `${i + 1}. ${c.author}, ${when}${c.resolved ? ` (${t('erledigt')})` : ''}: ${c.text}`, gap: 1 });
       comments.filter((r) => r.parentId === c.id).forEach((r) => blocks.push({ text: `    ↳ ${r.author}: ${r.text}`, gap: 1 }));
     });
   }

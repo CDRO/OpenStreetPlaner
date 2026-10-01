@@ -62,6 +62,7 @@ go run . -data ./data
 | QR-Code | Im Teilen-Dialog zum Ansichtslink und auf jedem PDF/PNG-Export (rechts unten); eigener Encoder (Byte-Modus, Fehlerkorrektur M, Versionen 1–10) |
 | Teilen | **Ansichtslink** `/d/<id>` (Empfänger können eine eigene Kopie weiterbearbeiten), **Präsentationslink** `/d/<id>?present=1` (nur Karte, Legende und Routenvergleich, ohne Werkzeuge, für Sitzungen und Beamer), **Bearbeitungslink** `/d/<id>#edit=<token>` für gemeinsames Bearbeiten, E-Mail-Versand, JSON-Import/-Export, GeoJSON-Export |
 | Gemeinsam bearbeiten | Speichern schickt den zuletzt geladenen Serverstand mit; hat inzwischen jemand anderes gespeichert, antwortet der Server mit 409 und die App fragt: eigene Fassung speichern oder Serverstand übernehmen (die eigene bleibt per Rückgängig erreichbar). Offene Seiten erhalten Änderungen und neue Kommentare live über Server-Sent Events: ohne eigene Änderungen wird der neue Stand direkt übernommen, sonst erscheint ein Hinweis |
+| Sprachen | Oberfläche, Hinweise, Dialoge, Rückgängig-Beschriftungen und der PDF-Bericht auf Deutsch, Französisch und Italienisch. Die Sprache wird beim ersten Start aus dem Browser abgeleitet und im Zeichnen-Tab unter „Karte“ umgestellt (`web/js/i18n.js`, Wörterbücher in `web/js/lang/`; der deutsche Text ist der Schlüssel, ein Test prüft die vollständige Abdeckung) |
 | Touch / Mobil | Aktionsleiste „Strasse fertig / Letzter Punkt / Abbrechen“ über der Karte während des Zeichnens; langes Drücken wirkt wie Rechtsklick (Strasse beenden, Punkt löschen); auf schmalen Bildschirmen wird die Seitenleiste zum Bottom-Sheet, das eingeklappt startet und per Tipp auf einen Tab aufgeht |
 
 ### Tastenkürzel
@@ -160,6 +161,8 @@ web/js/routing.js        Routen-Rechner: Netz aus OSM + Entwurf, Dijkstra, maxsp
 web/js/smooth.js         Glätten (Catmull-Rom), Vereinfachen (Douglas-Peucker), Kurvenradien
 web/js/speedmodel.js     Erwartete Geschwindigkeit aus Kurve, Steigung und Umfeld; Streuung und Zeitband
 web/js/export.js         PNG/PDF-Export (Bildkomposition, handgeschriebener PDF-Writer)
+web/js/i18n.js           Übersetzung: t(), Spracherkennung, statische Texte (data-i18n)
+web/js/lang/{fr,it}.js   Wörterbücher (deutscher Text als Schlüssel)
 web/js/api.js            Aufrufe ans Backend
 web/js/local.js          Browser-lokal: eigene Entwürfe, Arbeitskopie, Einstellungen, Browser-Kennung
 web/js/push.js           Service Worker registrieren, Push-Abonnement anlegen/lösen

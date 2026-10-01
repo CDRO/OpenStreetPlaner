@@ -12,6 +12,7 @@ import { haversine } from './geometry.js';
 import { roadKindFromHighway } from './osm.js';
 import { hitComment, hitHandle } from './draw.js';
 import { parseMaxspeed } from './routing.js';
+import { t, tn } from './i18n.js';
 
 export const TOOLS = [
   { id: 'select', label: 'Auswählen', key: 'V', hint: 'Element anklicken zum Auswählen. Griffe ziehen zum Verschieben, Rechtsklick auf einen Griff löscht den Punkt, Klick auf einen Zwischenpunkt fügt einen ein.' },
@@ -71,7 +72,7 @@ export class ToolController {
   setTool(id) {
     if (!TOOLS.some((t) => t.id === id)) return;
     if (!VIEW_TOOLS.has(id) && !this.canEdit()) {
-      this.toast('Nur Ansicht: Lege zuerst eine eigene Kopie an, um zu zeichnen.');
+      this.toast(t('Nur Ansicht: Lege zuerst eine eigene Kopie an, um zu zeichnen.'));
       return;
     }
     this.cancel();
@@ -198,7 +199,7 @@ export class ToolController {
         if (this.draft) {
           this.draft.radius = this.clampRadius(haversine(this.draft.center, e.latlng));
           this.setPreview({ circle: { center: this.draft.center, radius: this.draft.radius }, color: this.activeColor() });
-          this.onStatus(`Radius: ${this.draft.radius.toFixed(1)} m – klicken zum Bestätigen, Esc bricht ab.`);
+          this.onStatus(t('Radius: {r} m – klicken zum Bestätigen, Esc bricht ab.', { r: this.draft.radius.toFixed(1) }));
           this.setSnap(null);
         } else {
           this.setSnap(this.snap(e));
@@ -388,13 +389,13 @@ export class ToolController {
     const f = this.selectedFeature();
     if (!f) return;
     if (f.type === 'zone') {
-      if (f.nodes.length <= 3) return this.toast('Eine Fläche braucht mindestens drei Punkte.');
+      if (f.nodes.length <= 3) return this.toast(t('Eine Fläche braucht mindestens drei Punkte.'));
       this.store.commit('Punkt löschen', (doc) => removeZoneNode(doc, f.id, index));
       return;
     }
     if (f.type !== 'road') return;
     if (f.nodes.length <= 2) {
-      this.toast('Eine Strasse braucht mindestens zwei Punkte. Lösche stattdessen die Strasse.');
+      this.toast(t('Eine Strasse braucht mindestens zwei Punkte. Lösche stattdessen die Strasse.'));
       return;
     }
     this.store.commit('Punkt löschen', (doc) => removeRoadNode(doc, f.id, index));
@@ -436,7 +437,7 @@ export class ToolController {
         if (road && (ref.index === 0 || ref.index === road.nodes.length - 1)) {
           this.draft.extend = { roadId: road.id, atEnd: ref.index === road.nodes.length - 1, from: road.nodes[ref.index] };
           this.previewRoad(r.latlng);
-          this.onStatus(`Verlängere „${featureLabel(road)}“ – weitere Punkte setzen, Enter oder Doppelklick beendet.`);
+          this.onStatus(t('Verlängere „{name}“ – weitere Punkte setzen, Enter oder Doppelklick beendet.', { name: t(featureLabel(road)) }));
           return;
         }
       }
@@ -450,7 +451,7 @@ export class ToolController {
     }
     v.push({ latlng: roundCoord(r.latlng), snap: r.snap });
     this.previewRoad(r.latlng);
-    this.onStatus(`${v.length} Punkt${v.length === 1 ? '' : 'e'} gesetzt – Doppelklick, Enter oder Rechtsklick ${type === 'zone' ? 'schliesst die Fläche' : 'beendet die Strasse'}.`);
+    this.onStatus(`${tn(v.length, '{n} Punkt gesetzt', '{n} Punkte gesetzt')} – ${type === 'zone' ? t('Doppelklick, Enter oder Rechtsklick schliesst die Fläche.') : t('Doppelklick, Enter oder Rechtsklick beendet die Strasse.')}`);
   }
 
   // --- Zone / Fläche ---------------------------------------------------------
@@ -465,7 +466,7 @@ export class ToolController {
     this.setPreview(null);
     this.setSnap(null);
     if (!draft || draft.vertices.length < 3) {
-      this.onStatus('Fläche verworfen (mindestens drei Punkte nötig).');
+      this.onStatus(t('Fläche verworfen (mindestens drei Punkte nötig).'));
       return;
     }
     const layerId = this.getActiveLayerId();
@@ -479,7 +480,7 @@ export class ToolController {
   commentClick(e) {
     this.commentDraft = { latlng: roundCoord(e.latlng) };
     if (this.onCommentPlace) this.onCommentPlace(this.commentDraft.latlng);
-    this.onStatus('Kommentar in der Seitenleiste eingeben und senden. Esc bricht ab.');
+    this.onStatus(t('Kommentar in der Seitenleiste eingeben und senden. Esc bricht ab.'));
     this.onSceneChange();
   }
 
@@ -502,21 +503,21 @@ export class ToolController {
     this.setSnap(null);
     if (draft && draft.extend) {
       if (!draft.vertices.length) {
-        this.onStatus('Verlängerung verworfen (kein neuer Punkt).');
+        this.onStatus(t('Verlängerung verworfen (kein neuer Punkt).'));
         return;
       }
       this.store.commit('Strasse verlängern', (doc) => {
         const splits = applySnapSplits(doc, draft.vertices.filter((v) => !(v.snap && v.snap.ref && v.snap.ref.featureId === draft.extend.roadId)));
         const pts = draft.vertices.map((v) => v.latlng);
         extendRoad(doc, draft.extend.roadId, draft.extend.atEnd ? pts : pts.slice().reverse(), draft.extend.atEnd);
-        if (splits) this.toast(`Strasse verlängert, ${splits} bestehende${splits === 1 ? 'r' : ''} Abschnitt${splits === 1 ? '' : 'e'} geteilt.`);
+        if (splits) this.toast(tn(splits, 'Strasse verlängert, {n} bestehender Abschnitt geteilt.', 'Strasse verlängert, {n} bestehende Abschnitte geteilt.'));
       });
       this.setSelection({ featureId: draft.extend.roadId, segIndex: null });
       this.onStatus(this.toolInfo().hint);
       return;
     }
     if (!draft || draft.vertices.length < 2) {
-      this.onStatus('Strasse verworfen (mindestens zwei Punkte nötig).');
+      this.onStatus(t('Strasse verworfen (mindestens zwei Punkte nötig).'));
       return;
     }
     const layerId = this.getActiveLayerId();
@@ -524,7 +525,7 @@ export class ToolController {
     this.store.commit('Strasse zeichnen', (doc) => {
       const splits = applySnapSplits(doc, draft.vertices);
       doc.features.push(createRoad({ layerId, nodes: draft.vertices.map((v) => v.latlng), kind }));
-      if (splits) this.toast(`Strasse gezeichnet, ${splits} bestehende${splits === 1 ? 'r' : ''} Abschnitt${splits === 1 ? '' : 'e'} geteilt.`);
+      if (splits) this.toast(tn(splits, 'Strasse gezeichnet, {n} bestehender Abschnitt geteilt.', 'Strasse gezeichnet, {n} bestehende Abschnitte geteilt.'));
     });
     this.onStatus(this.toolInfo().hint);
   }
@@ -548,7 +549,7 @@ export class ToolController {
       const r = this.snap(e);
       this.draft = { type: 'roundabout', center: roundCoord(r.latlng), radius: 15 };
       this.setPreview({ circle: { center: this.draft.center, radius: 15 }, color: this.activeColor() });
-      this.onStatus('Maus bewegen wählt den Radius, klicken bestätigt. Esc bricht ab.');
+      this.onStatus(t('Maus bewegen wählt den Radius, klicken bestätigt. Esc bricht ab.'));
       return;
     }
     const { center, radius } = this.draft;
@@ -577,7 +578,7 @@ export class ToolController {
     if (!this.routeDraft) {
       this.routeDraft = { from: ll, pairId: target ? target.pairId : null };
       if (!target && this.store.doc.route) this.store.commit('Route neu beginnen', (doc) => { doc.route = null; });
-      this.onStatus(target ? 'Start des Paars gesetzt – jetzt das Ziel anklicken.' : 'Start gesetzt – jetzt das Ziel anklicken.');
+      this.onStatus(target ? t('Start des Paars gesetzt – jetzt das Ziel anklicken.') : t('Start gesetzt – jetzt das Ziel anklicken.'));
       this.onSceneChange();
       return;
     }
@@ -603,7 +604,7 @@ export class ToolController {
     this.routeTarget = target;
     this.routeDraft = null;
     if (this.tool !== 'route') this.setTool('route');
-    this.onStatus(target && target.isochrone ? 'Ursprung der Erreichbarkeit auf der Karte anklicken.' : 'Start des Paars auf der Karte anklicken, dann das Ziel.');
+    this.onStatus(target && target.isochrone ? t('Ursprung der Erreichbarkeit auf der Karte anklicken.') : t('Start des Paars auf der Karte anklicken, dann das Ziel.'));
     this.onSceneChange();
   }
 
@@ -613,7 +614,7 @@ export class ToolController {
     const settings = this.getSettings();
     const r = snapLatLng(e.latlng, this.getSnapIndex(), this.map.getZoom(), Math.max(settings.snapTolerance, 16), (ref) => ref.source === 'osm');
     if (!r.snap) {
-      this.toast('Keine OSM-Strasse in der Nähe. Näher heranzoomen (ab Zoom 16) und auf eine Strasse klicken.');
+      this.toast(t('Keine OSM-Strasse in der Nähe. Näher heranzoomen (ab Zoom 16) und auf eine Strasse klicken.'));
       return;
     }
     const way = this.getOsmWay(r.snap.ref.wayId);
@@ -636,6 +637,6 @@ export class ToolController {
       road.note = tags.highway ? `OSM highway=${tags.highway}, way ${way.id}` : `OSM way ${way.id}`;
       doc.features.push(road);
     });
-    this.toast(`„${tags.name || 'Strasse'}“ übernommen. Im Auswahl-Werkzeug bearbeiten.`);
+    this.toast(t('„{name}“ übernommen. Im Auswahl-Werkzeug bearbeiten.', { name: tags.name || t('Strasse') }));
   }
 }

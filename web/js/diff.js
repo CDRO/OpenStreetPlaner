@@ -2,6 +2,7 @@
 // geänderte Elemente samt Beschreibung der Änderung. Reine Funktionen.
 
 import { featureLabel } from './model.js';
+import { t } from './i18n.js';
 
 /** JSON mit sortierten Schlüsseln, damit die Reihenfolge keinen Unterschied vortäuscht. */
 export function canonical(value) {
@@ -27,17 +28,17 @@ export function describeChange(before, after) {
     if (k === 'nodes' || k === 'at' || k === 'center') {
       const na = Array.isArray(a) ? a.length : 1;
       const nb = Array.isArray(b) ? b.length : 1;
-      out.push(na !== nb ? `Geometrie (${na} → ${nb} Punkte)` : 'Geometrie verschoben');
+      out.push(na !== nb ? t('Geometrie ({a} → {b} Punkte)', { a: na, b: nb }) : t('Geometrie verschoben'));
     } else if (k === 'segments') {
       const la = (a || []).map((s) => s.level).join(',');
       const lb = (b || []).map((s) => s.level).join(',');
       const ma = (a || []).map((s) => s.maxspeed ?? '').join(',');
       const mb = (b || []).map((s) => s.maxspeed ?? '').join(',');
-      if (la !== lb) out.push('Führung der Abschnitte');
-      if (ma !== mb) out.push('Abschnitts-Tempolimit');
-      if (la === lb && ma === mb) out.push('Abschnitte');
+      if (la !== lb) out.push(t('Führung der Abschnitte'));
+      if (ma !== mb) out.push(t('Abschnitts-Tempolimit'));
+      if (la === lb && ma === mb) out.push(t('Abschnitte'));
     } else {
-      const label = FIELD_LABELS[k] || k;
+      const label = t(FIELD_LABELS[k] || k);
       const show = (v) => (v === null || v === undefined || v === '' ? '–' : typeof v === 'object' ? '…' : String(v));
       out.push(`${label}: ${show(a)} → ${show(b)}`);
     }
@@ -84,6 +85,6 @@ export function diffDocuments(a, b) {
 
 /** Kurzbeschreibung eines Elements für Listen. */
 export function featureTitle(f) {
-  const type = { road: 'Strasse', junction: 'Punkt', roundabout: 'Kreisel', zone: 'Fläche' }[f.type] || f.type;
-  return `${type} „${featureLabel(f)}“`;
+  const type = t({ road: 'Strasse', junction: 'Punkt', roundabout: 'Kreisel', zone: 'Fläche' }[f.type] || f.type);
+  return `${type} „${t(featureLabel(f))}“`;
 }

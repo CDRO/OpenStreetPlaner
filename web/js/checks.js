@@ -7,6 +7,7 @@ import { polylineRadii } from './smooth.js';
 import { segmentGrades } from './speedmodel.js';
 import { haversine } from './geometry.js';
 import { buildGraph, keyOf } from './routing.js';
+import { t } from './i18n.js';
 
 /** Mindest-Kurvenradius (m) je Projektierungsgeschwindigkeit (km/h), dazwischen linear. */
 export const MIN_RADIUS = [[20, 15], [30, 25], [40, 45], [50, 80], [60, 120], [70, 170], [80, 240], [100, 450], [120, 750]];
@@ -65,7 +66,7 @@ export function runChecks(doc, { osmWays = [] } = {}) {
         if (!worst || ratio < worst.ratio) worst = { i, radius: radii[i], min, speed, ratio };
       }
       if (worst) {
-        add(r.id, worst.ratio < 0.6 ? 'warn' : 'info', `${label(r)}: Kurvenradius ${Math.round(worst.radius)} m bei Punkt ${worst.i + 1} ist zu klein für ${worst.speed} km/h (Richtwert ≥ ${Math.round(worst.min)} m). Glätten, Tempo senken oder Linienführung anpassen.`, r.nodes[worst.i]);
+        add(r.id, worst.ratio < 0.6 ? 'warn' : 'info', t('{name}: Kurvenradius {r} m bei Punkt {i} ist zu klein für {v} km/h (Richtwert ≥ {min} m). Glätten, Tempo senken oder Linienführung anpassen.', { name: label(r), r: Math.round(worst.radius), i: worst.i + 1, v: worst.speed, min: Math.round(worst.min) }), r.nodes[worst.i]);
       }
     }
     // Steigung aus dem Höhenprofil
@@ -82,14 +83,14 @@ export function runChecks(doc, { osmWays = [] } = {}) {
           maxI = i;
         }
       });
-      if (Math.abs(maxG) > GRADE_WARN) add(r.id, 'warn', `${label(r)}: Steigung ${Math.abs(maxG).toFixed(1)} % in Abschnitt ${maxI + 1} übersteigt ${GRADE_WARN} %.`, r.nodes[maxI]);
-      else if (Math.abs(maxG) > GRADE_INFO && kind.id !== 'path') add(r.id, 'info', `${label(r)}: Steigung ${Math.abs(maxG).toFixed(1)} % in Abschnitt ${maxI + 1} (über ${GRADE_INFO} %: für Lastwagen und Velos anspruchsvoll).`, r.nodes[maxI]);
+      if (Math.abs(maxG) > GRADE_WARN) add(r.id, 'warn', t('{name}: Steigung {g} % in Abschnitt {i} übersteigt {max} %.', { name: label(r), g: Math.abs(maxG).toFixed(1), i: maxI + 1, max: GRADE_WARN }), r.nodes[maxI]);
+      else if (Math.abs(maxG) > GRADE_INFO && kind.id !== 'path') add(r.id, 'info', t('{name}: Steigung {g} % in Abschnitt {i} (über {max} %: für Lastwagen und Velos anspruchsvoll).', { name: label(r), g: Math.abs(maxG).toFixed(1), i: maxI + 1, max: GRADE_INFO }), r.nodes[maxI]);
     }
     // Fahrstreifen- und Gesamtbreite
     const minLane = MIN_LANE_WIDTH[kind.id] || 2.5;
-    if (r.section && r.section.laneWidth < minLane) add(r.id, 'warn', `${label(r)}: Fahrstreifen ${r.section.laneWidth} m schmaler als ${minLane} m (Richtwert für ${kind.label}).`, r.nodes[0]);
-    else if (!r.section && Number.isFinite(r.width) && r.width < kind.widthM * 0.7) add(r.id, 'info', `${label(r)}: Breite ${r.width} m deutlich unter dem Standard von ${kind.widthM} m für ${kind.label}.`, r.nodes[0]);
-    if (kind.motorOnly && r.section && (r.section.walkLeft || r.section.walkRight || r.section.bikeLeft || r.section.bikeRight)) add(r.id, 'warn', `${label(r)}: Trottoir oder Velostreifen auf ${kind.label} (für Fussgänger und Velos gesperrt).`, r.nodes[0]);
+    if (r.section && r.section.laneWidth < minLane) add(r.id, 'warn', t('{name}: Fahrstreifen {w} m schmaler als {min} m (Richtwert für {kind}).', { name: label(r), w: r.section.laneWidth, min: minLane, kind: t(kind.label) }), r.nodes[0]);
+    else if (!r.section && Number.isFinite(r.width) && r.width < kind.widthM * 0.7) add(r.id, 'info', t('{name}: Breite {w} m deutlich unter dem Standard von {std} m für {kind}.', { name: label(r), w: r.width, std: kind.widthM, kind: t(kind.label) }), r.nodes[0]);
+    if (kind.motorOnly && r.section && (r.section.walkLeft || r.section.walkRight || r.section.bikeLeft || r.section.bikeRight)) add(r.id, 'warn', t('{name}: Trottoir oder Velostreifen auf {kind} (für Fussgänger und Velos gesperrt).', { name: label(r), kind: t(kind.label) }), r.nodes[0]);
     // Tempo in Zonen
     for (let i = 0; i < r.segments.length; i++) {
       const mid = [(r.nodes[i][0] + r.nodes[i + 1][0]) / 2, (r.nodes[i][1] + r.nodes[i + 1][1]) / 2];
@@ -98,11 +99,11 @@ export function runChecks(doc, { osmWays = [] } = {}) {
       if (!z) continue;
       const cap = zoneKind(z).speed;
       if (cap === 0 && kind.speed > 0 && r.status === 'new') {
-        add(r.id, 'info', `${label(r)}: Abschnitt ${i + 1} liegt in einer Fussgängerzone (für Autos gesperrt).`, mid);
+        add(r.id, 'info', t('{name}: Abschnitt {i} liegt in einer Fussgängerzone (für Autos gesperrt).', { name: label(r), i: i + 1 }), mid);
         break;
       }
       if (cap > 0 && speed > cap) {
-        add(r.id, 'warn', `${label(r)}: Tempo ${speed} in Abschnitt ${i + 1} liegt über der Zone (${z.name || zoneKind(z).label}, ${cap} km/h).`, mid);
+        add(r.id, 'warn', t('{name}: Tempo {v} in Abschnitt {i} liegt über der Zone ({zone}, {cap} km/h).', { name: label(r), v: speed, i: i + 1, zone: z.name || t(zoneKind(z).label), cap }), mid);
         break;
       }
     }
@@ -113,19 +114,19 @@ export function runChecks(doc, { osmWays = [] } = {}) {
         const deg = graph.degree.get(keyOf(end)) || 0;
         if (deg <= 1) loose.push(end);
       }
-      if (loose.length === 2) add(r.id, 'info', `${label(r)}: beide Enden sind nicht an andere Strassen angeschlossen (Einrasten beim Zeichnen oder Netz laden).`, loose[0]);
-      else if (loose.length === 1) add(r.id, 'info', `${label(r)}: ein Ende ist nicht an andere Strassen angeschlossen.`, loose[0]);
+      if (loose.length === 2) add(r.id, 'info', t('{name}: beide Enden sind nicht an andere Strassen angeschlossen (Einrasten beim Zeichnen oder Netz laden).', { name: label(r) }), loose[0]);
+      else if (loose.length === 1) add(r.id, 'info', t('{name}: ein Ende ist nicht an andere Strassen angeschlossen.', { name: label(r) }), loose[0]);
     }
   }
   for (const k of visible) {
     if (k.type !== 'roundabout') continue;
-    if (k.radius < ROUNDABOUT_MIN) add(k.id, 'warn', `${label(k)}: Radius ${k.radius} m ist für einen Kreisel zu klein (Richtwert Aussenradius ${ROUNDABOUT_MIN}–${ROUNDABOUT_MAX} m; Minikreisel brauchen eine überfahrbare Mitte).`, k.center);
-    else if (k.radius > ROUNDABOUT_MAX) add(k.id, 'info', `${label(k)}: Radius ${k.radius} m ist ungewöhnlich gross (Richtwert ${ROUNDABOUT_MIN}–${ROUNDABOUT_MAX} m); grosse Kreisel verleiten zu hohem Tempo.`, k.center);
+    if (k.radius < ROUNDABOUT_MIN) add(k.id, 'warn', t('{name}: Radius {r} m ist für einen Kreisel zu klein (Richtwert Aussenradius {min}–{max} m; Minikreisel brauchen eine überfahrbare Mitte).', { name: label(k), r: k.radius, min: ROUNDABOUT_MIN, max: ROUNDABOUT_MAX }), k.center);
+    else if (k.radius > ROUNDABOUT_MAX) add(k.id, 'info', t('{name}: Radius {r} m ist ungewöhnlich gross (Richtwert {min}–{max} m); grosse Kreisel verleiten zu hohem Tempo.', { name: label(k), r: k.radius, min: ROUNDABOUT_MIN, max: ROUNDABOUT_MAX }), k.center);
   }
   for (const j of visible) {
     if (j.type !== 'junction' || !graph) continue;
     const deg = graph.degree.get(keyOf(j.at)) || 0;
-    if (deg === 0 && j.kind !== 'busstop' && j.kind !== 'crossing') add(j.id, 'info', `${label(j)}: liegt auf keinem Strassenknoten; Wartezeit und Abbiegeregeln wirken nur auf einem Knoten des Netzes.`, j.at);
+    if (deg === 0 && j.kind !== 'busstop' && j.kind !== 'crossing') add(j.id, 'info', t('{name}: liegt auf keinem Strassenknoten; Wartezeit und Abbiegeregeln wirken nur auf einem Knoten des Netzes.', { name: label(j) }), j.at);
   }
   out.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'warn' ? -1 : 1));
   return out;
@@ -133,10 +134,10 @@ export function runChecks(doc, { osmWays = [] } = {}) {
 
 function label(f) {
   if (f.name) return f.name;
-  if (f.type === 'road') return roadKind(f).label;
-  if (f.type === 'roundabout') return 'Kreisel';
-  if (f.type === 'junction') return 'Kreuzung';
-  return 'Element';
+  if (f.type === 'road') return t(roadKind(f).label);
+  if (f.type === 'roundabout') return t('Kreisel');
+  if (f.type === 'junction') return t('Kreuzung');
+  return t('Element');
 }
 
 export { ROAD_KINDS, getLayer, roadWidthMeters };
