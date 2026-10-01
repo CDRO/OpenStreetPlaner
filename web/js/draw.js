@@ -17,7 +17,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -48,6 +48,7 @@ export function drawScene(ctx, map, s) {
   // Betroffene Gebäude (rot: neu betroffen, grün: entlastet, orange: beides) und Parzellen der gewählten Strasse
   if (buildings) drawBuildings(ctx, P, buildings);
   if (parcels) drawParcels(ctx, P, parcels);
+  if (isochrone && isochrone.pieces) drawIsochrone(ctx, P, isochrone, doc.isochrone);
 
   const selected = selection ? visible.find((f) => f.id === selection.featureId) : null;
   if (selected) drawSelectionHalo(ctx, P, selected, selection, mpp, lineScale);
@@ -150,7 +151,13 @@ export function drawScene(ctx, map, s) {
       speedSigns(ctx, P, f);
     }
   }
-  drawRoutes(ctx, P, doc.route, routes, routeDraft);
+  drawRoutePairs(ctx, P, doc.routePairs || [], pairs, routeDraft, routeTarget);
+  drawRoutes(ctx, P, doc.route, routes, routeDraft && !routeDraft.pairId ? routeDraft : null);
+  if (doc.isochrone && doc.isochrone.from) {
+    const c = P(doc.isochrone.from);
+    circle(ctx, c, 10, { stroke: '#fff', width: 2, fill: '#7b3fbf' });
+    circle(ctx, c, 4, { fill: '#fff' });
+  }
   drawComments(ctx, P, comments, activeCommentId, commentDraft);
   if (showHandles && selected) drawHandles(ctx, P, selected);
   if (preview) drawPreview(ctx, P, preview, mpp);
@@ -557,6 +564,63 @@ function drawRoutes(ctx, P, query, routes, routeDraft) {
   if (query && query.from && query.to) {
     marker(query.from, 'A');
     marker(query.to, 'B');
+  }
+}
+
+export const ISO_COLORS = ['#2a9d3f', '#e0b400', '#e07a00', '#c62828', '#7b3fbf'];
+export const ISO_DIFF_COLORS = { gained: '#2a9d3f', lost: '#c62828', both: 'rgba(90, 90, 90, 0.35)' };
+
+/** Erreichbarkeits-Netz: Kantenstücke je Zeitband (schnellste zuletzt, damit sie oben liegen) oder Differenz. */
+function drawIsochrone(ctx, P, iso) {
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  if (iso.mode === 'diff') {
+    for (const status of ['both', 'lost', 'gained']) {
+      for (const p of iso.pieces) {
+        if (p.status !== status) continue;
+        stroke(ctx, [P(p.a), P(p.b)], ISO_DIFF_COLORS[status], status === 'both' ? 4 : 6, 'round');
+      }
+    }
+  } else {
+    const n = iso.minutes.length;
+    for (let band = n - 1; band >= 0; band--) {
+      const color = ISO_COLORS[Math.min(band, ISO_COLORS.length - 1)];
+      for (const p of iso.pieces) {
+        if (p.band !== band) continue;
+        stroke(ctx, [P(p.a), P(p.b)], color, 6, 'round');
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/** Weitere Routenpaare: dünnere Linien und nummerierte Marker; das gerade zu setzende Paar zeigt nur seinen Start. */
+function drawRoutePairs(ctx, P, pairsDef, results, routeDraft, routeTarget) {
+  const marker = (ll, label, fill) => {
+    const c = P(ll);
+    circle(ctx, c, 9, { stroke: '#fff', width: 2, fill });
+    text(ctx, label, c.x, c.y + 0.5, { font: 'bold 10px system-ui, sans-serif', color: '#fff', align: 'center', baseline: 'middle' });
+  };
+  pairsDef.forEach((pair, i) => {
+    const res = results ? results.find((r) => r.id === pair.id) : null;
+    if (res) {
+      for (const [r, color] of [[res.current, '#1b6ac9'], [res.proposed, '#2a9d3f']]) {
+        if (!r || r.error || !r.path) continue;
+        const pts = r.path.map(P);
+        ctx.save();
+        ctx.globalAlpha = 0.75;
+        stroke(ctx, pts, '#ffffff', 6);
+        stroke(ctx, pts, color, 3);
+        ctx.restore();
+      }
+    }
+    const n = String(i + 1);
+    if (pair.from) marker(pair.from, n, '#4a5568');
+    if (pair.to) marker(pair.to, n, '#1f2933');
+  });
+  if (routeDraft && routeDraft.pairId) {
+    const i = pairsDef.findIndex((p) => p.id === routeDraft.pairId);
+    marker(routeDraft.from, String(i + 1), '#4a5568');
   }
 }
 

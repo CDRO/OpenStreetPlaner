@@ -275,3 +275,28 @@ func TestParcelsField(t *testing.T) {
 		t.Fatalf("zu langer Schlüssel nicht verworfen")
 	}
 }
+
+func TestRoutePairsAndIsochrone(t *testing.T) {
+	d := sample()
+	bad := LatLng{99, 0}
+	ok := LatLng{47.123456789, 8}
+	d.RoutePairs = []RoutePair{{ID: "p1", Name: "Schule", From: &ok, To: &bad}, {ID: "kaputt id!", Name: strings.Repeat("x", 80)}}
+	d.Isochrone = &Isochrone{From: ok, Minutes: []float64{15, 5, math.NaN(), 99}, Mode: "egal"}
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	if d.RoutePairs[0].To != nil || d.RoutePairs[0].From == nil || (*d.RoutePairs[0].From)[0] != 47.123457 {
+		t.Fatalf("Paar 1: %+v", d.RoutePairs[0])
+	}
+	if d.RoutePairs[1].ID != "p_2" || len(d.RoutePairs[1].Name) != 60 {
+		t.Fatalf("Paar 2: %+v", d.RoutePairs[1])
+	}
+	if d.Isochrone.Mode != "proposed" || len(d.Isochrone.Minutes) != 2 || d.Isochrone.Minutes[0] != 15 {
+		t.Fatalf("Isochrone: %+v", d.Isochrone)
+	}
+	d.Isochrone = &Isochrone{From: bad}
+	_ = Normalize(d)
+	if d.Isochrone != nil {
+		t.Fatalf("ungültiger Ursprung nicht verworfen")
+	}
+}

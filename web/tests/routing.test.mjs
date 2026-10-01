@@ -4,6 +4,7 @@ import {
   zoneSpeedAt,
   parseMaxspeed, isDrivable, waySpeed, wayDirection, buildGraph, attachPoint, shortestPath, computeRoutes,
   insertPointsOnLine, formatDuration, keyOf, turnKind, TURN_COST, ROUNDABOUT_SPEED,
+  reachTimes, isochronePieces, computeIsochrone, computeRoutesMany,
 } from '../js/routing.js';
 import { createDocument, createLayer, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
 import { project as projectLL } from '../js/geometry.js';
@@ -291,4 +292,39 @@ test('Abbiegeverbot sperrt, Anschluss ist kreuzungsfrei, Kreisel dreht frei', ()
   assert.ok(viaRing.path, 'Kreisel verbindet');
   const expected = viaRing.dist - 30 > 0 ? (viaRing.dist - 30) / (50 / 3.6) + 30 / (ROUNDABOUT_SPEED / 3.6) : 0;
   assert.ok(Math.abs(viaRing.time - expected) < 0.05, `Kreisel ohne Abbiegezuschlag (Rundung der Speichen): ${viaRing.time} vs ${expected}`);
+});
+
+test('Erreichbarkeit: reachTimes, Kantenstücke je Band, Isochronen heute/neu/Differenz, mehrere Paare', () => {
+  // 2 km gerade Strasse nach Osten, 50 km/h; Knoten alle 250 m
+  const nodes = [];
+  for (let i = 0; i <= 8; i++) nodes.push([47, 8 + (i * 250) / (111320 * Math.cos((47 * Math.PI) / 180))]);
+  const ways = [{ id: 1, tags: { highway: 'residential', maxspeed: '50' }, geometry: nodes }];
+  const g = buildGraph({ osmWays: ways, doc: null, mode: 'current' });
+  const start = attachPoint(g, nodes[0]);
+  const times = reachTimes(g, start.key, 60); // 60 s bei 13.9 m/s = 833 m
+  const reached = Array.from(times.values());
+  assert.ok(reached.every((t) => t <= 60));
+  assert.equal(times.size, 4, 'Knoten bei 0, 250, 500, 750 m');
+  const pieces = isochronePieces(g, times, [30, 60]);
+  const km = [0, 0];
+  for (const p of pieces) km[p.band] += p.dist;
+  assert.ok(Math.abs(km[0] - 416.7) < 3, `Band 0: ${km[0]} m`);
+  assert.ok(Math.abs(km[1] - 416.7) < 3, `Band 1 (teilweise Kante): ${km[1]} m`);
+  const iso = computeIsochrone({ osmWays: ways, doc: null, from: nodes[0], minutes: [0.5, 1], mode: 'current' });
+  assert.ok(Math.abs(iso.stats.km[1] - 0.8) < 0.05, `kumuliert: ${iso.stats.km}`);
+  // Entwurf: Abkürzung nach Norden -> Differenz zeigt neu erreichbares Netz
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  doc.features.push(createRoad({ layerId, nodes: [nodes[1], [47.004, nodes[1][1]]], kind: 'main', maxspeed: 50 }));
+  const diff = computeIsochrone({ osmWays: ways, doc, from: nodes[0], minutes: [1], mode: 'diff' });
+  assert.equal(diff.mode, 'diff');
+  assert.ok(diff.stats.gainedKm >= 0.4 && diff.stats.lostKm === 0 && diff.stats.bothKm > 0.7, JSON.stringify(diff.stats));
+  assert.ok(diff.pieces.some((p) => p.status === 'gained') && diff.pieces.some((p) => p.status === 'both'));
+  const far = computeIsochrone({ osmWays: ways, doc: null, from: [48, 9], minutes: [5], mode: 'proposed' });
+  assert.ok(far.error);
+  // Mehrere Paare auf denselben Netzen
+  const many = computeRoutesMany({ osmWays: ways, doc, pairs: [{ id: 'a', from: nodes[0], to: nodes[8] }, { id: 'b', from: nodes[0], to: [47.004, nodes[1][1]] }] });
+  assert.equal(many.length, 2);
+  assert.ok(many[0].current.path && many[0].proposed.path);
+  assert.ok(many[1].current.error && many[1].proposed.path, 'Paar b nur mit Entwurf erreichbar');
 });

@@ -306,10 +306,42 @@ export function createDocument({ name = 'Neuer Entwurf', center = [46.8, 8.23], 
     layers: [],
     features: [],
     route: null,
+    routePairs: [],
+    isochrone: null,
     costs: {},
   };
   createLayer(doc, 'Ebene 1');
   return doc;
+}
+
+export const MAX_ROUTE_PAIRS = 20;
+export const ISOCHRONE_MODES = ['proposed', 'current', 'diff'];
+export const ISOCHRONE_PRESETS = [[5], [5, 10], [5, 10, 15], [10, 20, 30], [2, 5, 10]];
+
+/** Prüft weitere Start-Ziel-Paare des Routen-Rechners. */
+export function normalizeRoutePairs(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const p of raw.slice(0, MAX_ROUTE_PAIRS)) {
+    if (!p || typeof p !== 'object') continue;
+    const pair = {
+      id: typeof p.id === 'string' && p.id ? p.id.slice(0, 48) : newId('p'),
+      name: typeof p.name === 'string' ? p.name.slice(0, 60) : '',
+      from: isLatLng(p.from) ? roundCoord(p.from) : null,
+      to: isLatLng(p.to) ? roundCoord(p.to) : null,
+    };
+    out.push(pair);
+  }
+  return out;
+}
+
+/** Prüft die Isochronen-Einstellung: Ursprung, Minuten (1–60, höchstens 5, aufsteigend), Modus. */
+export function normalizeIsochrone(raw) {
+  if (!raw || typeof raw !== 'object' || !isLatLng(raw.from)) return null;
+  let minutes = Array.isArray(raw.minutes) ? raw.minutes.map(Number).filter((m) => Number.isFinite(m) && m >= 1 && m <= 60).map((m) => Math.round(m)) : [];
+  minutes = Array.from(new Set(minutes)).sort((a, b) => a - b).slice(0, 5);
+  if (!minutes.length) minutes = [5, 10, 15];
+  return { from: roundCoord(raw.from), minutes, mode: ISOCHRONE_MODES.includes(raw.mode) ? raw.mode : 'proposed' };
 }
 
 export function createLayer(doc, name, color) {
@@ -547,6 +579,8 @@ export function normalizeDocument(raw) {
     layers: [],
     features: [],
     route: null,
+    routePairs: normalizeRoutePairs(raw.routePairs),
+    isochrone: normalizeIsochrone(raw.isochrone),
     costs: normalizeCosts(raw.costs),
   };
   if (raw.route && isLatLng(raw.route.from) && isLatLng(raw.route.to)) {

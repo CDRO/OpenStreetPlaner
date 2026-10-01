@@ -5,6 +5,8 @@ import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, SECTION_LIMITS, STATUSES, ZONE_KIND
 import { DPI, PAPER } from './export.js';
 import { COST_ITEMS, costValue, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
+import { ISO_COLORS, ISO_DIFF_COLORS } from './draw.js';
+import { ISOCHRONE_PRESETS } from './model.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
 import { TOOLS } from './tools.js';
@@ -17,6 +19,81 @@ const fmtDate = (iso) => {
 };
 const fmtLen = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
 const options = (list, value) => list.map((o) => `<option value="${o.id}"${o.id === value ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+
+/** Weitere Routenpaare mit Ergebnistabelle und Summen. */
+function pairsSection(doc, actions, tools, geometry) {
+  const pairs = doc.routePairs || [];
+  const results = actions.pairResults();
+  const editable = actions.canEdit();
+  const dis = editable ? '' : 'disabled';
+  const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+  const capturing = tools.routeTarget && tools.routeTarget.pairId;
+  let sumDelta = 0;
+  let count = 0;
+  const rows = pairs.map((p, i) => {
+    const r = results.find((x) => x.id === p.id);
+    const cur = r && r.current && !r.current.error ? r.current : null;
+    const neu = r && r.proposed && !r.proposed.error ? r.proposed : null;
+    let delta = '–';
+    if (cur && neu) {
+      const d = neu.time - cur.time;
+      sumDelta += d;
+      count++;
+      delta = `${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
+    }
+    const state = !p.from || !p.to ? '<span class="muted small">Start und Ziel setzen</span>' : '';
+    return `<tr class="${capturing === p.id ? 'active' : ''}">
+      <td>${i + 1}</td>
+      <td><input type="text" class="pair-name" data-id="${esc(p.id)}" value="${esc(p.name)}" ${dis}> ${state}</td>
+      <td class="num">${cur ? `${fmtKm(cur.dist)}<br>${formatDuration(cur.time)}` : '–'}</td>
+      <td class="num">${neu ? `${fmtKm(neu.dist)}<br>${formatDuration(neu.time)}` : '–'}</td>
+      <td class="num">${delta}</td>
+      <td class="pair-actions"><button type="button" class="icon-btn pair-set" data-id="${esc(p.id)}" title="Start und Ziel auf der Karte setzen" ${dis}>◎</button><button type="button" class="icon-btn pair-swap" data-id="${esc(p.id)}" title="A ↔ B" ${dis || !p.from || !p.to ? 'disabled' : ''}>⇄</button><button type="button" class="icon-btn pair-del" data-id="${esc(p.id)}" title="Löschen" ${dis}>✕</button></td>
+    </tr>`;
+  }).join('');
+  const total = count ? `<tr class="total"><td colspan="4">Summe über ${count} Paar${count === 1 ? '' : 'e'} · Ø ${formatDuration(Math.abs(sumDelta / count))} je Fahrt</td><td class="num"><strong>${sumDelta > 0 ? '+' : sumDelta < 0 ? '−' : '±'}${formatDuration(Math.abs(sumDelta))}</strong></td><td></td></tr>` : '';
+  return `
+    <h4>Weitere Routenpaare</h4>
+    <p class="muted small">Feste Verbindungen wie Schule, Bahnhof oder Nachbardorf: heute gegen neu${geometry ? ' (typische Zeit)' : ''}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte.</p>
+    ${pairs.length ? `<table class="route-table pairs"><thead><tr><th>#</th><th>Name</th><th class="num">Heute</th><th class="num">Neu</th><th class="num">Δ</th><th></th></tr></thead><tbody>${rows}${total}</tbody></table>` : ''}
+    <div class="btn-row"><button type="button" id="pair-add" class="btn small" ${dis}>+ Paar hinzufügen</button>${capturing ? '<span class="muted small">Start und Ziel auf der Karte anklicken (Esc bricht ab).</span>' : ''}</div>`;
+}
+
+/** Erreichbarkeit ab einem Ursprung als Isochronen-Netz. */
+function isochroneSection(doc, actions, tools) {
+  const iso = doc.isochrone;
+  const res = iso ? actions.isochrone() : null; // nach dem Löschen liegt bis zur Neuberechnung noch ein altes Ergebnis vor
+  const editable = actions.canEdit();
+  const dis = editable ? '' : 'disabled';
+  const capturing = tools.routeTarget && tools.routeTarget.isochrone;
+  const presetValue = iso ? iso.minutes.join(',') : '5,10,15';
+  const presets = ISOCHRONE_PRESETS.map((p) => p.join(','));
+  if (!presets.includes(presetValue)) presets.push(presetValue);
+  let stats = '';
+  if (res && res.error) stats = `<p class="muted small">${esc(res.error)}</p>`;
+  else if (res && res.mode === 'diff') {
+    stats = `<table class="route-table"><tbody>
+      <tr><td><span class="dot" style="background:${ISO_DIFF_COLORS.gained}"></span>Neu erreichbar (nur mit Entwurf)</td><td class="num">${res.stats.gainedKm} km</td></tr>
+      <tr><td><span class="dot" style="background:${ISO_DIFF_COLORS.lost}"></span>Nicht mehr erreichbar (nur heute)</td><td class="num">${res.stats.lostKm} km</td></tr>
+      <tr><td><span class="dot" style="background:#777"></span>In beiden Fällen</td><td class="num">${res.stats.bothKm} km</td></tr></tbody></table>
+      <p class="muted small">Strassennetz, das innerhalb von ${iso.minutes[iso.minutes.length - 1]} Minuten ab dem Ursprung erreichbar ist.</p>`;
+  } else if (res) {
+    stats = `<table class="route-table"><thead><tr><th>bis</th><th class="num">erreichbares Netz</th></tr></thead><tbody>
+      ${res.minutes.map((m, i) => `<tr><td><span class="dot" style="background:${ISO_COLORS[Math.min(i, ISO_COLORS.length - 1)]}"></span>${m} min</td><td class="num">${res.stats.km[i]} km</td></tr>`).join('')}</tbody></table>`;
+  }
+  return `
+    <h4>Erreichbarkeit (Isochronen)</h4>
+    <p class="muted small">Welches Strassennetz ist ab einem Punkt in 5, 10 oder 15 Minuten erreichbar – heute, mit dem Entwurf oder als Differenz (grün: nur neu, rot: nur heute).</p>
+    <div class="btn-row">
+      <button type="button" id="iso-set" class="btn small ${capturing ? 'primary' : ''}" ${dis}>${iso ? 'Ursprung verschieben' : 'Ursprung setzen'}</button>
+      ${iso ? `
+      <select id="iso-minutes" ${dis}>${presets.map((p) => `<option value="${p}" ${p === presetValue ? 'selected' : ''}>${p.split(',').join(' / ')} min</option>`).join('')}</select>
+      <select id="iso-mode" ${dis}>${[['proposed', 'Neu (mit Entwurf)'], ['current', 'Heute'], ['diff', 'Differenz']].map(([v, l]) => `<option value="${v}" ${iso.mode === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <button type="button" id="iso-clear" class="btn small" ${dis}>Löschen</button>` : ''}
+    </div>
+    ${capturing ? '<p class="muted small">Ursprung auf der Karte anklicken (Esc bricht ab).</p>' : ''}
+    ${stats}`;
+}
 
 /** Parzellen-Block der Strassen-Eigenschaften: Abfrage, Liste mit Länge je Parzelle, Hinweis bei veralteter Geometrie. */
 function parcelsBlock(road, editable) {
@@ -521,6 +598,19 @@ export class UI {
           </tbody>
         </table>`;
     }
+    const pairDefs = doc.routePairs || [];
+    const pairRes = actions.pairResults();
+    if (pairDefs.length && pairRes.length) {
+      const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+      const rows = pairDefs.map((p) => {
+        const r = pairRes.find((x) => x.id === p.id);
+        const cur = r && r.current && !r.current.error ? r.current : null;
+        const neu = r && r.proposed && !r.proposed.error ? r.proposed : null;
+        if (!cur && !neu) return '';
+        return `<tr><td>${esc(p.name)}</td><td>${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : '–'}</td><td>${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : '–'}</td></tr>`;
+      }).join('');
+      if (rows) route += `<h3>Weitere Verbindungen</h3><table class="route-table"><thead><tr><th></th><th>Heute</th><th>Neu</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
     const stats = [counts.road && `${counts.road} Strasse${counts.road > 1 ? 'n' : ''}`, counts.junction && `${counts.junction} Punkt${counts.junction > 1 ? 'e' : ''}`, counts.roundabout && `${counts.roundabout} Kreisel`, counts.zone && `${counts.zone} Fläche${counts.zone > 1 ? 'n' : ''}`].filter(Boolean).join(' · ');
     panel.innerHTML = `
       <h2>${esc(doc.name)}</h2>
@@ -785,6 +875,29 @@ export class UI {
         patch('Radius ändern', (x) => { x.radius = Math.round(r * 10) / 10; });
       };
     }
+  }
+
+  wirePairs() {
+    const { actions } = this.ctx;
+    const el = this.$('route-panel');
+    const add = this.$('pair-add');
+    if (add) add.onclick = () => actions.addPair();
+    el.querySelectorAll('.pair-name').forEach((inp) => { inp.onchange = () => actions.renamePair(inp.dataset.id, inp.value); });
+    el.querySelectorAll('.pair-set').forEach((b) => { b.onclick = () => actions.capturePair(b.dataset.id); });
+    el.querySelectorAll('.pair-swap').forEach((b) => { b.onclick = () => actions.swapPair(b.dataset.id); });
+    el.querySelectorAll('.pair-del').forEach((b) => { b.onclick = () => actions.removePair(b.dataset.id); });
+  }
+
+  wireIsochrone() {
+    const { actions } = this.ctx;
+    const set = this.$('iso-set');
+    if (set) set.onclick = () => actions.captureIsochrone();
+    const minutes = this.$('iso-minutes');
+    if (minutes) minutes.onchange = () => actions.setIsochrone({ minutes: minutes.value.split(',').map(Number) });
+    const mode = this.$('iso-mode');
+    if (mode) mode.onchange = () => actions.setIsochrone({ mode: mode.value });
+    const clear = this.$('iso-clear');
+    if (clear) clear.onclick = () => actions.clearIsochrone();
   }
 
   /** Ereignisse des Querschnitt-Editors einer Strasse. */
@@ -1281,7 +1394,11 @@ export class UI {
         <button type="button" id="route-clear" class="btn small" ${q || tools.routeDraft ? '' : 'disabled'}>Löschen</button>
         <button type="button" id="route-load" class="btn small">Netz für Ansicht laden</button>
       </div>
-      <p class="muted small" id="route-net">${esc(net)}</p>`;
+      <p class="muted small" id="route-net">${esc(net)}</p>
+      ${pairsSection(store.doc, actions, tools, geometry)}
+      ${isochroneSection(store.doc, actions, tools)}`;
+    this.wirePairs();
+    this.wireIsochrone();
     this.$('route-tool').onclick = () => tools.setTool('route');
     this.$('route-model').onchange = (e) => actions.updateSettings({ speedModel: e.target.checked ? 'geometry' : 'limit' });
     this.$('route-swap').onclick = () => actions.swapRoute();

@@ -6,6 +6,7 @@ import {
   applySnapSplits, removeRoadNode, normalizeDocument, deserialize, serialize, toGeoJSON, docStats,
   removeLayer, moveLayer, featureLabel,
   ROAD_KINDS, defaultSection, normalizeSection, sectionWidth, sectionBands, sectionSummary, roadMedian, junctionTurns,
+  normalizeRoutePairs, normalizeIsochrone,
 } from '../js/model.js';
 
 function docWithRoad() {
@@ -257,4 +258,23 @@ test('Autobahn/Autostrasse, Querschnitte und Abbiegeregeln', () => {
   assert.ok(gj.features[0].properties.section.includes('Fahrstreifen'));
   assert.equal(gj.features[0].properties.width, 14.5);
   assert.deepEqual(gj.features.find((f) => f.properties.type === 'junction').properties.turns, j.turns);
+});
+
+test('Routenpaare und Isochronen-Einstellung werden geprüft und gespeichert', () => {
+  const pairs = normalizeRoutePairs([{ id: 'p1', name: 'Schule', from: [47, 8], to: [99, 8] }, { name: 'x'.repeat(80) }, 'kaputt']);
+  assert.equal(pairs.length, 2);
+  assert.deepEqual(pairs[0], { id: 'p1', name: 'Schule', from: [47, 8], to: null });
+  assert.ok(pairs[1].id.startsWith('p_') && pairs[1].name.length === 60);
+  assert.deepEqual(normalizeRoutePairs(null), []);
+  assert.equal(normalizeRoutePairs(new Array(30).fill({ id: 'a' })).length, 20);
+  assert.deepEqual(normalizeIsochrone({ from: [47.1234567, 8], minutes: [15, 5, 5, 'x', 99], mode: 'egal' }), { from: [47.123457, 8], minutes: [5, 15], mode: 'proposed' });
+  assert.deepEqual(normalizeIsochrone({ from: [47, 8] }).minutes, [5, 10, 15]);
+  assert.equal(normalizeIsochrone({ from: [91, 8] }), null);
+  const doc = createDocument();
+  doc.routePairs = pairs;
+  doc.isochrone = { from: [47, 8], minutes: [10, 20, 30], mode: 'diff' };
+  const back = deserialize(serialize(doc));
+  assert.deepEqual(back.routePairs, pairs);
+  assert.deepEqual(back.isochrone, doc.isochrone);
+  assert.deepEqual(createDocument().routePairs, []);
 });

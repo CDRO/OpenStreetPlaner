@@ -225,6 +225,28 @@ type Route struct {
 	To   LatLng `json:"to"`
 }
 
+// RoutePair ist ein weiteres benanntes Start-Ziel-Paar (Start oder Ziel können noch fehlen).
+type RoutePair struct {
+	ID   string  `json:"id"`
+	Name string  `json:"name"`
+	From *LatLng `json:"from"`
+	To   *LatLng `json:"to"`
+}
+
+// Isochrone ist die Erreichbarkeitsanfrage: Ursprung, Zeitschwellen in Minuten, Modus.
+type Isochrone struct {
+	From    LatLng    `json:"from"`
+	Minutes []float64 `json:"minutes"`
+	Mode    string    `json:"mode"`
+}
+
+const (
+	MaxRoutePairs    = 20
+	MaxIsochroneBand = 5
+)
+
+var isochroneModes = []string{"proposed", "current", "diff"}
+
 type Document struct {
 	Version   int       `json:"version"`
 	ID        string    `json:"id"`
@@ -235,6 +257,9 @@ type Document struct {
 	Layers    []Layer   `json:"layers"`
 	Features  []Feature `json:"features"`
 	Route     *Route    `json:"route,omitempty"`
+	// Weitere Routenpaare und Erreichbarkeitsanfrage des Routen-Rechners
+	RoutePairs []RoutePair `json:"routePairs,omitempty"`
+	Isochrone  *Isochrone  `json:"isochrone,omitempty"`
 	// Überschriebene Einheitskosten der Kostenschätzung (Schlüssel wie web/js/costs.js)
 	Costs map[string]float64 `json:"costs,omitempty"`
 }
@@ -472,6 +497,52 @@ func Normalize(d *Document) error {
 	if d.Route != nil {
 		d.Route.From = round6(d.Route.From)
 		d.Route.To = round6(d.Route.To)
+	}
+	if len(d.RoutePairs) > MaxRoutePairs {
+		d.RoutePairs = d.RoutePairs[:MaxRoutePairs]
+	}
+	for i := range d.RoutePairs {
+		p := &d.RoutePairs[i]
+		if !idPattern.MatchString(p.ID) {
+			p.ID = fmt.Sprintf("p_%d", i+1)
+		}
+		p.Name = truncate(p.Name, 60)
+		if p.From != nil && !validLatLng(*p.From) {
+			p.From = nil
+		}
+		if p.To != nil && !validLatLng(*p.To) {
+			p.To = nil
+		}
+		if p.From != nil {
+			v := round6(*p.From)
+			p.From = &v
+		}
+		if p.To != nil {
+			v := round6(*p.To)
+			p.To = &v
+		}
+	}
+	if d.Isochrone != nil {
+		if !validLatLng(d.Isochrone.From) {
+			d.Isochrone = nil
+		} else {
+			d.Isochrone.From = round6(d.Isochrone.From)
+			mins := make([]float64, 0, len(d.Isochrone.Minutes))
+			for _, m := range d.Isochrone.Minutes {
+				if math.IsNaN(m) || m < 1 || m > 60 {
+					continue
+				}
+				mins = append(mins, math.Round(m))
+				if len(mins) >= MaxIsochroneBand {
+					break
+				}
+			}
+			if len(mins) == 0 {
+				mins = []float64{5, 10, 15}
+			}
+			d.Isochrone.Minutes = mins
+			d.Isochrone.Mode = oneOf(isochroneModes, d.Isochrone.Mode, "proposed")
+		}
 	}
 	if len(d.Costs) > 0 {
 		clean := make(map[string]float64, len(d.Costs))

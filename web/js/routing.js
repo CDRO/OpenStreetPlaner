@@ -374,14 +374,14 @@ class MinHeap {
 }
 
 /**
- * Schnellste Route (nach Zeit). Der Zustand ist (Knoten, Vorgänger), damit
- * Abbiegekosten und -verbote am Knoten aus dem Richtungswechsel folgen.
- * Liefert { path: [[lat,lng]], dist, time, sd, p15, p85 } oder null.
+ * Dijkstra über Zustände (Knoten, Vorgänger), damit Abbiegekosten und -verbote
+ * am Knoten aus dem Richtungswechsel folgen. Stoppt bei toKey oder wenn alle
+ * Zustände unter maxCost abgearbeitet sind. Liefert { best, endState, nodeCost }.
  */
-export function shortestPath(g, fromKey, toKey) {
-  if (!g.nodes.has(fromKey) || !g.nodes.has(toKey)) return null;
+export function search(g, fromKey, { toKey = null, maxCost = Infinity } = {}) {
   const stateKey = (node, prev) => (prev ? `${node}|${prev}` : node);
   const best = new Map([[fromKey, { node: fromKey, prev: null, cost: 0, dist: 0, variance: 0, from: null }]]);
+  const nodeCost = new Map([[fromKey, 0]]);
   const heap = new MinHeap();
   heap.push({ state: fromKey, node: fromKey, prev: null, cost: 0 });
   const done = new Set();
@@ -390,7 +390,9 @@ export function shortestPath(g, fromKey, toKey) {
     const { state, node: key, prev, cost } = heap.pop();
     if (done.has(state)) continue;
     done.add(state);
-    if (key === toKey) {
+    if (cost > maxCost) break;
+    if (!nodeCost.has(key) || cost < nodeCost.get(key)) nodeCost.set(key, cost);
+    if (toKey !== null && key === toKey) {
       endState = state;
       break;
     }
@@ -414,6 +416,13 @@ export function shortestPath(g, fromKey, toKey) {
       }
     }
   }
+  return { best, endState, nodeCost };
+}
+
+/** Schnellste Route (nach Zeit). Liefert { path: [[lat,lng]], dist, time, sd, p15, p85 } oder null. */
+export function shortestPath(g, fromKey, toKey) {
+  if (!g.nodes.has(fromKey) || !g.nodes.has(toKey)) return null;
+  const { best, endState } = search(g, fromKey, { toKey });
   if (!endState) return null;
   const end = best.get(endState);
   const path = [];
@@ -423,21 +432,149 @@ export function shortestPath(g, fromKey, toKey) {
   return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85 };
 }
 
-/** Beide Netze rechnen. Liefert { current, proposed, network: { current: n, proposed: n } }. */
-export function computeRoutes({ osmWays, doc, from, to, model = 'limit' }) {
-  const result = { current: null, proposed: null, error: null, model };
-  for (const mode of ['current', 'proposed']) {
-    const g = buildGraph({ osmWays, doc, mode, model });
-    const a = attachPoint(g, from);
-    const b = attachPoint(g, to);
-    if (!a || !b) {
-      result[mode] = { error: !a ? 'Start liegt nicht in der Nähe einer befahrbaren Strasse.' : 'Ziel liegt nicht in der Nähe einer befahrbaren Strasse.' };
-      continue;
+/** Fahrzeit (s) zu jedem erreichbaren Knoten bis maxSeconds: Map Knoten-Key -> Sekunden. */
+export function reachTimes(g, fromKey, maxSeconds) {
+  if (!g.nodes.has(fromKey)) return new Map();
+  const { nodeCost } = search(g, fromKey, { maxCost: maxSeconds });
+  for (const [k, t] of nodeCost) if (t > maxSeconds) nodeCost.delete(k);
+  return nodeCost;
+}
+
+/**
+ * Zerlegt die Kanten in Stücke je Zeitband: bands = Sekunden-Schwellen aufsteigend.
+ * Jede ungerichtete Kante zählt einmal; sind beide Enden erreicht, trifft sich die
+ * Ausbreitung in der Mitte (Zeit an Position = Minimum beider Richtungen).
+ * Liefert [{ a, b, band, dist }] (band = Index der Schwelle, in der das Stück liegt).
+ */
+export function isochronePieces(g, times, bands) {
+  const pieces = [];
+  const maxT = bands[bands.length - 1];
+  const seen = new Set();
+  const emit = (a, b, t0, tEnd, T, dist) => {
+    // Stücke von a (Zeit t0) Richtung b bis zur Zeit tEnd (höchstens t0 + T)
+    let lo = t0;
+    const stop = Math.min(tEnd, t0 + T, maxT);
+    for (let i = 0; i < bands.length && lo < stop; i++) {
+      const hi = Math.min(stop, bands[i]);
+      if (hi <= lo) continue;
+      const f0 = (lo - t0) / T;
+      const f1 = (hi - t0) / T;
+      pieces.push({
+        a: [a[0] + (b[0] - a[0]) * f0, a[1] + (b[1] - a[1]) * f0],
+        b: [a[0] + (b[0] - a[0]) * f1, a[1] + (b[1] - a[1]) * f1],
+        band: i,
+        dist: dist * (f1 - f0),
+      });
+      lo = hi;
     }
-    const r = shortestPath(g, a.key, b.key);
-    result[mode] = r ? { ...r, path: [from, ...r.path, to] } : { error: 'Keine Verbindung im Netz gefunden (Strassennetz für den ganzen Bereich geladen?).' };
+  };
+  for (const [key, tu] of times) {
+    const node = g.nodes.get(key);
+    for (const e of node.edges) {
+      if (!(e.time > 0)) continue;
+      const id = key < e.to ? `${key}>${e.to}` : `${e.to}>${key}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const other = g.nodes.get(e.to);
+      const tv = times.has(e.to) ? times.get(e.to) : Infinity;
+      const back = other.edges.find((x) => x.to === key);
+      const Tback = back && back.time > 0 ? back.time : e.time;
+      // Treffpunkt in der Zeit, wenn beide Enden erreicht sind
+      const tm = Number.isFinite(tv) ? (tu + tv + Math.min(e.time, Tback)) / 2 : Infinity;
+      emit(node.latlng, other.latlng, tu, tm, e.time, e.dist);
+      if (Number.isFinite(tv) && back) emit(other.latlng, node.latlng, tv, tm, Tback, e.dist);
+    }
   }
-  return result;
+  return pieces;
+}
+
+/**
+ * Erreichbarkeit ab einem Punkt. mode 'current' | 'proposed' | 'diff'; minutes aufsteigend.
+ * Liefert { mode, minutes, pieces, stats } oder { error }.
+ * Bei 'diff' trägt jedes Stück status 'gained' (nur neu), 'lost' (nur heute) oder 'both';
+ * stats = { gainedKm, lostKm, bothKm }. Sonst stats = { km: [je Band kumuliert] }.
+ */
+export function computeIsochrone({ osmWays, doc, from, minutes = [5, 10, 15], mode = 'proposed', model = 'limit', graphs = null }) {
+  const bands = minutes.map((m) => m * 60);
+  const maxT = bands[bands.length - 1];
+  const run = (m) => {
+    const g = graphs && graphs[m] ? graphs[m] : buildGraph({ osmWays, doc, mode: m, model });
+    const start = attachPoint(g, from);
+    if (!start) return null;
+    const times = reachTimes(g, start.key, maxT);
+    return { g, times };
+  };
+  if (mode !== 'diff') {
+    const r = run(mode);
+    if (!r) return { error: 'Der Ursprung liegt nicht in der Nähe einer befahrbaren Strasse.' };
+    const pieces = isochronePieces(r.g, r.times, bands);
+    const km = bands.map(() => 0);
+    for (const p of pieces) km[p.band] += p.dist / 1000;
+    for (let i = 1; i < km.length; i++) km[i] += km[i - 1];
+    return { mode, minutes, pieces, stats: { km: km.map((v) => Math.round(v * 10) / 10) } };
+  }
+  const cur = run('current');
+  const neu = run('proposed');
+  if (!cur || !neu) return { error: 'Der Ursprung liegt nicht in der Nähe einer befahrbaren Strasse.' };
+  // Vergleich auf den Kanten des Netzes mit Entwurf (es enthält auch die heutigen Strassen ausser Rückbau)
+  const pieces = [];
+  const stats = { gainedKm: 0, lostKm: 0, bothKm: 0 };
+  const seen = new Set();
+  // Eine Kante gilt in einem Netz als erreicht, wenn sie dort existiert und eines ihrer Enden erreicht ist
+  const edgeReached = (g, times, u, v) => {
+    if (!times.has(u) && !times.has(v)) return false;
+    const nu = g.nodes.get(u);
+    const nv = g.nodes.get(v);
+    return !!((nu && nu.edges.some((e) => e.to === v)) || (nv && nv.edges.some((e) => e.to === u)));
+  };
+  const classify = (g, times, otherG, other, statusIfOnly) => {
+    for (const [key] of times) {
+      const node = g.nodes.get(key);
+      for (const e of node.edges) {
+        const id = key < e.to ? `${key}>${e.to}` : `${e.to}>${key}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const status = edgeReached(otherG, other, key, e.to) ? 'both' : statusIfOnly;
+        pieces.push({ a: node.latlng, b: g.nodes.get(e.to).latlng, status, dist: e.dist });
+        if (status === 'both') stats.bothKm += e.dist / 1000;
+        else if (status === 'gained') stats.gainedKm += e.dist / 1000;
+        else stats.lostKm += e.dist / 1000;
+      }
+    }
+  };
+  classify(neu.g, neu.times, cur.g, cur.times, 'gained');
+  classify(cur.g, cur.times, neu.g, neu.times, 'lost');
+  for (const k of Object.keys(stats)) stats[k] = Math.round(stats[k] * 10) / 10;
+  return { mode, minutes, pieces, stats };
+}
+
+/** Baut beide Netze einmal; Routen und Isochronen teilen sie sich. */
+export function buildGraphs({ osmWays, doc, model = 'limit' }) {
+  return {
+    current: buildGraph({ osmWays, doc, mode: 'current', model }),
+    proposed: buildGraph({ osmWays, doc, mode: 'proposed', model }),
+  };
+}
+
+/** Route auf einem fertigen Netz; Start und Ziel werden temporär angebunden. */
+export function routeOnGraph(g, from, to) {
+  const a = attachPoint(g, from);
+  const b = attachPoint(g, to);
+  if (!a || !b) return { error: !a ? 'Start liegt nicht in der Nähe einer befahrbaren Strasse.' : 'Ziel liegt nicht in der Nähe einer befahrbaren Strasse.' };
+  const r = shortestPath(g, a.key, b.key);
+  return r ? { ...r, path: [from, ...r.path, to] } : { error: 'Keine Verbindung im Netz gefunden (Strassennetz für den ganzen Bereich geladen?).' };
+}
+
+/** Mehrere Start-Ziel-Paare auf denselben Netzen: [{ id, current, proposed }]. */
+export function computeRoutesMany({ osmWays, doc, pairs, model = 'limit' }) {
+  const graphs = buildGraphs({ osmWays, doc, model });
+  return pairs.map((p) => ({ id: p.id, current: routeOnGraph(graphs.current, p.from, p.to), proposed: routeOnGraph(graphs.proposed, p.from, p.to) }));
+}
+
+/** Beide Netze rechnen. Liefert { current, proposed, model }. */
+export function computeRoutes({ osmWays, doc, from, to, model = 'limit' }) {
+  const graphs = buildGraphs({ osmWays, doc, model });
+  return { current: routeOnGraph(graphs.current, from, to), proposed: routeOnGraph(graphs.proposed, from, to), error: null, model };
 }
 
 export function formatDuration(seconds) {

@@ -42,6 +42,7 @@ export class ToolController {
     this.preview = null;
     this.snapPoint = null;
     this.routeDraft = null; // Start gesetzt, Ziel fehlt noch
+    this.routeTarget = null; // null = Hauptroute, sonst { pairId } oder { isochrone: true }
     this.commentDraft = null; // Position für einen neuen Kommentar
     this.modifiers = { Shift: false, Control: false, Alt: false };
 
@@ -241,8 +242,9 @@ export class ToolController {
 
   cancel() {
     // Ein Werkzeugwechsel verwirft nur den halb gesetzten Start; die fertige Route bleibt (Löschen via Esc im Routen-Werkzeug oder Button).
-    if (this.routeDraft) {
+    if (this.routeDraft || this.routeTarget) {
       this.routeDraft = null;
+      this.routeTarget = null;
       this.onStatus(this.toolInfo().hint);
       this.onSceneChange();
       return true;
@@ -561,17 +563,48 @@ export class ToolController {
 
   routeClick(e) {
     const ll = roundCoord(e.latlng);
-    if (!this.routeDraft) {
-      this.routeDraft = { from: ll };
-      if (this.store.doc.route) this.store.commit('Route neu beginnen', (doc) => { doc.route = null; });
-      this.onStatus('Start gesetzt – jetzt das Ziel anklicken.');
+    const target = this.routeTarget;
+    if (target && target.isochrone) {
+      this.routeTarget = null;
+      this.store.commit('Isochronen-Ursprung setzen', (doc) => {
+        const prev = doc.isochrone || {};
+        doc.isochrone = { from: ll, minutes: prev.minutes || [5, 10, 15], mode: prev.mode || 'proposed' };
+      });
+      this.onStatus(this.toolInfo().hint);
       this.onSceneChange();
       return;
     }
-    const from = this.routeDraft.from;
+    if (!this.routeDraft) {
+      this.routeDraft = { from: ll, pairId: target ? target.pairId : null };
+      if (!target && this.store.doc.route) this.store.commit('Route neu beginnen', (doc) => { doc.route = null; });
+      this.onStatus(target ? 'Start des Paars gesetzt – jetzt das Ziel anklicken.' : 'Start gesetzt – jetzt das Ziel anklicken.');
+      this.onSceneChange();
+      return;
+    }
+    const { from, pairId } = this.routeDraft;
     this.routeDraft = null;
-    this.store.commit('Route setzen', (doc) => { doc.route = { from, to: ll }; });
+    this.routeTarget = null;
+    if (pairId) {
+      this.store.commit('Routenpaar setzen', (doc) => {
+        const p = (doc.routePairs || []).find((x) => x.id === pairId);
+        if (p) {
+          p.from = from;
+          p.to = ll;
+        }
+      });
+    } else {
+      this.store.commit('Route setzen', (doc) => { doc.route = { from, to: ll }; });
+    }
     this.onStatus(this.toolInfo().hint);
+  }
+
+  /** Nächste Klicks im Routen-Werkzeug setzen ein Paar (pairId) oder den Isochronen-Ursprung. */
+  captureRoute(target) {
+    this.routeTarget = target;
+    this.routeDraft = null;
+    if (this.tool !== 'route') this.setTool('route');
+    this.onStatus(target && target.isochrone ? 'Ursprung der Erreichbarkeit auf der Karte anklicken.' : 'Start des Paars auf der Karte anklicken, dann das Ziel.');
+    this.onSceneChange();
   }
 
   // --- OSM übernehmen ---------------------------------------------------------

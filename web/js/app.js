@@ -12,9 +12,9 @@ import { buildSnapIndex } from './snap.js';
 import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
-import { computeRoutes } from './routing.js';
+import { buildGraphs, computeIsochrone, routeOnGraph } from './routing.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
-import { nodesKey } from './model.js';
+import { nodesKey, newId } from './model.js';
 import { exportPdf, exportPng, exportReport } from './export.js';
 import { estimateCosts } from './costs.js';
 import { runChecks } from './checks.js';
@@ -71,6 +71,8 @@ async function main() {
     snapDirty: true,
     searchMarker: null,
     routes: null,
+    pairResults: [],
+    iso: null,
     routeTimer: null,
     defaultZoneKind: 'tempo30',
     comments: [],
@@ -227,6 +229,9 @@ async function main() {
     snap: tools.snapPoint,
     showHandles: tools.tool === 'select' && canEdit(),
     routes: store.doc.route ? state.routes : null,
+    pairs: state.pairResults,
+    isochrone: store.doc.isochrone ? state.iso : null,
+    routeTarget: tools.routeTarget,
     parcels: selectedParcelPolygons(),
     buildings: state.showExposure ? exposureForDrawing() : null,
     routeDraft: tools.routeDraft,
@@ -254,14 +259,24 @@ async function main() {
   function recomputeRoutes() {
     clearTimeout(state.routeTimer);
     state.routeTimer = setTimeout(() => {
-      const q = store.doc.route;
-      if (!q) {
+      const doc = store.doc;
+      const q = doc.route;
+      const pairs = (doc.routePairs || []).filter((p) => p.from && p.to);
+      const iso = doc.isochrone;
+      if (!q && !pairs.length && !iso) {
         state.routes = null;
+        state.pairResults = [];
+        state.iso = null;
       } else {
         try {
-          state.routes = computeRoutes({ osmWays: osm.list(), doc: store.doc, from: q.from, to: q.to, model: settings.speedModel });
+          const graphs = buildGraphs({ osmWays: osm.list(), doc, model: settings.speedModel });
+          state.routes = q ? { current: routeOnGraph(graphs.current, q.from, q.to), proposed: routeOnGraph(graphs.proposed, q.from, q.to), model: settings.speedModel } : null;
+          state.pairResults = pairs.map((p) => ({ id: p.id, current: routeOnGraph(graphs.current, p.from, p.to), proposed: routeOnGraph(graphs.proposed, p.from, p.to) }));
+          state.iso = iso ? computeIsochrone({ osmWays: osm.list(), doc, from: iso.from, minutes: iso.minutes, mode: iso.mode, model: settings.speedModel, graphs }) : null;
         } catch (e) {
           state.routes = { current: { error: e.message }, proposed: { error: e.message } };
+          state.pairResults = [];
+          state.iso = { error: e.message };
         }
       }
       map.requestRender();
@@ -272,15 +287,36 @@ async function main() {
     }, 120);
   }
 
+  /** Bereich um den Isochronen-Ursprung: höchste Minutenzahl bei rund 50 km/h, Luftlinie etwa 70 % davon. */
+  function isochroneBounds(iso) {
+    const maxMin = Math.max(...iso.minutes);
+    const radiusM = Math.max(600, (maxMin / 60) * 50000 * 0.7);
+    const dLat = radiusM / 111320;
+    const dLng = radiusM / (111320 * Math.cos((iso.from[0] * Math.PI) / 180));
+    const b = { south: iso.from[0] - dLat, north: iso.from[0] + dLat, west: iso.from[1] - dLng, east: iso.from[1] + dLng };
+    b.cells = cellsFor(b).length;
+    b.tooLarge = b.cells > MAX_CELLS;
+    return b;
+  }
+
   function ensureRouteNetwork() {
-    const q = store.doc.route;
-    if (!q) return;
-    const b = routeBounds(q.from, q.to);
-    if (b.tooLarge) {
-      ui.toast(`Start und Ziel liegen zu weit auseinander (${b.cells} Zellen, erlaubt ${MAX_CELLS}). Näher zusammenliegende Punkte wählen.`, 'error', 6000);
-      return;
+    const doc = store.doc;
+    const queries = [];
+    if (doc.route) queries.push(doc.route);
+    for (const p of doc.routePairs || []) if (p.from && p.to) queries.push(p);
+    for (const q of queries) {
+      const b = routeBounds(q.from, q.to);
+      if (b.tooLarge) {
+        ui.toast(`Start und Ziel liegen zu weit auseinander (${b.cells} Zellen, erlaubt ${MAX_CELLS}). Näher zusammenliegende Punkte wählen.`, 'error', 6000);
+        continue;
+      }
+      osm.ensureArea(b);
     }
-    osm.ensureArea(b);
+    if (doc.isochrone) {
+      const b = isochroneBounds(doc.isochrone);
+      if (b.tooLarge) ui.toast(`Erreichbarkeit: Bereich zu gross (${b.cells} Zellen, erlaubt ${MAX_CELLS}). Weniger Minuten wählen.`, 'error', 6000);
+      else osm.ensureArea(b);
+    }
   }
 
   // --- Aktionen für die Oberfläche ---------------------------------------------
@@ -484,7 +520,7 @@ async function main() {
       map.requestRender();
     },
     async runExport({ format, mode, paper, orientation, dpi, report = false }) {
-      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
+      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), pairs: state.pairResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
       else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
@@ -805,6 +841,54 @@ async function main() {
       });
     },
     routes: () => (store.doc.route ? state.routes : null),
+    pairResults: () => state.pairResults,
+    addPair() {
+      if (!actions.requireEdit()) return;
+      const n = (store.doc.routePairs || []).length;
+      if (n >= 20) return ui.toast('Höchstens 20 Routenpaare.', 'error');
+      const id = newId('p');
+      store.commit('Routenpaar hinzufügen', (d) => {
+        if (!d.routePairs) d.routePairs = [];
+        d.routePairs.push({ id, name: `Paar ${n + 1}`, from: null, to: null });
+      });
+      tools.captureRoute({ pairId: id });
+      ui.refreshRoute();
+    },
+    capturePair(id) {
+      if (!actions.requireEdit()) return;
+      tools.captureRoute({ pairId: id });
+      ui.refreshRoute();
+    },
+    renamePair(id, name) {
+      actions.commitDoc('Routenpaar umbenennen', (d) => {
+        const p = (d.routePairs || []).find((x) => x.id === id);
+        if (p) p.name = name.trim().slice(0, 60);
+      });
+    },
+    swapPair(id) {
+      actions.commitDoc('Routenpaar umkehren', (d) => {
+        const p = (d.routePairs || []).find((x) => x.id === id);
+        if (p && p.from && p.to) [p.from, p.to] = [p.to, p.from];
+      });
+    },
+    removePair(id) {
+      actions.commitDoc('Routenpaar löschen', (d) => { d.routePairs = (d.routePairs || []).filter((x) => x.id !== id); });
+    },
+    isochrone: () => state.iso,
+    captureIsochrone() {
+      if (!actions.requireEdit()) return;
+      tools.captureRoute({ isochrone: true });
+      ui.refreshRoute();
+    },
+    setIsochrone(patch) {
+      actions.commitDoc('Erreichbarkeit ändern', (d) => {
+        if (!d.isochrone) return;
+        Object.assign(d.isochrone, patch);
+      });
+    },
+    clearIsochrone() {
+      actions.commitDoc('Erreichbarkeit löschen', (d) => { d.isochrone = null; });
+    },
     routeNetworkStatus() {
       if (osm.pending) return `Strassennetz wird geladen… (${osm.remaining} Zellen offen)`;
       if (osm.lastError) return `Strassennetz: ${osm.lastError.message}`;
@@ -1119,7 +1203,7 @@ async function main() {
       if (!getLayer(d, state.activeLayerId)) state.activeLayerId = d.layers[0].id;
       map.requestRender();
       ui.refreshAll();
-      if (d.route) ensureRouteNetwork();
+      ensureRouteNetwork();
       recomputeRoutes();
     }
     scheduleAutosave();
@@ -1197,7 +1281,7 @@ async function main() {
   }
   ui.refreshAll();
   connectEvents();
-  if (store.doc.route) {
+  if (store.doc.route || (store.doc.routePairs || []).length || store.doc.isochrone) {
     ensureRouteNetwork();
     recomputeRoutes();
   }

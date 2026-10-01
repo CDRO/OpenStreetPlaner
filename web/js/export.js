@@ -418,7 +418,7 @@ const JUNCTION_LABELS = [
 ];
 
 /** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
-export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null } = {}) {
+export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null } = {}) {
   const blocks = [];
   const date = new Date().toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
   blocks.push({ text: doc.name, size: 18, bold: true });
@@ -486,6 +486,35 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
     if (cur && neu) blocks.push({ text: `Differenz: ${neu.dist - cur.dist >= 0 ? '+' : '−'}${(Math.abs(neu.dist - cur.dist) / 1000).toFixed(2)} km, ${neu.time - cur.time >= 0 ? '+' : '−'}${formatDuration(Math.abs(neu.time - cur.time))}` });
   }
   const tops = comments.filter((c) => !c.parentId);
+  // Weitere Routenpaare
+  const pairDefs = (doc.routePairs || []).filter((p) => p.from && p.to);
+  if (pairDefs.length && pairs && pairs.length) {
+    blocks.push({ text: 'Weitere Verbindungen', size: 13, bold: true, gap: 4 });
+    let sum = 0;
+    let n = 0;
+    pairDefs.forEach((p) => {
+      const r = pairs.find((x) => x.id === p.id);
+      const cur = r && r.current && !r.current.error ? r.current : null;
+      const neu = r && r.proposed && !r.proposed.error ? r.proposed : null;
+      const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+      let delta = '';
+      if (cur && neu) {
+        const d = neu.time - cur.time;
+        sum += d;
+        n++;
+        delta = ` · Differenz ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
+      }
+      blocks.push({ text: `${p.name || 'Paar'}: heute ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : '–'} · neu ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : '–'}${delta}`, gap: 2 });
+    });
+    if (n) blocks.push({ text: `Summe über ${n} Verbindungen: ${sum > 0 ? '+' : sum < 0 ? '−' : '±'}${formatDuration(Math.abs(sum))}, im Mittel ${formatDuration(Math.abs(sum / n))} je Fahrt`, bold: true, gap: 8 });
+  }
+  // Erreichbarkeit
+  if (doc.isochrone && isochrone && !isochrone.error) {
+    const iso = doc.isochrone;
+    blocks.push({ text: `Erreichbarkeit ab Ursprung (${iso.minutes.join(' / ')} min)`, size: 13, bold: true, gap: 4 });
+    if (isochrone.mode === 'diff') blocks.push({ text: `Netz innerhalb ${iso.minutes[iso.minutes.length - 1]} min: neu erreichbar ${isochrone.stats.gainedKm} km, nicht mehr erreichbar ${isochrone.stats.lostKm} km, in beiden Fällen ${isochrone.stats.bothKm} km`, gap: 8 });
+    else blocks.push({ text: `${isochrone.mode === 'current' ? 'Heute' : 'Mit Entwurf'}: ${iso.minutes.map((m, k) => `${m} min: ${isochrone.stats.km[k]} km`).join(' · ')} erreichbares Strassennetz`, gap: 8 });
+  }
   if (tops.length) {
     blocks.push({ text: `Kommentare (${tops.length})`, size: 13, bold: true, gap: 4 });
     tops.forEach((c, i) => {

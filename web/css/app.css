@@ -307,3 +307,9 @@ body.present .banner { display: none !important; }
 .parcel-list li { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; border-bottom: 1px dotted var(--border); font-size: 12.5px; }
 .parcel-list li .num { margin-left: auto; white-space: nowrap; }
 .field.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+
+/* Routenpaare und Isochronen */
+.route-table.pairs input.pair-name { width: 100%; min-width: 90px; }
+.route-table.pairs td.pair-actions { white-space: nowrap; }
+.route-table.pairs tr.active td { background: #fff7e8; }
+.route-panel h4, #route-panel h4 { margin: 14px 0 4px; font-size: 13px; }
