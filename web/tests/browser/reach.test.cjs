@@ -51,6 +51,24 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok(res.proposed.time < res.current.time, 'Diagonale ist schneller');
   const panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
   assert.ok(/Summe über 1 Paar/.test(panel) && panel.includes('−'), panel);
+  // Route neu ist gestrichelt: entlang der Diagonale wechseln grüne Striche und weisse Lücken (Halo)
+  const samples = await page.evaluate(() => {
+    const sp = window.stadtplaner;
+    const canvas = document.querySelector('.smap-canvas');
+    const dpr = canvas.width / canvas.getBoundingClientRect().width;
+    const ctx = canvas.getContext('2d');
+    const out = [];
+    for (let i = 0; i <= 40; i++) {
+      const f = 0.1 + 0.8 * (i / 40);
+      const p = sp.map.project([47.05 + 0.01 * f, 8.29 + 0.015 * f]);
+      const d = ctx.getImageData(Math.round(p.x * dpr), Math.round(p.y * dpr), 1, 1).data;
+      out.push([d[0], d[1], d[2]]);
+    }
+    return out;
+  });
+  const greens = samples.filter(([r, g, b]) => g > r + 40 && g > b + 40).length;
+  const gaps = samples.length - greens; // Lücken zeigen den weissen Halo über der roten Strasse (rosa)
+  assert.ok(greens >= 6 && gaps >= 3, `Striche und Lücken: grün ${greens}, Lücken ${gaps}`);
   await page.fill('.pair-name', 'Schule');
   await page.press('.pair-name', 'Enter');
   await h.settle(200);

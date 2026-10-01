@@ -935,8 +935,10 @@ export class UI {
       <label class="field">${t('Grundkarte')}<select id="set-basemap">${bases.map((src) => `<option value="${esc(src.id)}"${src.id === settings.basemap ? ' selected' : ''}>${esc(src.label)}</option>`).join('')}</select></label>
       ${overlays.map((src) => `<label class="check"><input type="checkbox" class="set-overlay" data-id="${esc(src.id)}" ${settings.overlays.includes(src.id) ? 'checked' : ''}> ${esc(src.label)}${src.minZoom ? ` <span class="muted small">(${t('ab Zoom')} ${src.minZoom})</span>` : ''}</label>`).join('')}
       ${bases.length <= 1 ? `<p class="muted small">${t('Weitere Kartenquellen lassen sich auf dem Server über TILE_SOURCES einrichten.')}</p>` : ''}
-      <label class="field">Sprache / Langue / Lingua<select id="set-language">${LANGUAGES.map((l) => `<option value="${l.id}" ${getLanguage() === l.id ? 'selected' : ''}>${l.label}</option>`).join('')}</select></label>`;
+      <label class="field">Sprache / Langue / Lingua<select id="set-language">${LANGUAGES.map((l) => `<option value="${l.id}" ${getLanguage() === l.id ? 'selected' : ''}>${l.label}</option>`).join('')}</select></label>
+      <label class="field">${t('Darstellung')}<select id="set-theme">${[['system', 'Wie das System'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([id, label]) => `<option value="${id}" ${(settings.theme || 'system') === id ? 'selected' : ''}>${t(label)}</option>`).join('')}</select></label>`;
     this.$('set-basemap').onchange = (e) => actions.updateSettings({ basemap: e.target.value });
+    this.$('set-theme').onchange = (e) => actions.updateSettings({ theme: e.target.value });
     this.$('set-language').onchange = (e) => actions.updateSettings({ language: e.target.value });
     mapBox.querySelectorAll('.set-overlay').forEach((cb) => {
       cb.onchange = () => {

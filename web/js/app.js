@@ -153,6 +153,17 @@ async function main() {
     zoom: doc.view.zoom,
     attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende',
   });
+  // Darstellung: hell, dunkel oder wie das System; Kacheln folgen invertiert (nur am Bildschirm)
+  const darkMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  const isDark = () => settings.theme === 'dark' || (settings.theme !== 'light' && !!(darkMedia && darkMedia.matches));
+  function applyTheme() {
+    const root = document.documentElement;
+    if (settings.theme === 'light' || settings.theme === 'dark') root.dataset.theme = settings.theme;
+    else delete root.dataset.theme;
+    map.setDarkTiles(isDark());
+  }
+  applyTheme();
+  if (darkMedia && darkMedia.addEventListener) darkMedia.addEventListener('change', () => applyTheme());
   const osm = new OsmRoadCache((b) => api.roads(b));
   const buildings = new OsmRoadCache((b) => api.buildings(b)); // gleiche Zellen-Logik, andere Daten
   const transit = new OsmTransitCache((b) => api.transit(b)); // Haltestellen und Buslinien aus OSM
@@ -588,6 +599,7 @@ async function main() {
       local.saveSettings(settings);
       state.snapDirty = true;
       if ('basemap' in patch || 'overlays' in patch) applyTileLayers();
+      if ('theme' in patch) applyTheme();
       if ('speedModel' in patch) {
         recomputeRoutes();
         ui.refreshRoute();

@@ -719,4 +719,10 @@ export const it = {
   "Status der Auswahl ändern": "Modificare lo stato della selezione",
   "Abschnitt ändern": "Modificare il tratto",
   "Parzellen entfernen": "Rimuovere le particelle",
+  "Darstellung": "Aspetto",
+  "Dunkel": "Scuro",
+  "Hell": "Chiaro",
+  "Route heute (durchgezogen)": "Percorso oggi (linea continua)",
+  "Route neu (gestrichelt)": "Percorso nuovo (tratteggiato)",
+  "Wie das System": "Come il sistema",
 };

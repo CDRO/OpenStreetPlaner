@@ -719,4 +719,10 @@ export const fr = {
   "Status der Auswahl ändern": "Modifier le statut de la sélection",
   "Abschnitt ändern": "Modifier le tronçon",
   "Parzellen entfernen": "Retirer les parcelles",
+  "Darstellung": "Affichage",
+  "Dunkel": "Sombre",
+  "Hell": "Clair",
+  "Route heute (durchgezogen)": "Itinéraire aujourd'hui (trait plein)",
+  "Route neu (gestrichelt)": "Itinéraire nouveau (tirets)",
+  "Wie das System": "Comme le système",
 };

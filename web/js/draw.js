@@ -8,6 +8,9 @@ import { haversine } from './geometry.js';
 import { ringAreaM2 } from './costs.js';
 
 const KIND_WIDTH = Object.fromEntries(ROAD_KINDS.map((k) => [k.id, k.width]));
+/** Strichmuster „neu“ (Routen) bzw. „nicht mehr“ (Differenz): Unterscheidung auch ohne Farbe. */
+export const ROUTE_DASH = [14, 8];
+export const LOST_DASH = [7, 7];
 
 /** Farben der Querschnitt-Bänder. */
 const BAND_COLORS = {
@@ -310,6 +313,40 @@ function drawParcels(ctx, P, polygons) {
 export const BUILDING_COLORS = { proposed: 'rgba(198, 40, 40, 0.6)', relieved: 'rgba(42, 157, 63, 0.6)', both: 'rgba(224, 138, 0, 0.65)', other: 'rgba(120, 120, 120, 0.18)' };
 
 /** Gebäude-Umringe: betroffene farbig, übrige blass. */
+const hatchCache = new Map();
+/** Schraffur-Muster (diagonal, Punkte, Kreuz) als Canvas-Pattern, damit Gebäude auch ohne Farbe unterscheidbar sind. */
+export function hatchPattern(ctx, kind, color) {
+  const key = `${kind}|${color}`;
+  if (hatchCache.has(key)) return hatchCache.get(key);
+  const c = document.createElement('canvas');
+  c.width = 8;
+  c.height = 8;
+  const g = c.getContext('2d');
+  g.strokeStyle = color;
+  g.fillStyle = color;
+  g.lineWidth = 1.5;
+  if (kind === 'diagonal' || kind === 'cross') {
+    g.beginPath();
+    g.moveTo(0, 8);
+    g.lineTo(8, 0);
+    g.stroke();
+  }
+  if (kind === 'cross') {
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.lineTo(8, 8);
+    g.stroke();
+  }
+  if (kind === 'dots') {
+    g.beginPath();
+    g.arc(4, 4, 1.4, 0, Math.PI * 2);
+    g.fill();
+  }
+  const pat = ctx.createPattern(c, 'repeat');
+  hatchCache.set(key, pat);
+  return pat;
+}
+
 function drawBuildings(ctx, P, { list, current, proposed, roads }) {
   ctx.save();
   for (const b of list) {
@@ -318,6 +355,7 @@ function drawBuildings(ctx, P, { list, current, proposed, roads }) {
     const hitNew = proposed.has(b.id) || roads.has(b.id);
     const hitCur = current.has(b.id);
     const color = hitNew && hitCur ? BUILDING_COLORS.both : hitNew ? BUILDING_COLORS.proposed : hitCur ? BUILDING_COLORS.relieved : BUILDING_COLORS.other;
+    const hatch = hitNew && hitCur ? 'cross' : hitNew ? 'diagonal' : hitCur ? 'dots' : null;
     ctx.beginPath();
     g.forEach((ll, i) => {
       const p = P(ll);
@@ -325,6 +363,10 @@ function drawBuildings(ctx, P, { list, current, proposed, roads }) {
       else ctx.lineTo(p.x, p.y);
     });
     ctx.closePath();
+    if (hatch && typeof document !== 'undefined') {
+      ctx.fillStyle = hatchPattern(ctx, hatch, color);
+      ctx.fill();
+    }
     ctx.fillStyle = color;
     ctx.fill();
     if (hitNew || hitCur) {
@@ -583,15 +625,16 @@ function drawRoutes(ctx, P, query, routes, routeDraft) {
   };
   if (routes) {
     const paths = [
-      { r: routes.current, color: '#1b6ac9' },
-      { r: routes.proposed, color: '#2a9d3f' },
+      { r: routes.current, color: '#1b6ac9', dash: [] },
+      { r: routes.proposed, color: '#2a9d3f', dash: ROUTE_DASH },
     ];
-    for (const { r, color } of paths) {
+    for (const { r, color, dash } of paths) {
       if (!r || r.error || !r.path) continue;
       const pts = r.path.map(P);
       ctx.save();
       ctx.globalAlpha = 0.9;
       stroke(ctx, pts, '#ffffff', 9);
+      ctx.setLineDash(dash); // neu gestrichelt: auch ohne Farbsehen unterscheidbar
       stroke(ctx, pts, color, 5);
       ctx.restore();
     }
@@ -632,8 +675,9 @@ function drawDiff(ctx, P, diff, mpp) {
     }
     ctx.restore();
   };
+  // Entfernt gestrichelt, geändert punktiert, neu durchgezogen: auch ohne Farbe unterscheidbar
   for (const f of diff.removed) outline(f, '#c62828', [8, 6]);
-  for (const c of diff.changed) outline(c.after, '#e08a00', []);
+  for (const c of diff.changed) outline(c.after, '#e08a00', [2, 5]);
   for (const f of diff.added) outline(f, '#2a9d3f', []);
 }
 
@@ -683,11 +727,13 @@ function drawIsochrone(ctx, P, iso) {
   ctx.globalAlpha = 0.85;
   if (iso.mode === 'diff') {
     for (const status of ['both', 'lost', 'gained']) {
+      ctx.setLineDash(status === 'lost' ? LOST_DASH : []);
       for (const p of iso.pieces) {
         if (p.status !== status) continue;
-        stroke(ctx, [P(p.a), P(p.b)], ISO_DIFF_COLORS[status], status === 'both' ? 4 : 6, 'round');
+        stroke(ctx, [P(p.a), P(p.b)], ISO_DIFF_COLORS[status], status === 'both' ? 4 : 6, status === 'lost' ? 'butt' : 'round');
       }
     }
+    ctx.setLineDash([]);
   } else {
     const n = iso.minutes.length;
     for (let band = n - 1; band >= 0; band--) {
@@ -711,13 +757,16 @@ function drawRoutePairs(ctx, P, pairsDef, results, routeDraft, routeTarget) {
   pairsDef.forEach((pair, i) => {
     const res = results ? results.find((r) => r.id === pair.id) : null;
     if (res) {
-      for (const [r, color] of [[res.current, '#1b6ac9'], [res.proposed, '#2a9d3f']]) {
+      for (const [r, color, dash] of [[res.current, '#1b6ac9', []], [res.proposed, '#2a9d3f', ROUTE_DASH]]) {
         if (!r || r.error || !r.path) continue;
         const pts = r.path.map(P);
         ctx.save();
         ctx.globalAlpha = 0.75;
+        ctx.setLineDash([]);
         stroke(ctx, pts, '#ffffff', 6);
+        ctx.setLineDash(dash);
         stroke(ctx, pts, color, 3);
+        ctx.setLineDash([]);
         ctx.restore();
       }
     }

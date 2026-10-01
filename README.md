@@ -47,6 +47,8 @@ go run . -data ./data
 | Kontextmenü | Rechtsklick oder Langdruck auf ein Element: Hinzoomen, Eigenschaften, Ebene, Status, Führung des Abschnitts (ebenerdig/Brücke/Tunnel), Zugang, Löschen – für die ganze Auswahl, wenn mehrere gewählt sind. Rechtsklick auf einen Griff löscht wie bisher den Punkt |
 | Elementliste | Box „Elemente“ im Zeichnen-Tab: alle Elemente mit Typ, Ebene, Länge oder Status, Filter nach Name, Typ oder Ebene; Klick wählt aus und zoomt hin, Shift+Klick ergänzt die Auswahl |
 | Touch | Mit dem Finger sind Griffe und Trefferflächen grösser (16 statt 9 Pixel), Langdruck öffnet das Kontextmenü, die Seitenleiste ist ein Bottom-Sheet |
+| Ohne Farbsehen | Heute/Neu und Differenzen unterscheiden sich auch durch Muster: Route neu und Paare neu gestrichelt, nicht mehr erreichbares Netz gestrichelt, Versionsvergleich mit durchgezogen/punktiert/gestrichelt, betroffene Gebäude schraffiert (diagonal, Punkte, Kreuz), Zuversicht-Punkte mit ✓ ! ✕ |
+| Dunkelmodus | „Darstellung“ in der Karten-Box: wie das System, hell oder dunkel. Oberfläche über Farbtoken, Kacheln werden am Bildschirm invertiert gezeichnet (Export bleibt hell), native Eingabefelder folgen über `color-scheme` |
 | Zuversicht | Jedes Ergebnis trägt eine von drei Stufen (hoch, mittel, tief) mit aufklappbaren Gründen: Fahrzeiten nach dem Anteil der Strecke mit geschätztem Tempo (OSM ohne `maxspeed`, Entwurf ohne Tempolimit), unvollständig geladenem Netz, Tempolimit- statt Geometriemodell und fehlendem Höhenprofil; Buslinien zusätzlich mit Standard-Haltezeit; OSM-Linien nach Haltepositionen, Plattformen oder fehlenden Rollen; Kosten mit Band ±25 % (eigene Ansätze) bzw. ±40 % (Standardwerte), unbekannte Breiten und pauschale Brücken/Tunnel; Parzellen hoch (amtliche Vermessung), Gebäude und Normen-Check mittel. Keine Statistik, sondern Transparenz über Annahmen. Im PDF-Bericht als Zeile je Ergebnis, im Export-Dialog abschaltbar |
 | Geschwindigkeitsmodell | Schalter im Routen-Tab: Fahrzeit aus der Strassenführung statt nur aus dem Limit. Kurvenradien aus der Geometrie (v = √(3 m/s² · R)), Steigung aus dem Höhenprofil, Wartezeiten an Kreuzungen und Kreiseln mit Streuung. Ergebnis als typische Zeit mit Band P15–P85 |
 | Glätten / Vereinfachen | Strassen per Catmull-Rom-Spline glätten (Abschnittseigenschaften bleiben) oder per Douglas-Peucker auf 1 m vereinfachen |
@@ -263,7 +265,7 @@ aus der sie übernommen wurde (optional; verhindert Doppelte beim Übernehmen).
 
 ```sh
 make test            # go vet + go test + Frontend-Unit-Tests (node --test)
-make test-browser    # Browser-Tests (basics … bus, edit); braucht Go und Playwright mit Chromium
+make test-browser    # Browser-Tests (basics … edit, theme); braucht Go und Playwright mit Chromium
 make run             # Server lokal
 make docker          # Image bauen
 ```

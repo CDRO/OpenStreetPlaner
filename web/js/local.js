@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = {
   speedModel: 'limit',
   exposureRadius: 50, // Umkreis für betroffene Gebäude (m)
   reportConfidence: true, // Zuversicht im PDF-Bericht ausweisen
+  theme: 'system', // 'system' | 'light' | 'dark'
   language: '', // leer = aus dem Browser ableiten (de/fr/it) // 'limit' = Tempolimit, 'geometry' = Kurven, Steigung, Streuung
 };
 

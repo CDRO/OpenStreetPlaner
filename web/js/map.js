@@ -343,12 +343,26 @@ export class SlippyMap {
     });
   }
 
+  /** Dunkelmodus: Kacheln invertiert zeichnen (nur am Bildschirm, nicht im Export). */
+  setDarkTiles(on) {
+    if (this.darkTiles === !!on) return;
+    this.darkTiles = !!on;
+    this.requestRender();
+  }
+
   render() {
     const ctx = this.ctx;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.fillStyle = '#e8ecf0';
+    ctx.fillStyle = this.darkTiles ? '#1b1f24' : '#e8ecf0';
     ctx.fillRect(0, 0, this.width, this.height);
-    this.drawTiles(ctx);
+    if (this.darkTiles && 'filter' in ctx) {
+      ctx.save();
+      ctx.filter = 'invert(1) hue-rotate(180deg) brightness(0.82) contrast(0.9) saturate(0.7)';
+      this.drawTiles(ctx);
+      ctx.restore();
+    } else {
+      this.drawTiles(ctx);
+    }
     if (this.overlay) {
       ctx.save();
       try {
