@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pdfFromJpeg, exportSize, documentBounds, buildPdf, wrapText, pdfWinAnsi, textWidth, reportBlocks } from '../js/export.js';
+import { pdfFromJpeg, exportSize, documentBounds, buildPdf, wrapText, pdfWinAnsi, textWidth, reportBlocks, mppForScale, zoomForScale, scaleDenominator } from '../js/export.js';
 import { createDocument, createRoad, createRoundabout } from '../js/model.js';
 
 const ascii = (bytes, from, len) => new TextDecoder('latin1').decode(bytes.subarray(from, from + len));
@@ -111,4 +111,14 @@ test('reportBlocks fasst Massnahmen, Route und Kommentare zusammen', () => {
   assert.ok(all.includes('Heute: 1.50 km, 2:00 min') && all.includes('P15–P85'));
   assert.ok(all.includes('Differenz: −0.30 km, −0:20 min'));
   assert.ok(all.includes('Anna') && all.includes('↳ Gemeinde: Wird geprüft'));
+});
+
+test('Fester Massstab: Zoom aus Massstab und zurück', () => {
+  assert.ok(Math.abs(mppForScale(2000) - 0.529166) < 1e-5, '1:2000 -> 0.529 m je CSS-Pixel');
+  const z = zoomForScale(2000, 47);
+  // Meter je Pixel bei diesem Zoom: 2πR / (256 · 2^z) · cos(47°)
+  const mpp = ((2 * Math.PI * 6378137) / (256 * Math.pow(2, z))) * Math.cos((47 * Math.PI) / 180);
+  assert.equal(scaleDenominator(mpp), 2000);
+  assert.ok(zoomForScale(500, 47) > 19, '1:500 liegt über der Kachelgrenze');
+  assert.ok(zoomForScale(10000, 47) < 16, '1:10000 liegt um Zoom 15.3');
 });

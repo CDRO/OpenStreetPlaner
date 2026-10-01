@@ -17,7 +17,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -159,6 +159,7 @@ export function drawScene(ctx, map, s) {
     circle(ctx, c, 4, { fill: '#fff' });
   }
   drawComments(ctx, P, comments, activeCommentId, commentDraft);
+  if (diff) drawDiff(ctx, P, diff, mpp);
   if (showHandles && selected) drawHandles(ctx, P, selected);
   if (preview) drawPreview(ctx, P, preview, mpp);
   if (snap) {
@@ -565,6 +566,40 @@ function drawRoutes(ctx, P, query, routes, routeDraft) {
     marker(query.from, 'A');
     marker(query.to, 'B');
   }
+}
+
+/** Versionsvergleich: Halo um neue (grün) und geänderte (orange) Elemente, entfernte als rote gestrichelte Geister. */
+function drawDiff(ctx, P, diff, mpp) {
+  const outline = (f, color, dash) => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.globalAlpha = 0.9;
+    ctx.setLineDash(dash);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (f.type === 'road' || f.type === 'zone') {
+      const pts = f.nodes.map(P);
+      ctx.beginPath();
+      pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      if (f.type === 'zone') ctx.closePath();
+      ctx.stroke();
+    } else if (f.type === 'junction') {
+      const c = P(f.at);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 14, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (f.type === 'roundabout') {
+      const c = P(f.center);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, Math.max(6, f.radius / mpp) + 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+  for (const f of diff.removed) outline(f, '#c62828', [8, 6]);
+  for (const c of diff.changed) outline(c.after, '#e08a00', []);
+  for (const f of diff.added) outline(f, '#2a9d3f', []);
 }
 
 export const ISO_COLORS = ['#2a9d3f', '#e0b400', '#e07a00', '#c62828', '#7b3fbf'];

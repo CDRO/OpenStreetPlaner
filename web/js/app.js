@@ -19,6 +19,8 @@ import { exportPdf, exportPng, exportReport } from './export.js';
 import { estimateCosts } from './costs.js';
 import { runChecks } from './checks.js';
 import { summarizeParcels, validParcels } from './parcels.js';
+import { applyImport, parseImport } from './importer.js';
+import { diffDocuments } from './diff.js';
 import { exposure as computeExposure } from './buildings.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
@@ -85,6 +87,8 @@ async function main() {
     clientId: local.clientId(),
     parcelGeoms: new Map(), // Parzellen-Umringe je EGRID/ID für die Hervorhebung (nur in dieser Sitzung)
     showExposure: false, // betroffene Gebäude auf der Karte hervorheben
+    diff: null, // Versionsvergleich { a, b, result }
+    showDiff: false,
     present: loc.present, // Präsentationsmodus: nur Karte, Legende und Routenvergleich
     events: null, // EventSource für Live-Änderungen
     remoteUpdate: null, // Serverstand, der neuer ist als unserer
@@ -234,6 +238,7 @@ async function main() {
     routeTarget: tools.routeTarget,
     parcels: selectedParcelPolygons(),
     buildings: state.showExposure ? exposureForDrawing() : null,
+    diff: state.showDiff && state.diff ? state.diff.result : null,
     routeDraft: tools.routeDraft,
     comments: settings.showComments ? state.comments : [],
     activeCommentId: state.activeCommentId,
@@ -519,8 +524,8 @@ async function main() {
       state.showExposure = !!on;
       map.requestRender();
     },
-    async runExport({ format, mode, paper, orientation, dpi, report = false }) {
-      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), pairs: state.pairResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
+    async runExport({ format, mode, paper, orientation, dpi, scale = 2000, report = false }) {
+      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
       else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
@@ -817,15 +822,60 @@ async function main() {
     },
     async importFile(file) {
       try {
-        const d = deserialize(await file.text());
-        if (!actions.confirmDiscard()) return;
-        bind(null, null);
-        loadDocument(d);
-        history.replaceState(null, '', '/');
-        ui.toast(`„${d.name}“ importiert – speichern, um ihn auf dem Server abzulegen.`);
+        const text = await file.text();
+        const parsed = parseImport(text, file.name);
+        if (parsed.format === 'stadtplaner') {
+          const d = deserialize(text);
+          if (!actions.confirmDiscard()) return;
+          bind(null, null);
+          loadDocument(d);
+          history.replaceState(null, '', '/');
+          ui.toast(`„${d.name}“ importiert – speichern, um ihn auf dem Server abzulegen.`);
+          return;
+        }
+        if (!actions.requireEdit()) return;
+        if (!parsed.items.length) return ui.toast('Keine Linien, Punkte oder Flächen in der Datei gefunden.', 'error', 6000);
+        const name = `Import ${file.name.replace(/\.[^.]+$/, '')}`.slice(0, 60);
+        let counts = null;
+        store.commit(`Import ${parsed.format.toUpperCase()}`, (d) => { counts = applyImport(d, parsed.items, { layerName: name }); });
+        actions.setActiveLayer(counts.layerId);
+        const layerFeatures = store.doc.features.filter((f) => f.layerId === counts.layerId);
+        const lats = [];
+        const lngs = [];
+        for (const f of layerFeatures) for (const p of f.nodes || [f.at]) { lats.push(p[0]); lngs.push(p[1]); }
+        if (lats.length) map.fitBounds({ south: Math.min(...lats), west: Math.min(...lngs), north: Math.max(...lats), east: Math.max(...lngs) }, { padding: 60, maxZoom: 17 });
+        ui.toast(`${parsed.format.toUpperCase()} importiert: ${counts.roads} Strassen, ${counts.junctions} Punkte, ${counts.zones} Flächen auf Ebene „${name}“ (Status „bestehend“).`, 'ok', 7000);
       } catch (e) {
         ui.toast(`Import fehlgeschlagen: ${e.message}`, 'error', 6000);
       }
+    },
+    diff: () => state.diff,
+    showDiff: () => state.showDiff,
+    setShowDiff(on) {
+      state.showDiff = !!on;
+      map.requestRender();
+    },
+    clearDiff() {
+      state.diff = null;
+      state.showDiff = false;
+      map.requestRender();
+    },
+    async compareVersions(a, b) {
+      if (!state.id) throw new Error('Entwurf ist nicht gespeichert');
+      const load = async (which) => (which === 'current' ? store.doc : deserialize(JSON.stringify((await api.version(state.id, Number(which))).doc)));
+      const [docA, docB] = await Promise.all([load(a), load(b)]);
+      state.diff = { a, b, result: diffDocuments(docA, docB) };
+      state.showDiff = !state.diff.result.empty;
+      map.requestRender();
+      return state.diff;
+    },
+    zoomToGeometry(f) {
+      const pts = f.nodes || (f.at ? [f.at] : f.center ? [f.center] : []);
+      if (!pts.length) return;
+      const lats = pts.map((p) => p[0]);
+      const lngs = pts.map((p) => p[1]);
+      if (pts.length === 1) map.flyTo(pts[0], Math.max(map.getZoom(), 17));
+      else map.fitBounds({ south: Math.min(...lats), west: Math.min(...lngs), north: Math.max(...lats), east: Math.max(...lngs) }, { padding: 60, maxZoom: 18 });
     },
     async share() {
       if (!state.id || actions.isDirty()) {

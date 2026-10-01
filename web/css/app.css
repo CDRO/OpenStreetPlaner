@@ -313,3 +313,15 @@ body.present .banner { display: none !important; }
 .route-table.pairs td.pair-actions { white-space: nowrap; }
 .route-table.pairs tr.active td { background: #fff7e8; }
 .route-panel h4, #route-panel h4 { margin: 14px 0 4px; font-size: 13px; }
+
+/* QR, Versionsvergleich */
+.qr-row { display: flex; gap: 12px; align-items: center; margin: 6px 0 10px; }
+.qr-row .qr svg { display: block; border: 1px solid var(--border); border-radius: 4px; }
+.compare-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.compare-row select { max-width: 180px; }
+.diff-list { list-style: none; margin: 6px 0; padding: 0; }
+.diff-list li { padding: 4px 8px; margin: 3px 0; border-left: 4px solid #9aa3ad; background: #f6f7f9; border-radius: 4px; font-size: 13px; }
+.diff-list li.added { border-left-color: #2a9d3f; }
+.diff-list li.changed { border-left-color: #e08a00; }
+.diff-list li.removed { border-left-color: #c62828; }
+.diff-list li .linkish { color: inherit; font-weight: 600; }

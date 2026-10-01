@@ -6,6 +6,8 @@ import { LEVELS, ZONE_KINDS, roadWidthMeters, sectionSummary } from './model.js'
 import { formatDuration } from './routing.js';
 import { estimateCosts, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
+import { drawQR, encodeQR } from './qr.js';
+import { EARTH_RADIUS } from './geometry.js';
 import { haversine } from './geometry.js';
 
 /** Papierformate in Millimetern (Querformat). */
@@ -14,7 +16,25 @@ export const PAPER = {
   a3: { label: 'A3', w: 420, h: 297 },
 };
 export const DPI = [96, 150, 300];
+/** Feste Plan-Massstäbe (1:n). */
+export const SCALES = [500, 1000, 2000, 5000, 10000];
 const MARGIN_MM = 10;
+
+/** Meter je CSS-Pixel bei Massstab 1:n (96 CSS-Pixel je Zoll auf dem Papier). */
+export function mppForScale(scale) {
+  return (scale * 25.4) / 96000;
+}
+
+/** Zoomstufe, bei der die Karte an der Breite lat den Massstab 1:n hat (nicht begrenzt). */
+export function zoomForScale(scale, lat) {
+  const upp = mppForScale(scale) / Math.cos((lat * Math.PI) / 180);
+  return Math.log2((2 * Math.PI * EARTH_RADIUS) / (256 * upp));
+}
+
+/** Massstabszahl 1:n aus Meter je CSS-Pixel. */
+export function scaleDenominator(mpp) {
+  return Math.round((mpp * 96000) / 25.4);
+}
 
 /** Grösse des Exportbilds für Papier, Ausrichtung und Auflösung (CSS-Pixel und Pixelfaktor). */
 export function exportSize({ paper = 'a4', orientation = 'landscape', dpi = 150 } = {}) {
@@ -65,9 +85,14 @@ export async function renderExport(map, doc, opts = {}) {
   const footerCss = 16 + 30 * legendRows + 8;
   const mapCss = { width: size.width, height: Math.max(200, size.height - headerCss - footerCss) };
   let view;
+  let requestedScale = null;
   if (opts.mode === 'all') {
     const b = documentBounds(doc);
     view = b ? map.viewForBounds(b, mapCss.width, mapCss.height, { padding: 30, maxZoom: 19 }) : { center: map.getCenter(), zoom: map.getZoom() };
+  } else if (opts.mode === 'scale') {
+    requestedScale = Number(opts.scale) || 2000;
+    const center = map.getCenter();
+    view = { center, zoom: Math.min(19, Math.max(2, zoomForScale(requestedScale, center[0]))) };
   } else {
     view = { center: map.getCenter(), zoom: map.getZoom() };
   }
@@ -75,11 +100,11 @@ export async function renderExport(map, doc, opts = {}) {
   await map.prefetchTiles(full);
   const rendered = map.renderOffscreen(full);
   const mpp = map.withView(full, () => map.metersPerPixel());
-  return { canvas: composeExport(rendered, { dpr: size.pixelRatio, mpp, doc, routes: opts.routes, link: opts.link }), size };
+  return { canvas: composeExport(rendered, { dpr: size.pixelRatio, mpp, doc, routes: opts.routes, link: opts.link, scale: requestedScale, paperLabel: `${(PAPER[opts.paper] || PAPER.a4).label} ${opts.orientation === 'portrait' ? 'hoch' : 'quer'}` }), size };
 }
 
 /** Baut das Exportbild aus einer gerenderten Karte. Liefert ein Canvas in Gerätepixeln. */
-export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link = '' }) {
+export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link = '', scale = null, paperLabel = '' }) {
   const W = src.width;
   const mapH = src.height;
   const header = Math.round(70 * dpr);
@@ -101,7 +126,9 @@ export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link 
   ctx.fillStyle = '#6b7480';
   ctx.font = `${12 * dpr}px system-ui, sans-serif`;
   const date = new Date().toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
-  ctx.fillText(`Stadtplaner · ${date}${link ? ` · ${link}` : ''}`, pad, 52 * dpr);
+  const drawn = scaleDenominator(mpp);
+  const scaleText = scale ? (Math.abs(drawn - scale) / scale > 0.02 ? `Massstab 1:${scale} (gezeichnet 1:${drawn}, Kachelgrenze)` : `Massstab 1:${scale}`) : `ca. 1:${drawn}`;
+  ctx.fillText(`Stadtplaner · ${date} · ${scaleText}${link ? ` · ${link}` : ''}`, pad, 52 * dpr);
 
   // Karte
   ctx.drawImage(src, 0, header);
@@ -118,6 +145,37 @@ export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link 
   ctx.fillStyle = '#333';
   ctx.fillText(attr, W - aw + 6 * dpr, header + mapH - 5 * dpr);
   drawScaleBar(ctx, mpp, dpr, pad, header + mapH - 12 * dpr);
+  drawNorthArrow(ctx, W - 28 * dpr, header + 30 * dpr, dpr);
+  // QR-Code zum Entwurf, rechts unten über der Attribution
+  if (link) {
+    try {
+      const q = encodeQR(link);
+      const moduleSize = Math.max(1, Math.floor((96 * dpr) / (q.size + 8)));
+      const total = (q.size + 8) * moduleSize;
+      drawQR(ctx, q.matrix, W - total - 6 * dpr, header + mapH - total - 22 * dpr, moduleSize);
+    } catch {
+      // zu langer Link: kein QR
+    }
+  }
+  // Planrahmen bei festem Massstab: Titelblock unten rechts
+  if (scale) {
+    const lines = [doc.name, scaleText, `${paperLabel} · ${date}`];
+    ctx.font = `${11 * dpr}px system-ui, sans-serif`;
+    const bw = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 24 * dpr;
+    const bh = (lines.length * 16 + 12) * dpr;
+    const bx = pad;
+    const by = header + 12 * dpr;
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = '#1f2933';
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    lines.forEach((l, i) => {
+      ctx.fillStyle = '#1f2933';
+      ctx.font = i === 0 ? `700 ${12 * dpr}px system-ui, sans-serif` : `${11 * dpr}px system-ui, sans-serif`;
+      ctx.fillText(l, bx + 12 * dpr, by + (16 * (i + 1) + 2) * dpr);
+    });
+  }
 
   // Legende
   let y = header + mapH + 26 * dpr;
@@ -189,6 +247,28 @@ export function composeExport(src, { dpr = 1, mpp = 1, doc, routes = null, link 
     item(neu ? `Route neu: ${(neu.dist / 1000).toFixed(2)} km, ${formatDuration(neu.time)}` : 'Route neu: keine Verbindung', line('#2a9d3f', 5));
   }
   return out;
+}
+
+/** Nordpfeil: Dreieck mit N, Karten sind in Web-Mercator nach Norden ausgerichtet. */
+function drawNorthArrow(ctx, x, y, dpr) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.beginPath();
+  ctx.arc(x, y, 18 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#1f2933';
+  ctx.beginPath();
+  ctx.moveTo(x, y - 13 * dpr);
+  ctx.lineTo(x + 6 * dpr, y + 6 * dpr);
+  ctx.lineTo(x, y + 2 * dpr);
+  ctx.lineTo(x - 6 * dpr, y + 6 * dpr);
+  ctx.closePath();
+  ctx.fill();
+  ctx.font = `700 ${9 * dpr}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('N', x, y + 15 * dpr);
+  ctx.restore();
 }
 
 function drawScaleBar(ctx, mpp, dpr, x, y) {

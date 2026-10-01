@@ -2,7 +2,9 @@
 // steckt in app.js (actions) und den Modulen.
 
 import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, SECTION_LIMITS, STATUSES, ZONE_KINDS, defaultSection, docStats, featureLabel, getFeature, junctionKind, junctionTurns, roadKind, roadSpeed, roadWidthMeters, sectionSummary, sectionWidth, segmentSpeed, splitRoadAtNode, validProfile } from './model.js';
-import { DPI, PAPER } from './export.js';
+import { DPI, PAPER, SCALES } from './export.js';
+import { qrSvg } from './qr.js';
+import { featureTitle } from './diff.js';
 import { COST_ITEMS, costValue, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
 import { ISO_COLORS, ISO_DIFF_COLORS } from './draw.js';
@@ -19,6 +21,14 @@ const fmtDate = (iso) => {
 };
 const fmtLen = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
 const options = (list, value) => list.map((o) => `<option value="${o.id}"${o.id === value ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+
+function safeQr(url) {
+  try {
+    return `<span class="qr">${qrSvg(url, { size: 128 })}</span>`;
+  } catch {
+    return '';
+  }
+}
 
 /** Weitere Routenpaare mit Ergebnistabelle und Summen. */
 function pairsSection(doc, actions, tools, geometry) {
@@ -991,7 +1001,7 @@ export class UI {
         <button type="button" id="d-share" class="btn small">Teilen…</button>
         <button type="button" id="d-export" class="btn small">JSON exportieren</button>
         <button type="button" id="d-geojson" class="btn small">GeoJSON exportieren</button>
-        <button type="button" id="d-import" class="btn small">JSON importieren</button>
+        <button type="button" id="d-import" class="btn small" title="Stadtplaner-JSON ersetzt den Entwurf; GeoJSON, GPX und KML kommen als neue Ebene dazu">Importieren (JSON, GeoJSON, GPX, KML)</button>
       </div>
       <div class="btn-row">
         <button type="button" id="d-export-map" class="btn small">Karte als PNG / PDF exportieren…</button>
@@ -1061,16 +1071,92 @@ export class UI {
         list.innerHTML = '<h3>Gespeicherte Versionen</h3><p class="muted">Noch keine Versionen.</p>';
         return;
       }
-      list.innerHTML = '<h3>Gespeicherte Versionen</h3>' + versions.map((v) => `
+      const opts = (sel) => [`<option value="current" ${sel === 'current' ? 'selected' : ''}>Aktueller Stand</option>`].concat(versions.map((v) => `<option value="${v.n}" ${String(v.n) === String(sel) ? 'selected' : ''}>#${v.n} ${esc(v.label)}</option>`)).join('');
+      const cmp = this.compareState || { a: versions[0] ? String(versions[0].n) : 'current', b: 'current' };
+      list.innerHTML = `<h3>Gespeicherte Versionen</h3>
+        <div class="box compare">
+          <div class="compare-row"><label>Vergleichen <select id="cmp-a">${opts(cmp.a)}</select></label><label>mit <select id="cmp-b">${opts(cmp.b)}</select></label><button type="button" id="cmp-run" class="btn small">Vergleichen</button></div>
+          <div id="version-diff"></div>
+        </div>` + versions.map((v) => `
         <div class="list-row" data-n="${v.n}">
           <div class="grow"><div class="title">${esc(v.label)} <span class="muted">#${v.n}</span></div>
             <div class="muted">${fmtDate(v.at)} · ${v.stats.roads} Strassen, ${v.stats.junctions} Kreuzungen, ${v.stats.roundabouts} Kreisel</div></div>
+          <button type="button" class="btn small v-compare" title="Mit dem aktuellen Stand vergleichen">Vergleichen</button>
           <button type="button" class="btn small v-restore" ${actions.canEdit() ? '' : 'disabled'}>Wiederherstellen</button>
         </div>`).join('');
       list.querySelectorAll('.v-restore').forEach((b) => {
         b.onclick = () => actions.restoreVersion(Number(b.closest('.list-row').dataset.n));
       });
+      list.querySelectorAll('.v-compare').forEach((b) => {
+        b.onclick = () => {
+          this.compareState = { a: String(b.closest('.list-row').dataset.n), b: 'current' };
+          this.$('cmp-a').value = this.compareState.a;
+          this.$('cmp-b').value = 'current';
+          this.runCompare();
+        };
+      });
+      this.$('cmp-run').onclick = () => {
+        this.compareState = { a: this.$('cmp-a').value, b: this.$('cmp-b').value };
+        this.runCompare();
+      };
+      if (actions.diff()) this.renderDiff();
     });
+  }
+
+  async runCompare() {
+    const { actions } = this.ctx;
+    const el = this.$('version-diff');
+    if (!el) return;
+    el.innerHTML = '<p class="muted small">Vergleiche…</p>';
+    try {
+      await actions.compareVersions(this.compareState.a, this.compareState.b);
+      this.renderDiff();
+    } catch (e) {
+      el.innerHTML = `<p class="muted small">Vergleich fehlgeschlagen: ${esc(e.message)}</p>`;
+    }
+  }
+
+  /** Ergebnis des Versionsvergleichs: Listen und Karten-Overlay. */
+  renderDiff() {
+    const { actions, tools } = this.ctx;
+    const el = this.$('version-diff');
+    const d = actions.diff();
+    if (!el) return;
+    if (!d) {
+      el.innerHTML = '';
+      return;
+    }
+    const r = d.result;
+    const title = (n) => (n === 'current' ? 'aktueller Stand' : `Version #${n}`);
+    const item = (f, cls, extra = '') => `<li class="${cls}"><button type="button" class="linkish diff-row" data-id="${esc(f.id)}">${esc(featureTitle(f))}</button>${extra}</li>`;
+    el.innerHTML = `
+      <p class="small"><strong>${esc(title(d.a))}</strong> → <strong>${esc(title(d.b))}</strong>: ${r.empty ? 'keine Unterschiede.' : `${r.counts.added} hinzugefügt, ${r.counts.removed} entfernt, ${r.counts.changed} geändert${r.nameChanged ? ', Name geändert' : ''}.`}</p>
+      ${r.layers.added.length || r.layers.removed.length || r.layers.renamed.length ? `<p class="muted small">Ebenen: ${[...r.layers.added.map((l) => `„${esc(l.name)}“ neu`), ...r.layers.removed.map((l) => `„${esc(l.name)}“ entfernt`), ...r.layers.renamed.map((x) => `„${esc(x.from)}“ → „${esc(x.to)}“`)].join(', ')}</p>` : ''}
+      ${r.empty ? '' : `<ul class="diff-list">
+        ${r.added.map((f) => item(f, 'added', ' <span class="muted small">neu</span>')).join('')}
+        ${r.changed.map((c) => item(c.after, 'changed', ` <span class="muted small">${esc(c.changes.join('; '))}</span>`)).join('')}
+        ${r.removed.map((f) => item(f, 'removed', ' <span class="muted small">entfernt</span>')).join('')}
+      </ul>
+      <label class="check"><input type="checkbox" id="diff-show" ${actions.showDiff() ? 'checked' : ''}> Auf der Karte zeigen <span class="muted small">(grün neu, orange geändert, rot gestrichelt entfernt)</span></label>`}
+      <button type="button" id="diff-close" class="btn small">Vergleich schliessen</button>`;
+    el.querySelectorAll('.diff-row').forEach((b) => {
+      b.onclick = () => {
+        const id = b.dataset.id;
+        const removed = r.removed.find((f) => f.id === id);
+        if (removed) actions.zoomToGeometry(removed);
+        else {
+          tools.setSelection({ featureId: id });
+          actions.zoomToFeature(id);
+        }
+      };
+    });
+    const show = this.$('diff-show');
+    if (show) show.onchange = (e) => actions.setShowDiff(e.target.checked);
+    this.$('diff-close').onclick = () => {
+      actions.clearDiff();
+      this.compareState = null;
+      el.innerHTML = '';
+    };
   }
 
   // --- Status, Tooltip, Banner, Toasts, Modal ----------------------------------------
@@ -1138,6 +1224,7 @@ export class UI {
       <h2>Entwurf teilen</h2>
       <p>Der <strong>Ansichtslink</strong> zeigt den Vorschlag; wer ihn öffnet, kann eine eigene Kopie weiterbearbeiten, dein Original bleibt unverändert.</p>
       <div class="link-row"><input type="text" id="share-url" readonly value="${esc(viewUrl)}"><button type="button" class="btn primary" data-copy="share-url">Kopieren</button></div>
+      <div class="qr-row">${safeQr(viewUrl)}<p class="muted small">QR-Code zum Ansichtslink: an der Versammlung zeigen, die Leute öffnen den Vorschlag am Handy und können kommentieren. Der Code steht auch auf jedem PDF-Export.</p></div>
       ${presentUrl ? `
       <p><strong>Präsentationslink</strong> – nur Karte, Legende und Routenvergleich, ohne Werkzeuge. Für Sitzungen, Beamer und Leute, die nur schauen sollen.</p>
       <div class="link-row"><input type="text" id="share-present-url" readonly value="${esc(presentUrl)}"><button type="button" class="btn" data-copy="share-present-url">Kopieren</button></div>` : ''}
@@ -1179,7 +1266,9 @@ export class UI {
         <label class="field">Ausschnitt<select id="export-mode">
           <option value="view">Aktuelle Ansicht (Mitte und Zoom)</option>
           <option value="all" ${hasFeatures ? '' : 'disabled'}>Ganzer Entwurf</option>
+          <option value="scale">Fester Massstab um die Kartenmitte (Planrahmen)</option>
         </select></label>
+        <label class="field">Massstab<select id="export-scale">${SCALES.map((sc) => `<option value="${sc}" ${sc === 2000 ? 'selected' : ''}>1:${sc}</option>`).join('')}</select></label>
         <label class="field">Papier<select id="export-paper">${Object.entries(PAPER).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
         <label class="field">Ausrichtung<select id="export-orientation"><option value="landscape">Querformat</option><option value="portrait">Hochformat</option></select></label>
         <label class="field">Auflösung<select id="export-dpi">${DPI.map((d) => `<option value="${d}" ${d === 150 ? 'selected' : ''}>${d} dpi${d === 96 ? ' (Bildschirm)' : d === 300 ? ' (Druck)' : ''}</option>`).join('')}</select></label>
@@ -1196,8 +1285,12 @@ export class UI {
       paper: this.$('export-paper').value,
       orientation: this.$('export-orientation').value,
       dpi: Number(this.$('export-dpi').value),
+      scale: Number(this.$('export-scale').value),
       report: this.$('export-report').checked,
     });
+    const syncScale = () => { this.$('export-scale').disabled = this.$('export-mode').value !== 'scale'; };
+    this.$('export-mode').onchange = syncScale;
+    syncScale();
     const run = async (format) => {
       const status = this.$('export-status');
       const buttons = [this.$('export-png'), this.$('export-pdf')];
