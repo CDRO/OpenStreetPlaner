@@ -357,3 +357,50 @@ func TestParking(t *testing.T) {
 		t.Fatalf("Parkplätze: %+v", got)
 	}
 }
+
+func TestTimetable(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/locations":
+			if r.URL.Query().Get("x") == "47.050000" {
+				fmt.Fprint(w, `{"stations":[{"id":"8500001","name":"Dorf, Post","distance":42}]}`)
+			} else {
+				fmt.Fprint(w, `{"stations":[{"id":"8500002","name":"Dorf, Bahnhof","distance":12}]}`)
+			}
+		case "/connections":
+			if r.URL.Query().Get("from") != "8500001" || r.URL.Query().Get("to") != "8500002" || r.URL.Query().Get("transportations[]") != "bus" {
+				t.Errorf("Parameter: %s", r.URL.RawQuery)
+			}
+			fmt.Fprint(w, `{"connections":[
+			  {"duration":"00d00:14:00","transfers":0,"sections":[{"journey":{"name":"B 12","category":"B","number":"12"},"departure":{"departure":"2026-10-01T06:15:00+0200"},"arrival":{"arrival":"2026-10-01T06:29:00+0200"}}]},
+			  {"duration":"00d00:16:00","transfers":0,"sections":[{"journey":null,"walk":{"duration":120},"departure":{"departure":"x"},"arrival":{"arrival":"y"}},{"journey":{"name":"B 12","category":"B","number":"12"},"departure":{"departure":"2026-10-01T06:45:00+0200"},"arrival":{"arrival":"2026-10-01T06:59:00+0200"}}]},
+			  {"duration":"00d00:12:00","transfers":0,"sections":[{"journey":{"name":"B 7","category":"B","number":"7"},"departure":{"departure":"d"},"arrival":{"arrival":"e"}}]},
+			  {"duration":"00d00:30:00","transfers":1,"sections":[{"journey":{"name":"B 12","category":"B","number":"12"},"departure":{"departure":"d"},"arrival":{"arrival":"e"}}]},
+			  {"duration":"00d00:09:00","transfers":0,"sections":[{"journey":{"name":"S 1","category":"S","number":"1"},"departure":{"departure":"d"},"arrival":{"arrival":"e"}}]}
+			]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer up.Close()
+	c := New(t.TempDir())
+	c.TimetableURL = up.URL
+	got, err := c.Timetable(context.Background(), [2]float64{47.05, 8.3}, [2]float64{47.06, 8.31}, "12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.From.Name != "Dorf, Post" || got.To.ID != "8500002" || got.Trips != 2 || got.Median != 900 || got.Min != 840 || got.Max != 960 {
+		t.Fatalf("Fahrplan Linie 12: %+v", got)
+	}
+	all, err := c.Timetable(context.Background(), [2]float64{47.05, 8.3}, [2]float64{47.06, 8.31}, "")
+	if err != nil || all.Trips != 3 || all.Median != 840 {
+		t.Fatalf("alle Linien: %v %+v", err, all)
+	}
+	if _, err := c.Timetable(context.Background(), [2]float64{47.05, 8.3}, [2]float64{47.06, 8.31}, "99"); err == nil || !strings.Contains(err.Error(), "Linie 99") {
+		t.Fatalf("unbekannte Linie: %v", err)
+	}
+	c.TimetableURL = ""
+	if _, err := c.Timetable(context.Background(), [2]float64{47.05, 8.3}, [2]float64{47.06, 8.31}, ""); err == nil {
+		t.Fatal("abgeschalteter Dienst muss einen Fehler liefern")
+	}
+}

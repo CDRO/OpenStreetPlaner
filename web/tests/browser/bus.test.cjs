@@ -178,6 +178,26 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok(Math.abs(res.proposed.time - (res.proposed.legs[0].time + res.proposed.legs[1].time + 60)) < 1e-6, 'Haltezeit je Zwischenhalt');
   panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
   assert.ok(panel.includes('2. Mitte'), panel);
+  // Fahrplan-Abgleich: Mock liefert 10 min bei 4 Fahrten; Modell heute (Umweg mit Tempo 20) liegt weit darüber -> Kalibrierung senkt die Haltezeit
+  await page.route(/\/api\/timetable\?/, (route) => {
+    const u = new URL(route.request().url());
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify({ from: { id: '1', name: 'Dorf, Post', distance: 30 }, to: { id: '2', name: 'Dorf, Nord', distance: 20 }, line: u.searchParams.get('line'), trips: 4, median: 600, min: 540, max: 660, journeys: [] }) });
+  });
+  await page.click('.bus-timetable');
+  await page.waitForFunction(() => { const l = window.stadtplaner.store.doc.busLines[0]; return l && l.schedule && l.schedule.seconds === 600; }, null, { timeout: 10000 });
+  doc = await h.doc();
+  assert.equal(doc.busLines[0].schedule.trips, 4);
+  assert.equal(doc.busLines[0].schedule.from, 'Dorf, Post');
+  panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
+  assert.ok(panel.includes('Fahrplan 10:00 min') && panel.includes('4 Fahrten') && /Modell heute [+−-]?\d+ %/.test(panel), panel.slice(panel.indexOf('Fahrplan 10'), panel.indexOf('Fahrplan 10') + 120));
+  const beforeDwell = doc.busLines[0].dwell;
+  await page.click('.bus-calibrate');
+  await h.settle(300);
+  doc = await h.doc();
+  assert.ok(doc.busLines[0].dwell !== beforeDwell && doc.busLines[0].dwell >= 0 && doc.busLines[0].dwell <= 300, `Haltezeit kalibriert: ${beforeDwell} -> ${doc.busLines[0].dwell}`);
+  const busConf2 = (await page.locator('.bus-line details.conf').first().innerText()).replace(/\s+/g, ' ');
+  assert.ok(busConf2.includes('Zuversicht'), busConf2);
+  console.log('✓ Fahrplan-Abgleich');
   console.log('✓ Reihenfolge, Entfernen, Haltezeit');
 
   // --- Zugang je Strasse und Abschnitt, Flächen-Freigabe ------------------------------------

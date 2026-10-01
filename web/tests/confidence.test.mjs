@@ -23,7 +23,7 @@ test('Fahrzeiten: geschätztes Tempo, Netz, Modell und Höhenprofil bestimmen di
   // heute + neu zusammen: Anteile über beide Strecken
   const both = travelTimeConfidence([q(1000, 0), q(1000, 800)]);
   assert.equal(both.level, 'medium', '40 % über beide');
-  assert.deepEqual(mergeQuality([q(1000, 0), { error: 'x' }, null, q(500, 100, { draftDist: 500 })]), { dist: 1500, assumedDist: 100, draftDist: 500, noProfileDist: 0, model: 'geometry' });
+  assert.deepEqual(mergeQuality([q(1000, 0), { error: 'x' }, null, q(500, 100, { draftDist: 500 })]), { dist: 1500, assumedDist: 100, draftDist: 500, noProfileDist: 0, model: 'geometry', vehicle: null });
   assert.ok(travelTimeConfidence(q(1000, 0, { draftDist: 400 })).reasons.some((r) => r.startsWith('40 % der Strecke auf gezeichneten Strassen')));
   assert.equal(travelTimeConfidence(null), null);
   assert.equal(travelTimeConfidence({ error: 'keine Verbindung' }), null);
@@ -79,4 +79,24 @@ test('Feste Einstufungen und Text für den Bericht', () => {
   assert.equal(confidenceText({ level: 'medium', band: 40, reasons: ['a', 'b'] }), 'Zuversicht mittel (±40 %): a; b');
   assert.equal(confidenceText({ level: 'low', reasons: [] }), 'Zuversicht tief');
   assert.equal(confidenceText(null), '');
+});
+
+test('Velo und zu Fuss: pauschales Tempo als Grund, geschätztes Tempo zählt nicht als Unsicherheit', () => {
+  const bike = travelTimeConfidence({ quality: { dist: 1000, assumedDist: 1000, draftDist: 0, noProfileDist: 0, model: 'limit', vehicle: 'bike' } });
+  assert.equal(bike.level, 'medium');
+  assert.ok(bike.reasons.some((r) => r.startsWith('Velo pauschal')) && !bike.reasons.some((r) => r.includes('geschätztem Tempo')) && !bike.reasons.some((r) => r.startsWith('Tempolimit-Modell')));
+  const foot = travelTimeConfidence({ quality: { dist: 1000, assumedDist: 1000, draftDist: 0, noProfileDist: 0, model: 'limit', vehicle: 'foot' } });
+  assert.ok(foot.reasons.some((r) => r.startsWith('Zu Fuss pauschal')));
+});
+
+test('Fahrplan-Abgleich: nahe am Fahrplan hebt die Modell-Deckelung auf, grosse Abweichung senkt', () => {
+  const q = { quality: { dist: 1000, assumedDist: 0, draftDist: 0, noProfileDist: 0, model: 'limit', vehicle: 'bus' } };
+  const close = travelTimeConfidence(q, { schedule: { seconds: 900, model: 840, trips: 5 } });
+  assert.equal(close.level, 'high', 'Abweichung −7 %: gemessen');
+  assert.ok(close.reasons[0].includes('−7 %') || close.reasons[0].includes('-7 %'), close.reasons[0]);
+  assert.ok(close.reasons[0].includes('5 Fahrten'));
+  assert.equal(travelTimeConfidence(q, { schedule: { seconds: 900, model: 1100, trips: 2 } }).level, 'medium', '+22 %');
+  assert.equal(travelTimeConfidence(q, { schedule: { seconds: 900, model: 1300, trips: 2 } }).level, 'low', '+44 %');
+  assert.equal(travelTimeConfidence(q, { schedule: { seconds: 900, model: 840 }, networkLoading: true }).level, 'low', 'Netz lädt noch');
+  assert.equal(travelTimeConfidence(q, { schedule: null }).level, 'medium');
 });

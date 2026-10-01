@@ -2,7 +2,7 @@
 // Karten-Canvas plus Titel, Legende, Massstab und OSM-Attribution zusammengesetzt;
 // das PDF bettet dieses Bild als JPEG (DCTDecode) in eine A4-Seite ein.
 
-import { LEVELS, ZONE_KINDS, roadWidthMeters, sectionSummary, segmentAccess } from './model.js';
+import { LEVELS, VEHICLES, ZONE_KINDS, roadWidthMeters, sectionSummary, segmentAccess } from './model.js';
 import { formatDuration } from './routing.js';
 import { estimateCosts, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
@@ -590,7 +590,10 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
   }
   if (cur || neu) {
     blocks.push({ text: t('Routenvergleich'), size: 13, bold: true, gap: 4 });
-    const fmt = (r) => (r ? `${(r.dist / 1000).toFixed(2)} km, ${formatDuration(r.time)}${r.sd > 0 ? ` (P15–P85 ${formatDuration(r.p15)} – ${formatDuration(r.p85)})` : ''}` : t('keine Verbindung'));
+    const unsafe = (r) => (r && r.quality && r.quality.dist && (r.quality.vehicle === 'bike' || r.quality.vehicle === 'foot') ? ` · ${t('unsicher')} ${Math.round((r.quality.unsafeDist / r.quality.dist) * 100)} %` : '');
+    const fmt = (r) => (r ? `${(r.dist / 1000).toFixed(2)} km, ${formatDuration(r.time)}${r.sd > 0 ? ` (P15–P85 ${formatDuration(r.p15)} – ${formatDuration(r.p85)})` : ''}${unsafe(r)}` : t('keine Verbindung'));
+    const vehicleLabel = (id) => t((VEHICLES.find((v) => v.id === id) || VEHICLES[0]).label);
+    if (routes && routes.vehicle && routes.vehicle !== 'car') blocks.push({ text: `${t('Verkehrsmittel')}: ${vehicleLabel(routes.vehicle)}`, gap: 2 });
     blocks.push({ text: `${t('Heute')}: ${fmt(cur)}`, gap: 2 });
     blocks.push({ text: `${t('Neu')}: ${fmt(neu)}`, gap: 2 });
     if (cur && neu) blocks.push({ text: `${t('Differenz')}: ${neu.dist - cur.dist >= 0 ? '+' : '−'}${(Math.abs(neu.dist - cur.dist) / 1000).toFixed(2)} km, ${neu.time - cur.time >= 0 ? '+' : '−'}${formatDuration(Math.abs(neu.time - cur.time))}` });
@@ -615,7 +618,9 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
         n++;
         delta = ` · ${t('Differenz')} ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
       }
-      blocks.push({ text: `${p.name || t('Paar')}: ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : '–'} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : '–'}${delta}`, gap: 2 });
+      const pv = p.vehicle && p.vehicle !== 'car' ? ` (${t((VEHICLES.find((v) => v.id === p.vehicle) || VEHICLES[0]).label)})` : '';
+      const pu = (x) => (x && x.quality && x.quality.dist && (x.quality.vehicle === 'bike' || x.quality.vehicle === 'foot') ? `, ${t('unsicher')} ${Math.round((x.quality.unsafeDist / x.quality.dist) * 100)} %` : '');
+      blocks.push({ text: `${p.name || t('Paar')}${pv}: ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}${pu(cur)}` : '–'} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}${pu(neu)}` : '–'}${delta}`, gap: 2 });
       conf(confidence && confidence.pairs && confidence.pairs[p.id], 3);
     });
     if (n) blocks.push({ text: t('Summe über {n} Verbindungen: {sum}, im Mittel {mean} je Fahrt', { n, sum: `${sum > 0 ? '+' : sum < 0 ? '−' : '±'}${formatDuration(Math.abs(sum))}`, mean: formatDuration(Math.abs(sum / n)) }), bold: true, gap: 8 });
@@ -634,7 +639,8 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
         const d = neu.time - cur.time;
         delta = ` · ${t('Differenz')} ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
       }
-      blocks.push({ text: `${t('Linie')} ${l.name || '–'} (${tn(l.stops.length, '{n} Haltestelle', '{n} Haltestellen')}): ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : t('keine Verbindung')} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : t('keine Verbindung')}${delta}`, gap: 2 });
+      const sched = l.schedule ? ` · ${t('Fahrplan')} ${formatDuration(l.schedule.seconds)} (${tn(l.schedule.trips, '{n} Fahrt', '{n} Fahrten')}${cur ? `, ${t('Modell heute')} ${Math.round(((cur.time - l.schedule.seconds) / l.schedule.seconds) * 100) > 0 ? '+' : ''}${Math.round(((cur.time - l.schedule.seconds) / l.schedule.seconds) * 100)} %` : ''})` : '';
+      blocks.push({ text: `${t('Linie')} ${l.name || '–'} (${tn(l.stops.length, '{n} Haltestelle', '{n} Haltestellen')}): ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : t('keine Verbindung')} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : t('keine Verbindung')}${delta}${sched}`, gap: 2 });
       conf(confidence && confidence.busLines && confidence.busLines[l.id], 3);
     });
     blocks.push({ text: '', gap: 6 });

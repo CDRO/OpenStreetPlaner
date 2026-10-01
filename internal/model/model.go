@@ -72,12 +72,22 @@ type Segment struct {
 
 // BusLine ist eine Buslinie: Haltestellen (IDs von Punkten der Art busstop) in Reihenfolge.
 type BusLine struct {
-	ID    string   `json:"id"`
-	Name  string   `json:"name"`
-	Color string   `json:"color"`
-	Stops []string `json:"stops"`
-	Dwell float64  `json:"dwell"`           // Sekunden Halt je Zwischenhaltestelle
-	OsmID int64    `json:"osmId,omitempty"` // OSM-Relation, aus der die Linie übernommen wurde
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Color    string    `json:"color"`
+	Stops    []string  `json:"stops"`
+	Dwell    float64   `json:"dwell"`              // Sekunden Halt je Zwischenhaltestelle
+	OsmID    int64     `json:"osmId,omitempty"`    // OSM-Relation, aus der die Linie übernommen wurde
+	Schedule *Schedule `json:"schedule,omitempty"` // Fahrplan-Abgleich
+}
+
+// Schedule ist das Ergebnis eines Fahrplan-Abgleichs: Fahrzeit laut Fahrplan und Zahl der Fahrten.
+type Schedule struct {
+	Seconds float64 `json:"seconds"`
+	Trips   int     `json:"trips"`
+	At      string  `json:"at"`
+	From    string  `json:"from"`
+	To      string  `json:"to"`
 }
 
 const (
@@ -253,16 +263,20 @@ type Profile struct {
 
 // Route ist die gespeicherte Routenanfrage (Start/Ziel) des Routen-Rechners.
 type Route struct {
-	From LatLng `json:"from"`
-	To   LatLng `json:"to"`
+	From    LatLng `json:"from"`
+	To      LatLng `json:"to"`
+	Vehicle string `json:"vehicle,omitempty"` // car (Standard), bus, bike, foot
 }
+
+var vehicleValues = []string{"car", "bus", "bike", "foot"}
 
 // RoutePair ist ein weiteres benanntes Start-Ziel-Paar (Start oder Ziel können noch fehlen).
 type RoutePair struct {
-	ID   string  `json:"id"`
-	Name string  `json:"name"`
-	From *LatLng `json:"from"`
-	To   *LatLng `json:"to"`
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	From    *LatLng `json:"from"`
+	To      *LatLng `json:"to"`
+	Vehicle string  `json:"vehicle,omitempty"`
 }
 
 // Isochrone ist die Erreichbarkeitsanfrage: Ursprung, Zeitschwellen in Minuten, Modus.
@@ -582,12 +596,14 @@ func Normalize(d *Document) error {
 	if d.Route != nil {
 		d.Route.From = round6(d.Route.From)
 		d.Route.To = round6(d.Route.To)
+		d.Route.Vehicle = oneOf(vehicleValues, d.Route.Vehicle, "car")
 	}
 	if len(d.RoutePairs) > MaxRoutePairs {
 		d.RoutePairs = d.RoutePairs[:MaxRoutePairs]
 	}
 	for i := range d.RoutePairs {
 		p := &d.RoutePairs[i]
+		p.Vehicle = oneOf(vehicleValues, p.Vehicle, "car")
 		if !idPattern.MatchString(p.ID) {
 			p.ID = fmt.Sprintf("p_%d", i+1)
 		}
@@ -654,6 +670,22 @@ func Normalize(d *Document) error {
 		b.Dwell = math.Round(b.Dwell)
 		if b.OsmID < 0 {
 			b.OsmID = 0
+		}
+		if b.Schedule != nil {
+			if math.IsNaN(b.Schedule.Seconds) || b.Schedule.Seconds <= 0 || b.Schedule.Seconds > 86400 {
+				b.Schedule = nil
+			} else {
+				b.Schedule.Seconds = math.Round(b.Schedule.Seconds)
+				if b.Schedule.Trips < 1 {
+					b.Schedule.Trips = 1
+				}
+				if b.Schedule.Trips > 99 {
+					b.Schedule.Trips = 99
+				}
+				b.Schedule.At = truncate(b.Schedule.At, 40)
+				b.Schedule.From = truncate(b.Schedule.From, 60)
+				b.Schedule.To = truncate(b.Schedule.To, 60)
+			}
 		}
 	}
 	if len(d.Costs) > 0 {

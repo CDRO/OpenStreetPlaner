@@ -8,7 +8,7 @@ import { featureTitle } from './diff.js';
 import { COST_ITEMS, costValue, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
 import { ISO_COLORS, ISO_DIFF_COLORS } from './draw.js';
-import { ISOCHRONE_PRESETS, ROAD_ACCESS, segmentAccess, normalizeLines, getLayer, phaseLabel } from './model.js';
+import { ISOCHRONE_PRESETS, ROAD_ACCESS, VEHICLES, segmentAccess, normalizeLines, getLayer, phaseLabel } from './model.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
 import { TOOLS, formatLength } from './tools.js';
@@ -46,6 +46,39 @@ function safeQr(url) {
 }
 
 /** Weitere Routenpaare mit Ergebnistabelle und Summen. */
+/** Fahrplan-Abgleich einer Buslinie: Fahrplanzeit, Abweichung des Modells heute, Kalibrierung der Haltezeit. */
+function scheduleRow(line, cur, actions, editable) {
+  const dis = editable ? '' : 'disabled';
+  const busy = actions.timetableBusy() === line.id;
+  const sc = line.schedule;
+  let text = `<span class="muted small">${t('Fahrplan noch nicht abgeglichen.')}</span>`;
+  if (sc) {
+    const dev = cur ? Math.round(((cur.time - sc.seconds) / sc.seconds) * 100) : null;
+    const cls = dev === null ? '' : Math.abs(dev) <= 15 ? 'ok' : Math.abs(dev) > 30 ? 'warn' : 'muted';
+    text = `<span class="badge ${cls}" title="${esc(`${sc.from} → ${sc.to}`)}">${t('Fahrplan')} ${formatDuration(sc.seconds)}</span> <span class="muted small">${tn(sc.trips, '{n} Fahrt', '{n} Fahrten')}${dev === null ? '' : ` · ${t('Modell heute')} ${dev > 0 ? '+' : ''}${dev} %`}</span>`;
+  }
+  return `<div class="schedule-row">${text}
+    <button type="button" class="btn small bus-timetable" data-id="${esc(line.id)}" ${dis || busy ? 'disabled' : ''}>${busy ? t('Abgleich läuft…') : t('Fahrplan abgleichen')}</button>
+    ${sc && cur && line.stops.length > 2 ? `<button type="button" class="btn small bus-calibrate" data-id="${esc(line.id)}" title="${t('Haltezeit so setzen, dass das Modell heute die Fahrplanzeit trifft')}" ${dis}>${t('Haltezeit kalibrieren')}</button>` : ''}
+  </div>`;
+}
+
+/** Anteil der Strecke auf schnellen Strassen ohne Velostreifen bzw. Trottoir (nur Velo und zu Fuss). */
+function unsafeShare(r) {
+  if (!r || r.error || !r.quality || !r.quality.dist) return null;
+  if (r.quality.vehicle !== 'bike' && r.quality.vehicle !== 'foot') return null;
+  return Math.round((r.quality.unsafeDist / r.quality.dist) * 100);
+}
+
+function unsafeNote(res) {
+  if (!res) return '';
+  const cur = unsafeShare(res.current);
+  const neu = unsafeShare(res.proposed);
+  if (cur === null && neu === null) return '';
+  const cls = (v) => (v === null ? '' : v > 50 ? 'warn' : v > 20 ? 'muted' : 'ok');
+  return `<div class="small unsafe"><span class="badge ${cls(neu ?? cur)}" title="${t('Anteil auf schnellen Strassen ohne Velostreifen bzw. Trottoir')}">${t('unsicher')} ${cur === null ? '–' : `${cur} %`} → ${neu === null ? '–' : `${neu} %`}</span></div>`;
+}
+
 function pairsSection(doc, actions, tools, geometry) {
   const pairs = doc.routePairs || [];
   const results = actions.pairResults();
@@ -69,7 +102,7 @@ function pairsSection(doc, actions, tools, geometry) {
     const state = !p.from || !p.to ? `<span class="muted small">${t('Start und Ziel setzen')}</span>` : '';
     return `<tr class="${capturing === p.id ? 'active' : ''}">
       <td>${i + 1}</td>
-      <td><input type="text" class="pair-name" data-id="${esc(p.id)}" value="${esc(p.name)}" ${dis}> ${state}</td>
+      <td><input type="text" class="pair-name" data-id="${esc(p.id)}" value="${esc(p.name)}" ${dis}> <select class="pair-vehicle" data-id="${esc(p.id)}" title="${t('Verkehrsmittel')}" ${dis}>${VEHICLES.map((v) => `<option value="${v.id}" ${(p.vehicle || 'car') === v.id ? 'selected' : ''}>${esc(t(v.label))}</option>`).join('')}</select> ${state}${unsafeNote(r)}</td>
       <td class="num">${cur ? `${fmtKm(cur.dist)}<br>${formatDuration(cur.time)}` : '–'}</td>
       <td class="num">${neu ? `${fmtKm(neu.dist)}<br>${formatDuration(neu.time)}` : '–'}</td>
       <td class="num">${delta} ${confidenceDot(actions.confidence('pair', p.id))}</td>
@@ -120,12 +153,12 @@ function busSection(doc, actions, tools) {
         ${l.stops.length >= 2 ? `<table class="route-table"><thead><tr><th></th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th></tr></thead><tbody>
           <tr><td>${t('Fahrzeit')} <span class="muted small">(${t('inkl. Halte')})</span></td><td class="num">${cur ? formatDuration(cur.time) : '–'}</td><td class="num">${neu ? formatDuration(neu.time) : '–'}</td><td class="num">${delta}</td></tr>
           <tr><td>${t('Distanz')}</td><td class="num">${cur ? fmtKm(cur.dist) : '–'}</td><td class="num">${neu ? fmtKm(neu.dist) : '–'}</td><td></td></tr>
-        </tbody></table>${err ? `<p class="muted small">${esc(t(err))}</p>` : ''}${confidenceBlock(actions.confidence('bus', l.id))}` : ''}
+        </tbody></table>${err ? `<p class="muted small">${esc(t(err))}</p>` : ''}${scheduleRow(l, cur, actions, editable)}${confidenceBlock(actions.confidence('bus', l.id))}` : ''}
       </div>`;
   }).join('');
   return `
     <h4>${t('Buslinien')}</h4>
-    <p class="muted small">${t('Haltestellen in Reihenfolge; die Fahrzeit folgt dem Bus-Netz: Busschleusen (Zugang „Nur Bus“) und freigegebene Flächen sind für Busse offen, für Autos gesperrt. Je Zwischenhalt kommt die Haltezeit dazu.')}</p>
+    <p class="muted small">${t('Haltestellen in Reihenfolge; die Fahrzeit folgt dem Bus-Netz: Busschleusen (Zugang „Nur Bus“) und freigegebene Flächen sind für Busse offen, für Autos gesperrt. Je Zwischenhalt kommt die Haltezeit dazu.')} ${t('„Fahrplan abgleichen“ holt die Fahrzeit direkter Busfahrten zwischen erster und letzter Haltestelle aus dem offenen Fahrplan (transport.opendata.ch) und vergleicht sie mit dem Modell heute.')}</p>
     ${rows}
     <div class="btn-row"><button type="button" id="bus-add" class="btn small" ${dis}>${t('+ Buslinie')}</button>${capturing ? `<span class="muted small">${t('Haltestellen anklicken oder neue setzen (Esc beendet).')}</span>` : ''}</div>
     ${transitSection(doc, actions)}`;
@@ -1198,6 +1231,7 @@ export class UI {
     el.querySelectorAll('.pair-set').forEach((b) => { b.onclick = () => actions.capturePair(b.dataset.id); });
     el.querySelectorAll('.pair-swap').forEach((b) => { b.onclick = () => actions.swapPair(b.dataset.id); });
     el.querySelectorAll('.pair-del').forEach((b) => { b.onclick = () => actions.removePair(b.dataset.id); });
+    el.querySelectorAll('.pair-vehicle').forEach((sel) => { sel.onchange = () => actions.setPairVehicle(sel.dataset.id, sel.value); });
   }
 
   wireBus() {
@@ -1218,6 +1252,8 @@ export class UI {
       });
     });
     el.querySelectorAll('.stop-focus').forEach((b) => { b.onclick = () => actions.zoomToFeature(b.dataset.stop); });
+    el.querySelectorAll('.bus-timetable').forEach((b) => { b.onclick = () => actions.checkTimetable(b.dataset.id); });
+    el.querySelectorAll('.bus-calibrate').forEach((b) => { b.onclick = () => actions.calibrateDwell(b.dataset.id); });
     const load = this.$('transit-load');
     if (load) load.onclick = () => actions.loadTransit();
     el.querySelectorAll('.transit-adopt').forEach((b) => { b.onclick = () => actions.adoptBusRoute(Number(b.dataset.id)); });
@@ -1835,6 +1871,7 @@ export class UI {
           <tbody>
             <tr><td>${t('Distanz')}</td><td>${cur ? fmtKm(cur.dist) : '–'}</td><td>${neu ? fmtKm(neu.dist) : '–'}</td><td>${diff(cur && cur.dist, neu && neu.dist, fmtKm)}</td></tr>
             <tr><td>${t('Fahrzeit')}${geometry ? ` <span class="muted small">${t('(typisch, P15–P85)')}</span>` : ''}</td><td>${cur ? formatDuration(cur.time) + band(cur) : '–'}</td><td>${neu ? formatDuration(neu.time) + band(neu) : '–'}</td><td>${diff(cur && cur.time, neu && neu.time, formatDuration)}</td></tr>
+            ${unsafeShare(cur) !== null || unsafeShare(neu) !== null ? `<tr><td>${t('Unsicher')} <span class="muted small">${t('(schnelle Strassen ohne Velostreifen/Trottoir)')}</span></td><td>${unsafeShare(cur) === null ? '–' : `${unsafeShare(cur)} %`}</td><td>${unsafeShare(neu) === null ? '–' : `${unsafeShare(neu)} %`}</td><td>${unsafeShare(cur) !== null && unsafeShare(neu) !== null ? `${unsafeShare(neu) - unsafeShare(cur) > 0 ? '+' : ''}${unsafeShare(neu) - unsafeShare(cur)} %` : '–'}</td></tr>` : ''}
           </tbody>
         </table>
         ${confidenceBlock(actions.confidence('route'))}
@@ -1842,10 +1879,11 @@ export class UI {
         ${routes.proposed && routes.proposed.error ? `<p class="muted small">${t('Neu')}: ${esc(t(routes.proposed.error))}</p>` : ''}`;
     }
     el.innerHTML = `
-      <p class="muted small">${t('Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.')}</p>
+      <p class="muted small">${t('Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.')} ${t('Velo (17 km/h, Wege und Velostreifen) und zu Fuss (4.8 km/h, auch Treppen und Fusswege, ohne Einbahnen) mit Anteil unsicherer Strecke: schnelle Strassen ohne Velostreifen bzw. Trottoir.')}</p>
       ${body}
       <label class="check"><input type="checkbox" id="route-model" ${geometry ? 'checked' : ''}> ${t('Fahrzeit aus der Strassenführung (Kurvenradien, Steigung aus Höhenprofil, Wartezeiten mit Streuung)')}</label>
       <div class="btn-row">
+        <label class="field inline">${t('Verkehrsmittel')}<select id="route-vehicle">${VEHICLES.map((v) => `<option value="${v.id}" ${actions.routeVehicle() === v.id ? 'selected' : ''}>${esc(t(v.label))}</option>`).join('')}</select></label>
         <button type="button" id="route-tool" class="btn small ${tools.tool === 'route' ? 'primary' : ''}">${t('Punkte setzen')}</button>
         <button type="button" id="route-swap" class="btn small" ${q ? '' : 'disabled'}>A ↔ B</button>
         <button type="button" id="route-clear" class="btn small" ${q || tools.routeDraft ? '' : 'disabled'}>${t('Löschen')}</button>
@@ -1860,6 +1898,7 @@ export class UI {
     this.wireBus();
     this.wireIsochrone();
     this.$('route-tool').onclick = () => tools.setTool('route');
+    this.$('route-vehicle').onchange = (e) => actions.setRouteVehicle(e.target.value);
     this.$('route-model').onchange = (e) => actions.updateSettings({ speedModel: e.target.checked ? 'geometry' : 'limit' });
     this.$('route-swap').onclick = () => actions.swapRoute();
     this.$('route-clear').onclick = () => actions.clearRoute();

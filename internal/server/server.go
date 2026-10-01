@@ -126,6 +126,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/buildings", s.buildings)
 	m.HandleFunc("GET /api/transit", s.transit)
 	m.HandleFunc("GET /api/parking", s.parking)
+	m.HandleFunc("GET /api/timetable", s.timetable)
 	m.HandleFunc("GET /tiles/{z}/{x}/{y}", s.tile)
 	m.HandleFunc("GET /tiles/{source}/{z}/{x}/{y}", s.tileFrom)
 	m.HandleFunc("GET /api/tiles/sources", s.tileSources)
@@ -773,6 +774,47 @@ func (s *Server) buildings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) timetable(w http.ResponseWriter, r *http.Request) {
+	parse := func(v string) ([2]float64, error) {
+		parts := strings.Split(v, ",")
+		if len(parts) != 2 {
+			return [2]float64{}, errors.Join(osm.ErrBadRequest, errors.New("Koordinate als lat,lng angeben"))
+		}
+		var out [2]float64
+		for i, p := range parts {
+			f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+			if err != nil {
+				return [2]float64{}, errors.Join(osm.ErrBadRequest, errors.New("Koordinate ist keine Zahl"))
+			}
+			out[i] = f
+		}
+		if out[0] < -90 || out[0] > 90 || out[1] < -180 || out[1] > 180 {
+			return [2]float64{}, errors.Join(osm.ErrBadRequest, errors.New("Koordinate ausserhalb des gültigen Bereichs"))
+		}
+		return out, nil
+	}
+	from, err := parse(r.URL.Query().Get("from"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	to, err := parse(r.URL.Query().Get("to"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	line := r.URL.Query().Get("line")
+	if len(line) > 12 {
+		line = line[:12]
+	}
+	out, err := s.osm.Timetable(r.Context(), from, to, line)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) parking(w http.ResponseWriter, r *http.Request) {

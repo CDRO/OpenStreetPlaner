@@ -41,6 +41,7 @@ func main() {
 	overpassURL := flag.String("overpass-url", env("OVERPASS_URL", osm.DefaultOverpassURL), "Overpass-Endpunkt (env OVERPASS_URL)")
 	profileURL := flag.String("profile-url", env("PROFILE_URL", osm.DefaultProfileURL), "Höhenprofil-Dienst, leer = aus (env PROFILE_URL)")
 	parcelURL := flag.String("parcel-url", env("PARCEL_URL", osm.DefaultParcelURL), "Identify-Dienst für Parzellen (geo.admin), leer = aus (env PARCEL_URL)")
+	timetableURL := flag.String("timetable-url", env("TIMETABLE_URL", osm.DefaultTimetableURL), "Fahrplan-API (transport.opendata.ch), leer = aus (env TIMETABLE_URL)")
 	userAgent := flag.String("user-agent", env("USER_AGENT", osm.DefaultUserAgent), "User-Agent gegenüber OSM-Diensten (env USER_AGENT)")
 	maxVersions := flag.Int("max-versions", atoi(env("MAX_VERSIONS", "30"), 30), "Versionen pro Entwurf (env MAX_VERSIONS)")
 	writeRate := flag.Float64("write-rate", atof(env("WRITE_RATE", "60"), 60), "Schreibende API-Aufrufe pro Minute und Client, 0 = aus (env WRITE_RATE)")
@@ -72,6 +73,7 @@ func main() {
 	client.OverpassURL = *overpassURL
 	client.ProfileURL = *profileURL
 	client.ParcelURL = *parcelURL
+	client.TimetableURL = *timetableURL
 	client.UserAgent = *userAgent
 
 	srv, err := server.New(st, client, webFS, logger)

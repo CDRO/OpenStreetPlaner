@@ -425,3 +425,6 @@ details.conf[open] > summary::after { content: ' ▾'; }
 .parking-list { list-style: none; padding: 0; margin: 4px 0; }
 .parking-list li { padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .parking-list .badge { min-width: 34px; text-align: center; display: inline-block; }
+
+.schedule-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.unsafe { margin-top: 2px; }

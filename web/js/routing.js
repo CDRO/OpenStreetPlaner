@@ -7,7 +7,7 @@
 // eingerastet sind, teilen diesen Abschnitt beim Aufbau des Netzes.
 
 import { closestPointOnSegment, haversine, mercatorScale, project, unproject } from './geometry.js';
-import { BUS_DWELL_DEFAULT, junctionTurns, pointInPolygon, segmentAccess, segmentSpeed, validProfile, zoneKind } from './model.js';
+import { BUS_DWELL_DEFAULT, junctionTurns, pointInPolygon, segmentAccess, segmentSpeed, validProfile, zoneKind, roadKind } from './model.js';
 import { polylineRadii } from './smooth.js';
 import { NODE_DELAY, expectedSpeedKmh, segmentGrades, segmentTime, summarize } from './speedmodel.js';
 
@@ -15,6 +15,17 @@ const DRIVABLE = new Set([
   'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service',
   'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link', 'road',
 ]);
+
+/** Wege, die nur für Velo bzw. zu Fuss zählen (zusätzlich zu den befahrbaren Strassen). */
+const BIKE_WAYS = new Set(['cycleway', 'path', 'track', 'footway', 'pedestrian', 'bridleway']);
+const FOOT_WAYS = new Set(['footway', 'path', 'pedestrian', 'steps', 'track', 'cycleway', 'bridleway']);
+const MOTOR_ONLY = new Set(['motorway', 'trunk', 'motorway_link', 'trunk_link']);
+/** Pauschale Geschwindigkeiten (km/h) je Weg für Velo; Strassen 17, zu Fuss 4.8 (Treppen 2.5). */
+export const BIKE_SPEED = { cycleway: 18, path: 12, footway: 10, pedestrian: 8, track: 14, living_street: 15, service: 16 };
+export const BIKE_ROAD_SPEED = 17;
+export const FOOT_SPEED = 4.8;
+export const FOOT_STEPS_SPEED = 2.5;
+export const VEHICLE_IDS = ['car', 'bus', 'bike', 'foot'];
 
 const HIGHWAY_SPEED = {
   motorway: 120, motorway_link: 80, trunk: 100, trunk_link: 60, primary: 80, primary_link: 50,
@@ -58,11 +69,13 @@ export function turnKind(a, b, c) {
 
 /** Strengstes Zonen-Tempolimit an einem Punkt (null = keine Zone mit Limit). Busse dürfen freigegebene Flächen mit 20 km/h durchfahren. */
 export function zoneSpeedAt(zones, latlng, vehicle = 'car') {
+  if (vehicle === 'foot') return null; // zu Fuss gilt keine Zone als Sperre oder Limit
   let cap = null;
   for (const z of zones) {
     let speed = zoneKind(z).speed;
     if (speed === null || !pointInPolygon(latlng, z.nodes)) continue;
     if (vehicle === 'bus' && z.busAllowed && speed < 20) speed = 20;
+    if (vehicle === 'bike' && speed < 8) speed = 8; // Fussgängerzone: langsam fahren oder schieben
     cap = cap === null ? speed : Math.min(cap, speed);
   }
   return cap;
@@ -88,6 +101,24 @@ export function parseMaxspeed(tag) {
 
 /** Ist ein OSM-Way befahrbar? vehicle 'car' (Standard) oder 'bus' (Busspuren, bus=yes, psv=yes). */
 export function isDrivable(tags = {}, vehicle = 'car') {
+  const hw = tags.highway;
+  if (vehicle === 'bike') {
+    if (!hw || MOTOR_ONLY.has(hw) || hw === 'steps') return false;
+    if (tags.bicycle === 'no' || tags.bicycle === 'dismount') return false;
+    const allowed = ['yes', 'designated', 'permissive'].includes(tags.bicycle);
+    if ((hw === 'footway' || hw === 'pedestrian') && !allowed) return false;
+    if (!DRIVABLE.has(hw) && !BIKE_WAYS.has(hw)) return false;
+    if ((tags.access === 'no' || tags.access === 'private' || tags.vehicle === 'no') && !allowed) return false;
+    return true;
+  }
+  if (vehicle === 'foot') {
+    if (!hw || MOTOR_ONLY.has(hw)) return false;
+    if (tags.foot === 'no') return false;
+    const allowed = ['yes', 'designated', 'permissive'].includes(tags.foot);
+    if (!DRIVABLE.has(hw) && !FOOT_WAYS.has(hw)) return false;
+    if ((tags.access === 'no' || tags.access === 'private') && !allowed) return false;
+    return true;
+  }
   const busOk = tags.bus === 'yes' || tags.psv === 'yes' || tags.highway === 'busway';
   if (vehicle === 'bus' && busOk && (DRIVABLE.has(tags.highway) || tags.highway === 'busway')) return true;
   if (!DRIVABLE.has(tags.highway)) return false;
@@ -97,9 +128,54 @@ export function isDrivable(tags = {}, vehicle = 'car') {
   return true;
 }
 
-/** Geschwindigkeit eines OSM-Ways in km/h (maxspeed oder Standard je highway). */
-export function waySpeed(tags = {}) {
+/** Geschwindigkeit eines OSM-Ways in km/h (maxspeed oder Standard je highway); Velo und zu Fuss pauschal. */
+export function waySpeed(tags = {}, vehicle = 'car') {
+  if (vehicle === 'foot') return tags.highway === 'steps' ? FOOT_STEPS_SPEED : FOOT_SPEED;
+  if (vehicle === 'bike') return BIKE_SPEED[tags.highway] || BIKE_ROAD_SPEED;
   return parseMaxspeed(tags.maxspeed) || HIGHWAY_SPEED[tags.highway] || 50;
+}
+
+const CYCLE_TAGS = ['cycleway', 'cycleway:left', 'cycleway:right', 'cycleway:both'];
+const QUIET_WAYS = new Set(['cycleway', 'path', 'track', 'footway', 'pedestrian', 'living_street', 'service', 'residential', 'bridleway', 'steps']);
+
+/**
+ * Unsicherer Abschnitt für Velo bzw. zu Fuss: schnelle Strasse (ab 50 km/h) ohne Velostreifen/Radweg
+ * bzw. ohne Trottoir. Quartierstrassen und eigene Wege gelten als sicher.
+ */
+export function unsafeFor(tags = {}, vehicle) {
+  if (vehicle !== 'bike' && vehicle !== 'foot') return false;
+  const hw = tags.highway;
+  if (QUIET_WAYS.has(hw)) return false;
+  const speed = parseMaxspeed(tags.maxspeed) || HIGHWAY_SPEED[hw] || 50;
+  if (speed < 50) return false;
+  if (vehicle === 'bike') return !CYCLE_TAGS.some((k) => tags[k] && tags[k] !== 'no' && tags[k] !== 'none');
+  const sw = tags.sidewalk || tags['sidewalk:both'] || tags['sidewalk:left'] || tags['sidewalk:right'];
+  return !sw || sw === 'no' || sw === 'none';
+}
+
+/** Unsicherer Abschnitt einer gezeichneten Strasse (schnell, ohne Velostreifen bzw. Trottoir im Querschnitt). */
+export function draftUnsafe(road, i, vehicle) {
+  if (vehicle !== 'bike' && vehicle !== 'foot') return false;
+  const kind = roadKind(road);
+  if (kind.id === 'path' || kind.id === 'residential' || kind.id === 'service') return false;
+  if (segmentSpeed(road, i) < 50) return false;
+  const sec = road.section;
+  if (vehicle === 'bike') return !(sec && (sec.bikeLeft || sec.bikeRight));
+  return !(sec && (sec.walkLeft || sec.walkRight));
+}
+
+/** Tempo einer gezeichneten Strasse je Verkehrsmittel (0 = nicht befahrbar). */
+export function draftSpeed(road, i, vehicle) {
+  const kind = roadKind(road);
+  const access = segmentAccess(road, i);
+  if (vehicle === 'foot') return kind.motorOnly ? 0 : FOOT_SPEED;
+  if (vehicle === 'bike') {
+    if (kind.motorOnly) return 0;
+    if (kind.id === 'path') return BIKE_SPEED.path;
+    return Math.min(BIKE_ROAD_SPEED, segmentSpeed(road, i) || BIKE_ROAD_SPEED);
+  }
+  if (access === 'bus') return vehicle === 'bus' ? Math.min(30, segmentSpeed(road, i)) : 0;
+  return segmentSpeed(road, i);
 }
 
 /** -1 = gegen Zeichenrichtung, 1 = in Zeichenrichtung, 0 = beide Richtungen. */
@@ -134,7 +210,7 @@ export class Graph {
    */
   turnCost(prevKey, nodeKey, nextKey) {
     const zero = { mean: 0, variance: 0 };
-    if (!this.turnCosts) return zero;
+    if (!this.turnCosts || this.vehicle === 'foot') return zero; // zu Fuss: weder Wartezeit noch Abbiegeverbot
     const j = this.junctions.get(nodeKey);
     if (j && j.kind === 'roundabout') return zero;
     const kind = turnKind(this.nodes.get(prevKey).latlng, this.nodes.get(nodeKey).latlng, this.nodes.get(nextKey).latlng);
@@ -142,7 +218,8 @@ export class Graph {
       if (j.turns && j.turns[kind] === false) return null;
       if (j.kind === 'interchange') return zero; // kreuzungsfrei: kein Warten auf Gegenverkehr
     }
-    const cost = (k) => ({ mean: TURN_COST[k].mean, variance: TURN_COST[k].sd * TURN_COST[k].sd });
+    const scale = this.vehicle === 'bike' ? 0.5 : 1;
+    const cost = (k) => ({ mean: TURN_COST[k].mean * scale, variance: TURN_COST[k].sd * TURN_COST[k].sd * scale * scale });
     if (kind === 'uturn') return cost('uturn'); // Wenden kostet überall, auch am Ende einer Sackgasse
     if (!j && (this.degree.get(nodeKey) || 0) < 3) return zero; // Knick ohne Abzweigung
     return cost(kind);
@@ -187,8 +264,9 @@ export class Graph {
     const assumed = !!(meta && meta.assumed);
     const draft = !!(meta && meta.draft);
     const noProfile = !!(meta && meta.noProfile);
-    if (dir >= 0) this.nodes.get(ka).edges.push({ to: kb, dist, time, variance, assumed, draft, noProfile });
-    if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time, variance, assumed, draft, noProfile });
+    const unsafe = !!(meta && meta.unsafe);
+    if (dir >= 0) this.nodes.get(ka).edges.push({ to: kb, dist, time, variance, assumed, draft, noProfile, unsafe });
+    if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time, variance, assumed, draft, noProfile, unsafe });
     this.degree.set(ka, (this.degree.get(ka) || 0) + 1);
     this.degree.set(kb, (this.degree.get(kb) || 0) + 1);
     this.segments.push({ a, b, ka, kb, speed: speedKmh, dir });
@@ -275,18 +353,15 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
   for (const w of osmWays) {
     if (replaced.has(w.id) || !isDrivable(w.tags, vehicle)) continue;
     const pts = draftNodes.length ? insertPointsOnLine(w.geometry, draftNodes) : w.geometry;
-    g.addPolyline(pts, waySpeed(w.tags), wayDirection(w.tags), null, { assumed: parseMaxspeed(w.tags.maxspeed) === null, noProfile: geometry });
+    const dir = vehicle === 'foot' ? 0 : wayDirection(w.tags); // Einbahnen gelten nicht zu Fuss
+    g.addPolyline(pts, waySpeed(w.tags, vehicle), dir, null, { assumed: vehicle === 'car' || vehicle === 'bus' ? parseMaxspeed(w.tags.maxspeed) === null : true, noProfile: geometry, unsafe: unsafeFor(w.tags, vehicle) });
   }
   if (mode === 'proposed' && doc) {
     const roundabouts = visible.filter((f) => f.type === 'roundabout');
     for (const r of roads) {
       if (r.status === 'remove') continue;
-      // Busschleusen (Zugang nur Bus) sind für Autos gesperrt; Busse fahren dort höchstens 30
-      const speeds = r.segments.map((_, i) => {
-        const access = segmentAccess(r, i);
-        if (access === 'bus') return vehicle === 'bus' ? Math.min(30, segmentSpeed(r, i)) : 0;
-        return segmentSpeed(r, i);
-      });
+      // Busschleusen (Zugang nur Bus) sind für Autos gesperrt; Busse fahren dort höchstens 30; Velo und Fuss pauschal
+      const speeds = r.segments.map((_, i) => draftSpeed(r, i, vehicle));
       let grades = null;
       const profile = geometry ? validProfile(r) : null;
       if (profile) {
@@ -294,8 +369,8 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
         for (let i = 1; i < r.nodes.length; i++) dists.push(dists[i - 1] + haversine(r.nodes[i - 1], r.nodes[i]));
         grades = segmentGrades(dists, profile.points);
       }
-      const metas = r.segments.map((seg) => ({ draft: true, assumed: !(seg && seg.maxspeed) && !r.maxspeed, noProfile: geometry && !profile }));
-      g.addPolylineSpeeds(r.nodes, speeds, r.oneway ? 1 : 0, grades, metas);
+      const metas = r.segments.map((seg, i) => ({ draft: true, assumed: vehicle === 'bike' || vehicle === 'foot' || (!(seg && seg.maxspeed) && !r.maxspeed), noProfile: geometry && !profile, unsafe: draftUnsafe(r, i, vehicle) }));
+      g.addPolylineSpeeds(r.nodes, speeds, r.oneway && vehicle !== 'foot' ? 1 : 0, grades, metas);
     }
     for (const k of roundabouts) {
       const c = project(k.center);
@@ -313,7 +388,9 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
     }
     for (const j of visible) {
       if (j.type !== 'junction') continue;
-      if (geometry) {
+      if (vehicle === 'foot') {
+        if (j.kind === 'signals') g.addPenalty(j.at, 15, geometry ? 10 : 0);
+      } else if (geometry) {
         const d = NODE_DELAY[j.kind] || NODE_DELAY.plain;
         g.addPenalty(j.at, d.mean, d.sd);
       } else {
@@ -396,7 +473,7 @@ class MinHeap {
  */
 export function search(g, fromKey, { toKey = null, maxCost = Infinity } = {}) {
   const stateKey = (node, prev) => (prev ? `${node}|${prev}` : node);
-  const best = new Map([[fromKey, { node: fromKey, prev: null, cost: 0, dist: 0, variance: 0, from: null, assumedDist: 0, draftDist: 0, noProfileDist: 0 }]]);
+  const best = new Map([[fromKey, { node: fromKey, prev: null, cost: 0, dist: 0, variance: 0, from: null, assumedDist: 0, draftDist: 0, noProfileDist: 0, unsafeDist: 0 }]]);
   const nodeCost = new Map([[fromKey, 0]]);
   const heap = new MinHeap();
   heap.push({ state: fromKey, node: fromKey, prev: null, cost: 0 });
@@ -429,7 +506,7 @@ export function search(g, fromKey, { toKey = null, maxCost = Infinity } = {}) {
       if (!cur || c < cur.cost) {
         best.set(next, {
           node: e.to, prev: key, cost: c, dist: here.dist + e.dist, variance: here.variance + penVar + turn.variance + (e.variance || 0), from: state,
-          assumedDist: here.assumedDist + (e.assumed ? e.dist : 0), draftDist: here.draftDist + (e.draft ? e.dist : 0), noProfileDist: here.noProfileDist + (e.noProfile ? e.dist : 0),
+          assumedDist: here.assumedDist + (e.assumed ? e.dist : 0), draftDist: here.draftDist + (e.draft ? e.dist : 0), noProfileDist: here.noProfileDist + (e.noProfile ? e.dist : 0), unsafeDist: here.unsafeDist + (e.unsafe ? e.dist : 0),
         });
         heap.push({ state: next, node: e.to, prev: key, cost: c });
       }
@@ -448,7 +525,7 @@ export function shortestPath(g, fromKey, toKey) {
   for (let st = endState; st; st = best.get(st).from) path.push(g.nodes.get(best.get(st).node).latlng);
   path.reverse();
   const band = summarize(end.cost, end.variance);
-  return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85, quality: { dist: end.dist, assumedDist: end.assumedDist, draftDist: end.draftDist, noProfileDist: end.noProfileDist, model: g.model } };
+  return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85, quality: { dist: end.dist, assumedDist: end.assumedDist, draftDist: end.draftDist, noProfileDist: end.noProfileDist, unsafeDist: end.unsafeDist, model: g.model, vehicle: g.vehicle } };
 }
 
 /** Fahrzeit (s) zu jedem erreichbaren Knoten bis maxSeconds: Map Knoten-Key -> Sekunden. */
@@ -647,13 +724,20 @@ export function routeOnGraph(g, from, to) {
 
 /** Mehrere Start-Ziel-Paare auf denselben Netzen: [{ id, current, proposed }]. */
 export function computeRoutesMany({ osmWays, doc, pairs, model = 'limit' }) {
-  const graphs = buildGraphs({ osmWays, doc, model });
-  return pairs.map((p) => ({ id: p.id, current: routeOnGraph(graphs.current, p.from, p.to), proposed: routeOnGraph(graphs.proposed, p.from, p.to) }));
+  const cache = new Map();
+  const graphsFor = (vehicle) => {
+    if (!cache.has(vehicle)) cache.set(vehicle, buildGraphs({ osmWays, doc, model, vehicle }));
+    return cache.get(vehicle);
+  };
+  return pairs.map((p) => {
+    const g = graphsFor(VEHICLE_IDS.includes(p.vehicle) ? p.vehicle : 'car');
+    return { id: p.id, current: routeOnGraph(g.current, p.from, p.to), proposed: routeOnGraph(g.proposed, p.from, p.to) };
+  });
 }
 
 /** Beide Netze rechnen. Liefert { current, proposed, model }. */
-export function computeRoutes({ osmWays, doc, from, to, model = 'limit' }) {
-  const graphs = buildGraphs({ osmWays, doc, model });
+export function computeRoutes({ osmWays, doc, from, to, model = 'limit', vehicle = 'car' }) {
+  const graphs = buildGraphs({ osmWays, doc, model, vehicle: VEHICLE_IDS.includes(vehicle) ? vehicle : 'car' });
   return { current: routeOnGraph(graphs.current, from, to), proposed: routeOnGraph(graphs.proposed, from, to), error: null, model };
 }
 

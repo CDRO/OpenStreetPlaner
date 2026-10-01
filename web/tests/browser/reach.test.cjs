@@ -96,6 +96,20 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok(reasons2.includes('kein Höhenprofil') && !reasons2.includes('Tempolimit-Modell'), reasons2);
   await page.uncheck('#route-model');
   await h.settle(300);
+  // Verkehrsmittel: zu Fuss ist viel langsamer, die Diagonale (Tempo 80, kein Trottoir) zählt als unsicher
+  await page.selectOption('.pair-vehicle', 'foot');
+  await page.waitForFunction(() => { const r = window.stadtplaner.actions.pairResults(); return r.length === 1 && r[0].vehicle === 'foot' && r[0].proposed && r[0].proposed.quality; }, null, { timeout: 10000 });
+  const walk = await page.evaluate(() => window.stadtplaner.actions.pairResults()[0]);
+  assert.ok(walk.proposed.time > res.proposed.time * 5, `zu Fuss langsamer: ${walk.proposed.time} vs ${res.proposed.time}`);
+  assert.ok(walk.proposed.quality.unsafeDist > 0, 'Diagonale ohne Trottoir unsicher');
+  assert.equal((await h.doc()).routePairs[0].vehicle, 'foot');
+  await page.waitForFunction(() => /unsicher/.test(document.querySelector('#route-panel').textContent), null, { timeout: 5000 });
+  await page.selectOption('.pair-vehicle', 'car');
+  await page.waitForFunction(() => { const r = window.stadtplaner.actions.pairResults(); return r.length === 1 && r[0].vehicle === 'car'; }, null, { timeout: 10000 });
+  await page.selectOption('#route-vehicle', 'bike');
+  await h.settle(200);
+  assert.equal(await page.evaluate(() => window.stadtplaner.actions.routeVehicle()), 'bike', 'Vorgabe für die nächste Hauptroute');
+  await page.selectOption('#route-vehicle', 'car');
   console.log('✓ Routenpaare');
 
   // --- Isochrone ----------------------------------------------------------------------

@@ -141,6 +141,9 @@ type Client struct {
 	bldgCache    *memCache
 	transitCache *memCache
 	parkingCache *memCache
+	// Fahrplan-Dienst (transport.opendata.ch), leer = aus
+	TimetableURL   string
+	timetableCache *memCache
 }
 
 // Building ist ein Gebäude aus OSM: geschlossener Umring als [lat, lng].
@@ -160,6 +163,7 @@ func New(tileDir string) *Client {
 		TileDir:      tileDir,
 		ProfileURL:   DefaultProfileURL,
 		ParcelURL:    DefaultParcelURL,
+		TimetableURL: DefaultTimetableURL,
 		searchCache:  newMemCache(searchCacheTTL),
 		roadsCache:   newMemCache(roadsCacheTTL),
 		tileInFly:    map[string]chan struct{}{},

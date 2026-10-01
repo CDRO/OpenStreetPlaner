@@ -289,8 +289,14 @@ func TestRoutePairsAndIsochrone(t *testing.T) {
 	if d.RoutePairs[0].To != nil || d.RoutePairs[0].From == nil || (*d.RoutePairs[0].From)[0] != 47.123457 {
 		t.Fatalf("Paar 1: %+v", d.RoutePairs[0])
 	}
-	if d.RoutePairs[1].ID != "p_2" || len(d.RoutePairs[1].Name) != 60 {
+	if d.RoutePairs[1].ID != "p_2" || len(d.RoutePairs[1].Name) != 60 || d.RoutePairs[1].Vehicle != "car" {
 		t.Fatalf("Paar 2: %+v", d.RoutePairs[1])
+	}
+	d.RoutePairs[0].Vehicle = "bike"
+	d.Route = &Route{From: ok, To: ok, Vehicle: "egal"}
+	_ = Normalize(d)
+	if d.RoutePairs[0].Vehicle != "bike" || d.Route.Vehicle != "car" {
+		t.Fatalf("Verkehrsmittel: %q %q", d.RoutePairs[0].Vehicle, d.Route.Vehicle)
 	}
 	if d.Isochrone.Mode != "proposed" || len(d.Isochrone.Minutes) != 2 || d.Isochrone.Minutes[0] != 15 {
 		t.Fatalf("Isochrone: %+v", d.Isochrone)
@@ -314,7 +320,7 @@ func TestBusFields(t *testing.T) {
 		Feature{ID: "zb", Type: "zone", LayerID: d.Layers[0].ID, Kind: "pedestrian", Nodes: []LatLng{{47, 8}, {47, 8.01}, {47.01, 8}}, BusAllowed: &yes},
 		Feature{ID: "zn", Type: "zone", LayerID: d.Layers[0].ID, Kind: "pedestrian", Nodes: []LatLng{{47, 8}, {47, 8.01}, {47.01, 8}}, BusAllowed: &no},
 	)
-	d.BusLines = []BusLine{{ID: "kaputt!", Name: "Linie 12 lang lang", Stops: []string{"bs1", "fehlt", "bs2"}, Dwell: 999, OsmID: 100}, {ID: "b2", OsmID: -1}}
+	d.BusLines = []BusLine{{ID: "kaputt!", Name: "Linie 12 lang lang", Stops: []string{"bs1", "fehlt", "bs2"}, Dwell: 999, OsmID: 100, Schedule: &Schedule{Seconds: 840.4, Trips: 0}}, {ID: "b2", OsmID: -1, Schedule: &Schedule{Seconds: -5}}}
 	d.Features[1].OsmID = 5 // einfache Kreuzung: kein OSM-Bezug
 	if err := Normalize(d); err != nil {
 		t.Fatal(err)
@@ -338,8 +344,11 @@ func TestBusFields(t *testing.T) {
 	if b.ID != "b_1" || b.Name != "Linie 12 lan" || len(b.Stops) != 2 || b.Dwell != 20 || b.Color == "" || b.OsmID != 100 {
 		t.Fatalf("Buslinie: %+v", b)
 	}
-	if d.BusLines[1].OsmID != 0 {
-		t.Fatalf("negative osmId nicht bereinigt: %+v", d.BusLines[1])
+	if d.BusLines[1].OsmID != 0 || d.BusLines[1].Schedule != nil {
+		t.Fatalf("negative osmId / ungültiger Fahrplan nicht bereinigt: %+v", d.BusLines[1])
+	}
+	if b.Schedule == nil || b.Schedule.Seconds != 840 || b.Schedule.Trips != 1 {
+		t.Fatalf("Fahrplan: %+v", b.Schedule)
 	}
 }
 

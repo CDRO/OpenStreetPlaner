@@ -272,14 +272,24 @@ export function normalizeBusLines(raw, featureIds = null) {
       stops,
       dwell: Number.isFinite(dwell) && dwell >= 0 && dwell <= 300 ? Math.round(dwell) : BUS_DWELL_DEFAULT,
       osmId: normalizeOsmId(l.osmId),
+      schedule: normalizeSchedule(l.schedule),
     });
   }
   return out;
 }
 
+/** Fahrplan-Abgleich einer Buslinie: Fahrzeit laut Fahrplan in Sekunden, Zahl der Fahrten, Zeitpunkt. */
+export function normalizeSchedule(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const seconds = Number(raw.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 86400) return null;
+  const trips = Number(raw.trips);
+  return { seconds: Math.round(seconds), trips: Number.isInteger(trips) && trips > 0 ? Math.min(trips, 99) : 1, at: typeof raw.at === 'string' ? raw.at.slice(0, 40) : '', from: typeof raw.from === 'string' ? raw.from.slice(0, 60) : '', to: typeof raw.to === 'string' ? raw.to.slice(0, 60) : '' };
+}
+
 export function createBusLine(doc, name = '') {
   const lines = doc.busLines || (doc.busLines = []);
-  const line = { id: newId('b'), name: name || String(lines.length + 1), color: BUS_COLORS[lines.length % BUS_COLORS.length], stops: [], dwell: BUS_DWELL_DEFAULT, osmId: null };
+  const line = { id: newId('b'), name: name || String(lines.length + 1), color: BUS_COLORS[lines.length % BUS_COLORS.length], stops: [], dwell: BUS_DWELL_DEFAULT, osmId: null, schedule: null };
   lines.push(line);
   return line;
 }
@@ -378,6 +388,15 @@ export function createDocument({ name = 'Neuer Entwurf', center = [46.8, 8.23], 
 }
 
 export const MAX_ROUTE_PAIRS = 20;
+export const VEHICLES = [
+  { id: 'car', label: 'Auto' },
+  { id: 'bus', label: 'Bus' },
+  { id: 'bike', label: 'Velo' },
+  { id: 'foot', label: 'zu Fuss' },
+];
+export function normalizeVehicle(v) {
+  return VEHICLES.some((x) => x.id === v) ? v : 'car';
+}
 export const ISOCHRONE_MODES = ['proposed', 'current', 'diff'];
 export const ISOCHRONE_PRESETS = [[5], [5, 10], [5, 10, 15], [10, 20, 30], [2, 5, 10]];
 
@@ -392,6 +411,7 @@ export function normalizeRoutePairs(raw) {
       name: typeof p.name === 'string' ? p.name.slice(0, 60) : '',
       from: isLatLng(p.from) ? roundCoord(p.from) : null,
       to: isLatLng(p.to) ? roundCoord(p.to) : null,
+      vehicle: normalizeVehicle(p.vehicle),
     };
     out.push(pair);
   }
@@ -716,7 +736,7 @@ export function normalizeDocument(raw) {
     busLines: [],
   };
   if (raw.route && isLatLng(raw.route.from) && isLatLng(raw.route.to)) {
-    doc.route = { from: roundCoord(raw.route.from), to: roundCoord(raw.route.to) };
+    doc.route = { from: roundCoord(raw.route.from), to: roundCoord(raw.route.to), vehicle: normalizeVehicle(raw.route.vehicle) };
   }
   if (raw.view && isLatLng(raw.view.center) && Number.isFinite(raw.view.zoom)) {
     doc.view = { center: [raw.view.center[0], raw.view.center[1]], zoom: raw.view.zoom };

@@ -11,6 +11,7 @@ import {
   adoptBusRoute, normalizeOsmId, MAX_BUS_LINES,
   translateFeatures, featuresInBounds, shiftLatLng,
   normalizePhases, createPhase, removePhase, featureInPhase, docForPhase, phaseLabel, MAX_PHASES,
+  normalizeSchedule,
 } from '../js/model.js';
 import { haversine } from '../js/geometry.js';
 
@@ -145,7 +146,7 @@ test('Tempolimit: Normalisierung, Standard je Typ, Route im Dokument', () => {
   const back = deserialize(serialize(doc));
   assert.equal(back.features[0].osmId, 4242);
   assert.equal(back.features[0].maxspeed, 20);
-  assert.deepEqual(back.route, { from: [47, 8], to: [47, 8.001] });
+  assert.deepEqual(back.route, { from: [47, 8], to: [47, 8.001], vehicle: 'car' });
   const noRoute = normalizeDocument({ layers: [{ id: 'l1' }], route: { from: [99, 0], to: [0, 0] } });
   assert.equal(noRoute.route, null);
 });
@@ -268,7 +269,7 @@ test('Autobahn/Autostrasse, Querschnitte und Abbiegeregeln', () => {
 test('Routenpaare und Isochronen-Einstellung werden geprüft und gespeichert', () => {
   const pairs = normalizeRoutePairs([{ id: 'p1', name: 'Schule', from: [47, 8], to: [99, 8] }, { name: 'x'.repeat(80) }, 'kaputt']);
   assert.equal(pairs.length, 2);
-  assert.deepEqual(pairs[0], { id: 'p1', name: 'Schule', from: [47, 8], to: null });
+  assert.deepEqual(pairs[0], { id: 'p1', name: 'Schule', from: [47, 8], to: null, vehicle: 'car' });
   assert.ok(pairs[1].id.startsWith('p_') && pairs[1].name.length === 60);
   assert.deepEqual(normalizeRoutePairs(null), []);
   assert.equal(normalizeRoutePairs(new Array(30).fill({ id: 'a' })).length, 20);
@@ -311,7 +312,7 @@ test('Bus: Zugang je Strasse/Abschnitt, Liniennummern, Buslinien und Flächen-Fr
   line.stops.push(stopA.id, stopB.id);
   const lines = normalizeBusLines([{ id: 'kaputt', name: ' Linie 12 lang lang ', color: 'rot', stops: [stopA.id, 'fehlt', 7, stopB.id], dwell: 999 }, 'x', { dwell: 45.4 }], new Set([stopA.id, stopB.id]));
   assert.equal(lines.length, 2);
-  assert.deepEqual(lines[0], { id: 'kaputt', name: 'Linie 12 lan', color: BUS_COLORS[0], stops: [stopA.id, stopB.id], dwell: BUS_DWELL_DEFAULT, osmId: null });
+  assert.deepEqual(lines[0], { id: 'kaputt', name: 'Linie 12 lan', color: BUS_COLORS[0], stops: [stopA.id, stopB.id], dwell: BUS_DWELL_DEFAULT, osmId: null, schedule: null });
   assert.ok(lines[1].id.startsWith('b_') && lines[1].dwell === 45 && lines[1].color === BUS_COLORS[1]);
   assert.equal(normalizeBusLines(new Array(30).fill({})).length, 20);
   // Normalisierung über das Dokument: unbekannte Haltestellen fliegen raus, Zugang bleibt, Flächen-Freigabe bleibt
@@ -425,4 +426,17 @@ test('Etappen: anlegen, prüfen, Zustand „bis Etappe“, löschen, Serialisier
   for (let i = doc.phases.length; i < MAX_PHASES; i++) createPhase(doc);
   assert.equal(createPhase(doc), null, 'Grenze');
   assert.equal(toGeoJSON(doc).features.find((f) => f.properties.id === r2.id).properties.phase, 'Etappe 2');
+});
+
+test('Fahrplan-Abgleich einer Buslinie wird geprüft und gespeichert', () => {
+  assert.deepEqual(normalizeSchedule({ seconds: 840.4, trips: 5, at: '2026-10-01T06:00:00Z', from: 'Dorf', to: 'Bahnhof' }), { seconds: 840, trips: 5, at: '2026-10-01T06:00:00Z', from: 'Dorf', to: 'Bahnhof' });
+  assert.equal(normalizeSchedule({ seconds: 0 }), null);
+  assert.equal(normalizeSchedule('x'), null);
+  assert.equal(normalizeSchedule({ seconds: 100, trips: 500 }).trips, 99);
+  assert.equal(normalizeSchedule({ seconds: 100 }).trips, 1);
+  const doc = createDocument();
+  const line = createBusLine(doc, '12');
+  assert.equal(line.schedule, null);
+  line.schedule = { seconds: 900, trips: 3, at: 'x', from: 'A', to: 'B' };
+  assert.deepEqual(deserialize(serialize(doc)).busLines[0].schedule, line.schedule);
 });

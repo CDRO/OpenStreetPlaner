@@ -5,9 +5,9 @@ import {
   parseMaxspeed, isDrivable, waySpeed, wayDirection, buildGraph, attachPoint, shortestPath, computeRoutes,
   insertPointsOnLine, formatDuration, keyOf, turnKind, TURN_COST, ROUNDABOUT_SPEED,
   reachTimes, isochronePieces, computeIsochrone, computeRoutesMany,
-  buildGraphs, routeOnGraph, computeBusLines,
+  buildGraphs, routeOnGraph, computeBusLines, unsafeFor, waySpeed as waySpeedFor, BIKE_ROAD_SPEED, FOOT_SPEED,
 } from '../js/routing.js';
-import { createDocument, createLayer, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
+import { createDocument, createLayer, createRoad, createRoundabout, createJunction, createZone, defaultSection } from '../js/model.js';
 import { project as projectLL } from '../js/geometry.js';
 import { nodesKey } from '../js/model.js';
 
@@ -436,4 +436,71 @@ test('Herkunft des Tempos je Kante: Anteile geschätzt / Entwurf / ohne Profil i
   assert.ok(iso.quality && iso.quality.dist > 0 && iso.quality.assumedDist > 0 && iso.quality.assumedDist < iso.quality.dist);
   const diff = computeIsochrone({ osmWays: ways, doc, from: [47, 8], minutes: [5], mode: 'diff' });
   assert.ok(diff.quality && diff.quality.dist > 0 && diff.quality.draftDist > 0);
+});
+
+test('Velo und zu Fuss: eigene Netze, pauschales Tempo, keine Einbahnen zu Fuss, unsichere Anteile', () => {
+  assert.equal(isDrivable({ highway: 'cycleway' }, 'bike'), true);
+  assert.equal(isDrivable({ highway: 'cycleway' }), false);
+  assert.equal(isDrivable({ highway: 'footway' }, 'bike'), false);
+  assert.equal(isDrivable({ highway: 'footway', bicycle: 'yes' }, 'bike'), true);
+  assert.equal(isDrivable({ highway: 'motorway' }, 'bike'), false);
+  assert.equal(isDrivable({ highway: 'residential', bicycle: 'no' }, 'bike'), false);
+  assert.equal(isDrivable({ highway: 'steps' }, 'foot'), true);
+  assert.equal(isDrivable({ highway: 'steps' }, 'bike'), false);
+  assert.equal(isDrivable({ highway: 'trunk' }, 'foot'), false);
+  assert.equal(isDrivable({ highway: 'path', foot: 'no' }, 'foot'), false);
+  assert.equal(isDrivable({ highway: 'service', access: 'private' }, 'foot'), false);
+  assert.equal(isDrivable({ highway: 'service', access: 'private', foot: 'yes' }, 'foot'), true);
+  assert.equal(waySpeedFor({ highway: 'primary', maxspeed: '80' }, 'bike'), BIKE_ROAD_SPEED);
+  assert.equal(waySpeedFor({ highway: 'cycleway' }, 'bike'), 18);
+  assert.equal(waySpeedFor({ highway: 'steps' }, 'foot'), 2.5);
+  assert.equal(waySpeedFor({ highway: 'primary' }, 'foot'), FOOT_SPEED);
+  assert.equal(unsafeFor({ highway: 'primary' }, 'bike'), true);
+  assert.equal(unsafeFor({ highway: 'primary', 'cycleway:right': 'lane' }, 'bike'), false);
+  assert.equal(unsafeFor({ highway: 'primary', maxspeed: '30' }, 'bike'), false);
+  assert.equal(unsafeFor({ highway: 'residential' }, 'bike'), false);
+  assert.equal(unsafeFor({ highway: 'primary' }, 'foot'), true);
+  assert.equal(unsafeFor({ highway: 'primary', sidewalk: 'both' }, 'foot'), false);
+  assert.equal(unsafeFor({ highway: 'primary' }, 'car'), false);
+  // Netz: Hauptstrasse (schnell, ohne Velostreifen) gegen Veloweg; Einbahn gilt nicht zu Fuss
+  const ways = [
+    { id: 1, tags: { highway: 'primary', maxspeed: '80' }, geometry: [[47, 8], [47, 8.01]] },
+    { id: 2, tags: { highway: 'cycleway' }, geometry: [[47, 8], [47.001, 8.005], [47, 8.01]] },
+    { id: 3, tags: { highway: 'residential', oneway: 'yes' }, geometry: [[47.01, 8], [47.01, 8.01]] },
+  ];
+  const doc = createDocument();
+  const car = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47, 8.01] });
+  const bike = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47, 8.01], vehicle: 'bike' });
+  const foot = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47, 8.01], vehicle: 'foot' });
+  assert.ok(car.current.time < bike.current.time && bike.current.time < foot.current.time, 'Auto schneller als Velo schneller als zu Fuss');
+  assert.equal(car.current.quality.vehicle, 'car');
+  assert.equal(bike.current.quality.vehicle, 'bike');
+  // Velo mit 18 km/h auf dem Veloweg (Umweg 1.03) gegen 17 km/h auf der Hauptstrasse: Hauptstrasse knapp schneller, aber unsicher
+  const share = bike.current.quality.unsafeDist / bike.current.quality.dist;
+  assert.ok(share > 0.9 || share === 0, `Anteil unsicher ist ganz oder gar nicht: ${share}`);
+  assert.equal(foot.current.quality.unsafeDist > 0, true, 'zu Fuss auf der Hauptstrasse ohne Trottoir unsicher');
+  assert.equal(car.current.quality.unsafeDist, 0);
+  // Einbahn: Auto nur in Zeichenrichtung, zu Fuss beide
+  const carBack = computeRoutes({ osmWays: [ways[2]], doc, from: [47.01, 8.01], to: [47.01, 8] });
+  const footBack = computeRoutes({ osmWays: [ways[2]], doc, from: [47.01, 8.01], to: [47.01, 8], vehicle: 'foot' });
+  assert.ok(carBack.current.error, 'Auto gegen die Einbahn: keine Verbindung');
+  assert.ok(!footBack.current.error && footBack.current.dist > 700, 'zu Fuss gegen die Einbahn');
+  // Gezeichnete Strassen: Fuss-/Veloweg nur für Velo und zu Fuss, Autobahn nicht; Velostreifen im Querschnitt macht sicher
+  const layerId = doc.layers[0].id;
+  const path = createRoad({ layerId, nodes: [[47.02, 8], [47.02, 8.005]], kind: 'path' });
+  doc.features.push(path);
+  assert.ok(computeRoutes({ osmWays: [], doc, from: [47.02, 8], to: [47.02, 8.005] }).proposed.error, 'Auto nicht auf dem Veloweg');
+  assert.ok(!computeRoutes({ osmWays: [], doc, from: [47.02, 8], to: [47.02, 8.005], vehicle: 'bike' }).proposed.error);
+  assert.ok(!computeRoutes({ osmWays: [], doc, from: [47.02, 8], to: [47.02, 8.005], vehicle: 'foot' }).proposed.error);
+  const main = createRoad({ layerId, nodes: [[47.03, 8], [47.03, 8.005]], kind: 'main', maxspeed: 60 });
+  doc.features.push(main);
+  const r1 = computeRoutes({ osmWays: [], doc, from: [47.03, 8], to: [47.03, 8.005], vehicle: 'bike' }).proposed;
+  assert.ok(r1.quality.unsafeDist > 0, 'Hauptstrasse 60 ohne Velostreifen unsicher');
+  main.section = { ...defaultSection('main'), bikeRight: true };
+  const r2 = computeRoutes({ osmWays: [], doc, from: [47.03, 8], to: [47.03, 8.005], vehicle: 'bike' }).proposed;
+  assert.equal(r2.quality.unsafeDist, 0, 'mit Velostreifen sicher');
+  assert.ok(computeRoutes({ osmWays: [], doc, from: [47.03, 8], to: [47.03, 8.005], vehicle: 'foot' }).proposed.quality.unsafeDist > 0, 'ohne Trottoir zu Fuss unsicher');
+  // Paare mit eigenem Verkehrsmittel
+  const many = computeRoutesMany({ osmWays: ways, doc, pairs: [{ id: 'a', from: [47, 8], to: [47, 8.01], vehicle: 'foot' }, { id: 'b', from: [47, 8], to: [47, 8.01] }] });
+  assert.ok(many[0].current.time > many[1].current.time * 5, 'zu Fuss deutlich länger als Auto');
 });

@@ -6,13 +6,13 @@ import { Store } from './store.js';
 import { LocalState } from './local.js';
 import { api, setClientId } from './api.js';
 import {
-  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES, featureLabel, STATUSES, LEVELS, ROAD_ACCESS, docForPhase, createPhase, removePhase, phaseLabel, featureInPhase,
+  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES, featureLabel, STATUSES, LEVELS, ROAD_ACCESS, docForPhase, createPhase, removePhase, phaseLabel, featureInPhase, VEHICLES,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
 import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
-import { buildGraphs, computeBusLines, computeIsochrone, computeRoutes, routeOnGraph } from './routing.js';
+import { buildGraphs, computeBusLines, computeIsochrone, computeRoutes, formatDuration, routeOnGraph } from './routing.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
 import { nodesKey, newId } from './model.js';
 import { exportPdf, exportPng, exportReport } from './export.js';
@@ -83,6 +83,7 @@ async function main() {
     pairResults: [],
     busResults: [],
     variants: null, // Variantenvergleich (auf Knopfdruck)
+    vehicle: 'car', // Verkehrsmittel für die nächste Hauptroute
     phaseView: null, // Ansicht „bis Etappe“ (ID) oder null = Endzustand
     iso: null,
     routeTimer: null,
@@ -199,6 +200,7 @@ async function main() {
     getDefaultRoadKind: () => state.defaultRoadKind,
     getOsmWay: (id) => osm.get(id),
     getTransitStops: () => transit.stopList(),
+    getDefaultVehicle: () => state.vehicle,
     getDefaultZoneKind: () => state.defaultZoneKind,
     getComments: () => (settings.showComments ? state.comments : []),
     canEdit,
@@ -313,10 +315,20 @@ async function main() {
         state.iso = null;
       } else {
         try {
-          const graphs = buildGraphs({ osmWays: osm.list(), doc, model: settings.speedModel });
-          state.routes = q ? { current: routeOnGraph(graphs.current, q.from, q.to), proposed: routeOnGraph(graphs.proposed, q.from, q.to), model: settings.speedModel } : null;
-          state.pairResults = pairs.map((p) => ({ id: p.id, current: routeOnGraph(graphs.current, p.from, p.to), proposed: routeOnGraph(graphs.proposed, p.from, p.to) }));
-          state.iso = iso ? computeIsochrone({ osmWays: osm.list(), doc, from: iso.from, minutes: iso.minutes, mode: iso.mode, model: settings.speedModel, graphs }) : null;
+          // Netze je Verkehrsmittel nur bei Bedarf bauen (Auto, Bus, Velo, zu Fuss)
+          const cache = new Map();
+          const graphsFor = (vehicle) => {
+            const v = VEHICLES.some((x) => x.id === vehicle) ? vehicle : 'car';
+            if (!cache.has(v)) cache.set(v, buildGraphs({ osmWays: osm.list(), doc, model: settings.speedModel, vehicle: v }));
+            return cache.get(v);
+          };
+          const main = q ? graphsFor(q.vehicle) : null;
+          state.routes = q ? { current: routeOnGraph(main.current, q.from, q.to), proposed: routeOnGraph(main.proposed, q.from, q.to), model: settings.speedModel, vehicle: q.vehicle || 'car' } : null;
+          state.pairResults = pairs.map((p) => {
+            const g = graphsFor(p.vehicle);
+            return { id: p.id, vehicle: p.vehicle || 'car', current: routeOnGraph(g.current, p.from, p.to), proposed: routeOnGraph(g.proposed, p.from, p.to) };
+          });
+          state.iso = iso ? computeIsochrone({ osmWays: osm.list(), doc, from: iso.from, minutes: iso.minutes, mode: iso.mode, model: settings.speedModel, graphs: graphsFor('car') }) : null;
         } catch (e) {
           state.routes = { current: { error: e.message }, proposed: { error: e.message } };
           state.pairResults = [];
@@ -1077,7 +1089,7 @@ async function main() {
       const id = newId('p');
       store.commit('Routenpaar hinzufügen', (d) => {
         if (!d.routePairs) d.routePairs = [];
-        d.routePairs.push({ id, name: `${t('Paar')} ${n + 1}`, from: null, to: null });
+        d.routePairs.push({ id, name: `${t('Paar')} ${n + 1}`, from: null, to: null, vehicle: state.vehicle });
       });
       tools.captureRoute({ pairId: id });
       ui.refreshRoute();
@@ -1150,6 +1162,39 @@ async function main() {
         if (l) fn(l);
       });
     },
+    /** Fahrplan-Abgleich: direkte Busfahrten zwischen erster und letzter Haltestelle laut Fahrplan. */
+    async checkTimetable(id) {
+      if (!actions.requireEdit()) return;
+      const line = (store.doc.busLines || []).find((x) => x.id === id);
+      const stops = line ? line.stops.map((sid) => getFeature(store.doc, sid)).filter((f) => f && f.at) : [];
+      if (stops.length < 2) return ui.toast(t('Mindestens zwei Haltestellen für den Fahrplan-Abgleich.'), 'error');
+      state.timetableBusy = id;
+      ui.refreshRoute();
+      try {
+        const tt = await api.timetable(stops[0].at, stops[stops.length - 1].at, line.name);
+        actions.patchBusLine(id, 'Fahrplan abgleichen', (l) => { l.schedule = { seconds: tt.median, trips: tt.trips, at: new Date().toISOString(), from: tt.from.name, to: tt.to.name }; });
+        ui.toast(t('Fahrplan: {min} von {from} nach {to} ({n} Fahrten).', { min: formatDuration(tt.median), from: tt.from.name, to: tt.to.name, n: tt.trips }));
+      } catch (e) {
+        ui.toast(`${t('Fahrplan-Abgleich')}: ${e.message}`, 'error', 6000);
+      } finally {
+        state.timetableBusy = null;
+        ui.refreshRoute();
+      }
+      return undefined;
+    },
+    timetableBusy: () => state.timetableBusy,
+    /** Haltezeit so setzen, dass das Modell heute die Fahrplanzeit trifft (Fahrzeit ohne Halte bleibt). */
+    calibrateDwell(id) {
+      const line = (store.doc.busLines || []).find((x) => x.id === id);
+      const r = state.busResults.find((x) => x.id === id);
+      if (!line || !line.schedule || !r || !r.current || r.current.error) return;
+      const mids = Math.max(0, line.stops.length - 2);
+      if (!mids) return ui.toast(t('Ohne Zwischenhalte lässt sich keine Haltezeit kalibrieren.'), 'error');
+      const driving = r.current.time - line.dwell * mids;
+      const dwell = Math.max(0, Math.min(300, Math.round((line.schedule.seconds - driving) / mids)));
+      actions.patchBusLine(id, 'Haltezeit kalibrieren', (l) => { l.dwell = dwell; });
+      return undefined;
+    },
     removeBusLine(id) {
       actions.commitDoc('Buslinie löschen', (d) => { d.busLines = (d.busLines || []).filter((x) => x.id !== id); });
       if (tools.routeTarget && tools.routeTarget.busLine === id) tools.cancel();
@@ -1168,7 +1213,7 @@ async function main() {
         case 'bus': {
           const r = state.busResults.find((x) => x.id === id);
           const l = (store.doc.busLines || []).find((x) => x.id === id);
-          return r ? travelTimeConfidence([r.current, r.proposed], { networkLoading, dwell: l ? l.dwell : null }) : null;
+          return r ? travelTimeConfidence([r.current, r.proposed], { networkLoading, dwell: l ? l.dwell : null, schedule: l && l.schedule && r.current && !r.current.error ? { seconds: l.schedule.seconds, model: r.current.time, trips: l.schedule.trips } : null }) : null;
         }
         case 'isochrone': return state.iso && !state.iso.error ? travelTimeConfidence(state.iso, { networkLoading }) : null;
         case 'costs': return costConfidence(store.doc);
@@ -1206,6 +1251,19 @@ async function main() {
       if (osm.pending) return t('Strassennetz wird geladen… ({n} Zellen offen)', { n: osm.remaining });
       if (osm.lastError) return `${t('Strassennetz')}: ${osm.lastError.message}`;
       return osm.ways.size ? t('{n} OSM-Strassen im Speicher.', { n: osm.ways.size }) : t('Noch kein Strassennetz geladen – Start und Ziel setzen oder „Netz für Ansicht laden“.');
+    },
+    /** Verkehrsmittel der Hauptroute (und Vorgabe für die nächste). */
+    routeVehicle: () => (store.doc.route && store.doc.route.vehicle) || state.vehicle,
+    setRouteVehicle(v) {
+      state.vehicle = VEHICLES.some((x) => x.id === v) ? v : 'car';
+      if (store.doc.route) actions.commitDoc('Verkehrsmittel ändern', (d) => { if (d.route) d.route.vehicle = state.vehicle; });
+      else ui.refreshRoute();
+    },
+    setPairVehicle(id, v) {
+      actions.commitDoc('Verkehrsmittel des Paars ändern', (d) => {
+        const p = (d.routePairs || []).find((x) => x.id === id);
+        if (p) p.vehicle = VEHICLES.some((x) => x.id === v) ? v : 'car';
+      });
     },
     swapRoute() {
       const q = store.doc.route;

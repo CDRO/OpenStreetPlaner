@@ -806,7 +806,8 @@ export class ToolController {
         }
       });
     } else {
-      this.store.commit('Route setzen', (doc) => { doc.route = { from, to: ll }; });
+      const vehicle = this.getDefaultVehicle ? this.getDefaultVehicle() : 'car';
+      this.store.commit('Route setzen', (doc) => { doc.route = { from, to: ll, vehicle }; });
     }
     this.onStatus(this.toolInfo().hint);
   }

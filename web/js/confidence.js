@@ -21,9 +21,10 @@ export function confidenceLabel(level) {
 
 /** Gemeinsame Qualität mehrerer Routenergebnisse (heute + neu, Teilstrecken): Distanzen addiert. */
 export function mergeQuality(results) {
-  const q = { dist: 0, assumedDist: 0, draftDist: 0, noProfileDist: 0, model: null };
+  const q = { dist: 0, assumedDist: 0, draftDist: 0, noProfileDist: 0, model: null, vehicle: null };
   for (const r of results) {
     if (!r || !r.quality) continue;
+    if (!q.vehicle && r.quality.vehicle) q.vehicle = r.quality.vehicle;
     q.dist += r.quality.dist || 0;
     q.assumedDist += r.quality.assumedDist || 0;
     q.draftDist += r.quality.draftDist || 0;
@@ -37,14 +38,14 @@ export function mergeQuality(results) {
  * Fahrzeiten (Route, Paar, Buslinie, Erreichbarkeit). results: ein Ergebnis oder mehrere (heute/neu).
  * networkLoading: Strassennetz noch unvollständig. dwell: Haltezeit einer Buslinie (Standard = Annahme).
  */
-export function travelTimeConfidence(results, { networkLoading = false, dwell = null } = {}) {
+export function travelTimeConfidence(results, { networkLoading = false, dwell = null, schedule = null } = {}) {
   const list = (Array.isArray(results) ? results : [results]).filter((r) => r && !r.error && r.quality);
   if (!list.length) return null;
   const q = mergeQuality(list);
   let level = 'high';
   const reasons = [];
   const assumed = pct(q.assumedDist, q.dist);
-  if (assumed > 0) {
+  if (assumed > 0 && q.vehicle !== 'bike' && q.vehicle !== 'foot') {
     reasons.push(t('{p} % der Strecke mit geschätztem Tempo (kein maxspeed in OSM bzw. kein Tempolimit gesetzt)', { p: assumed }));
     if (assumed > 50) level = lower(level, 'low');
     else if (assumed > 20) level = lower(level, 'medium');
@@ -53,7 +54,10 @@ export function travelTimeConfidence(results, { networkLoading = false, dwell = 
     level = lower(level, 'low');
     reasons.push(t('Strassennetz noch nicht vollständig geladen'));
   }
-  if (q.model !== 'geometry') {
+  if (q.vehicle === 'bike' || q.vehicle === 'foot') {
+    level = lower(level, 'medium');
+    reasons.push(q.vehicle === 'bike' ? t('Velo pauschal mit 17 km/h (Wege langsamer), ohne Steigung und Wartezeiten') : t('Zu Fuss pauschal mit 4.8 km/h, Wartezeit nur an Ampeln'));
+  } else if (q.model !== 'geometry') {
     level = lower(level, 'medium');
     reasons.push(t('Tempolimit-Modell: Kurven, Steigung und Wartezeiten nicht berücksichtigt'));
   } else {
@@ -67,6 +71,15 @@ export function travelTimeConfidence(results, { networkLoading = false, dwell = 
   if (draft > 0) reasons.push(t('{p} % der Strecke auf gezeichneten Strassen (Geometrie des Entwurfs)', { p: draft }));
   if (dwell !== null && dwell === BUS_DWELL_DEFAULT) reasons.push(t('Haltezeit je Zwischenhalt als Standard ({s} s) angenommen', { s: BUS_DWELL_DEFAULT }));
   reasons.push(t('Ampeln und Vortritt im heutigen Netz (OSM) nicht modelliert'));
+  // Fahrplan-Abgleich: eine Messung des heutigen Zustands; nahe am Fahrplan hebt die Modell-Deckelung auf
+  if (schedule && schedule.seconds > 0 && schedule.model > 0) {
+    const dev = Math.round(((schedule.model - schedule.seconds) / schedule.seconds) * 100);
+    const abs = Math.abs(dev);
+    reasons.unshift(t('Fahrplan-Abgleich: Modell heute weicht {p} % vom Fahrplan ab ({n} Fahrten)', { p: `${dev > 0 ? '+' : ''}${dev}`, n: schedule.trips || 1 }));
+    if (abs <= 15) level = networkLoading ? level : (assumed > 50 ? 'medium' : 'high');
+    else if (abs > 30) level = 'low';
+    else level = lower(level, 'medium');
+  }
   return { level, reasons };
 }
 

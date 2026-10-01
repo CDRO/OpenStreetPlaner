@@ -54,6 +54,7 @@ export const api = {
   parcels: (coords) => request('POST', '/api/parcels', { body: { coords } }),
   buildings: (b) => request('GET', `/api/buildings?bbox=${[b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',')}`),
   transit: (b) => request('GET', `/api/transit?bbox=${[b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',')}`),
+  timetable: (from, to, line) => request('GET', `/api/timetable?from=${from.map((v) => v.toFixed(6)).join(',')}&to=${to.map((v) => v.toFixed(6)).join(',')}&line=${encodeURIComponent(line || '')}`),
   parking: (b) => request('GET', `/api/parking?bbox=${[b.south, b.west, b.north, b.east].map((v) => v.toFixed(6)).join(',')}`),
   setPushSub: (id, body, token) => request('PUT', `/api/drafts/${encodeURIComponent(id)}/push`, { body, token }),
   deletePushSub: (id, clientId) => request('DELETE', `/api/drafts/${encodeURIComponent(id)}/push?clientId=${encodeURIComponent(clientId)}`),
