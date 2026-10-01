@@ -8,7 +8,7 @@ import { featureTitle } from './diff.js';
 import { COST_ITEMS, costValue, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
 import { ISO_COLORS, ISO_DIFF_COLORS } from './draw.js';
-import { ISOCHRONE_PRESETS, ROAD_ACCESS, segmentAccess, normalizeLines, getLayer } from './model.js';
+import { ISOCHRONE_PRESETS, ROAD_ACCESS, segmentAccess, normalizeLines, getLayer, phaseLabel } from './model.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
 import { TOOLS, formatLength } from './tools.js';
@@ -129,6 +129,55 @@ function busSection(doc, actions, tools) {
     ${rows}
     <div class="btn-row"><button type="button" id="bus-add" class="btn small" ${dis}>${t('+ Buslinie')}</button>${capturing ? `<span class="muted small">${t('Haltestellen anklicken oder neue setzen (Esc beendet).')}</span>` : ''}</div>
     ${transitSection(doc, actions)}`;
+}
+
+const fmtMin = (sec) => (sec === null || sec === undefined ? '–' : formatDuration(sec));
+const fmtDelta = (sec) => (sec === null || sec === undefined ? '–' : `${sec > 0 ? '+' : sec < 0 ? '−' : '±'}${formatDuration(Math.abs(sec))}`);
+
+/** Variantenvergleich: jede Ebene allein; auf Knopfdruck, weil je Ebene geroutet wird. */
+function variantsSection(doc, actions) {
+  const v = actions.variants();
+  const stale = v && (v.layers.length !== doc.layers.length || v.layers.some((r, i) => r.id !== doc.layers[i].id));
+  const table = v ? `
+      <table class="route-table variants">
+        <thead><tr><th>${t('Ebene')}</th><th class="num">${t('Elemente')}</th><th class="num">${t('Neu (m)')}</th><th class="num">${t('Kosten')}</th><th class="num">${t('Route Δ')}</th><th class="num">${t('Paare Δ')}</th><th class="num">${t('Parzellen')}</th><th class="num">${t('Gebäude')}</th><th class="num">${t('Warn.')}</th></tr></thead>
+        <tbody>${v.layers.map((r) => `<tr class="${r.visible ? '' : 'muted'}"><td>${esc(r.name)}${r.visible ? '' : ` (${t('ausgeblendet')})`}</td><td class="num">${r.features}</td><td class="num">${Math.round(r.lengthNew)}</td><td class="num">${formatChf(r.costs)}</td><td class="num">${fmtDelta(r.routeDelta)}</td><td class="num">${r.pairsCount ? fmtDelta(r.pairsDelta) : '–'}</td><td class="num">${r.parcels}</td><td class="num">${r.buildings === null ? '–' : r.buildings}</td><td class="num">${r.warnings}</td></tr>`).join('')}</tbody>
+      </table>
+      <p class="muted small">${t('Je Ebene allein sichtbar gerechnet: Kosten der Ebene, Fahrzeit-Differenz der Hauptroute und Summe der Paare gegenüber heute, Parzellen und Gebäude entlang neuer Strassen, Warnungen des Normen-Checks.')}${stale ? ` <strong>${t('Ebenen haben sich geändert – neu rechnen.')}</strong>` : ''}</p>` : `<p class="muted small">${t('Vergleicht die Ebenen als Varianten: jede allein sichtbar mit Kosten, Fahrzeiten, Parzellen, Gebäuden und Warnungen.')}</p>`;
+  return `
+      <h3>${t('Variantenvergleich')}</h3>
+      ${table}
+      <div class="btn-row"><button type="button" id="variants-run" class="btn small">${v ? t('Neu rechnen') : t('Varianten vergleichen')}</button></div>`;
+}
+
+/** Parkplatzbilanz: neu aus Parkstreifen und Parkflächen, entfallen aus OSM. */
+function parkingSection(actions) {
+  const b = actions.parkingBalance();
+  const rows = b.items.map((it) => `<li><span class="badge ${it.kind === 'added' ? 'ok' : 'warn'}">${it.spaces > 0 ? '+' : ''}${it.spaces}</span> ${it.featureId ? `<button type="button" class="linkish parking-row" data-id="${esc(it.featureId)}">${esc(it.label)}</button>` : esc(it.label)}${it.note ? ` <span class="muted small">${esc(it.note)}</span>` : ''}</li>`).join('');
+  return `
+      <h3>${t('Parkplatzbilanz')}</h3>
+      <p class="muted small">${t('Neu: Parkstreifen aus dem Querschnitt (6 m je Platz) und Parkflächen (25 m² je Platz inkl. Fahrgasse). Entfallen: OSM-Parkstreifen an übernommenen Strassen ohne Parkstreifen im Querschnitt oder bei Rückbau, OSM-Parkplätze, die neue Strassen oder Flächen berühren (capacity oder Fläche).')}</p>
+      <table class="route-table"><tbody>
+        <tr><td>${t('Neu')}</td><td class="num">+${b.added.lanes + b.added.zones}</td><td class="muted small">${t('{a} Parkstreifen, {b} Flächen', { a: b.added.lanes, b: b.added.zones })}</td></tr>
+        <tr><td>${t('Entfallen')}</td><td class="num">−${b.removed.lanes + b.removed.areas}</td><td class="muted small">${t('{a} Parkstreifen, {b} OSM-Parkplätze', { a: b.removed.lanes, b: b.removed.areas })}</td></tr>
+        <tr class="total"><td>${t('Bilanz')}</td><td class="num"><strong>${b.net > 0 ? '+' : ''}${b.net}</strong></td><td></td></tr>
+      </tbody></table>
+      ${rows ? `<ul class="parking-list">${rows}</ul>` : ''}
+      <div class="btn-row"><button type="button" id="parking-load" class="btn small">${t('OSM-Parkplätze für die Ansicht laden')}</button></div>
+      <p class="muted small" id="parking-status">${esc(actions.parkingStatus())}</p>`;
+}
+
+/** Etappierung: kumulierte Kennzahlen je Etappe. */
+function phasesSection(doc, actions) {
+  const rows = actions.phaseTable();
+  if (!rows.length) return '';
+  return `
+      <h3>${t('Etappierung')}</h3>
+      <table class="route-table">
+        <thead><tr><th>${t('bis Etappe')}</th><th class="num">${t('Elemente')}</th><th class="num">${t('Kosten kumuliert')}</th><th class="num">${t('Fahrzeit neu')}</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr class="${actions.phaseView() === r.id ? 'active' : ''}"><td>${esc(r.label)}</td><td class="num">${r.features} <span class="muted small">(+${r.own})</span></td><td class="num">${formatChf(r.costs)}</td><td class="num">${fmtMin(r.routeTime)}</td></tr>`).join('')}</tbody>
+      </table>
+      <p class="muted small">${t('Kumuliert bis zur jeweiligen Etappe (Elemente ohne Etappe zählen immer). Fahrzeit der Hauptroute im Netz dieses Zustands. Ansicht im Ebenen-Tab wählen.')}</p>`;
 }
 
 /** Bestehende Buslinien aus OSM (route=bus) mit ihrer Haltestellenfolge zum Übernehmen. */
@@ -589,6 +638,9 @@ export class UI {
       <p class="muted small">${t('Richtwerte nach VSS: Kurvenradius zum Tempo, Steigung aus dem Höhenprofil, Kreiselgrösse, Fahrstreifenbreite, Tempo in Zonen, nicht angeschlossene Enden.')} ${checks.length ? `${tn(warns, '{n} Warnung', '{n} Warnungen')}, ${tn(checks.length - warns, '{n} Hinweis', '{n} Hinweise')}.` : t('Keine Auffälligkeiten.')}</p>
       ${checks.length ? `<ul class="check-list">${checks.map((c) => `<li class="${c.severity}"><button type="button" class="linkish check-row" data-id="${esc(c.id)}">${esc(c.text)}</button></li>`).join('')}</ul>` : ''}
       ${confidenceBlock(staticConfidence('checks'))}
+      ${variantsSection(doc, actions)}
+      ${parkingSection(actions)}
+      ${phasesSection(doc, actions)}
       <h3>${t('Betroffene Gebäude')}</h3>
       <p class="muted small">${t('Gebäude aus OpenStreetMap im Umkreis der heutigen Route, der neuen Route und aller neuen Strassen (sichtbare Ebenen). Lärm- und Sicherheitsargument in einer Zahl.')}</p>
       <div class="btn-row">
@@ -610,6 +662,16 @@ export class UI {
       <label class="check"><input type="checkbox" id="exp-show" ${actions.showExposure() ? 'checked' : ''}> ${t('Auf der Karte hervorheben')} <span class="muted small">${t('(rot: neu betroffen, grün: entlastet, orange: beides)')}</span></label>
       ${confidenceBlock(staticConfidence('buildings'))}` : ''}`;
     el.querySelectorAll('details').forEach((d, i) => { if (openState[i]) d.open = true; });
+    const vrun = this.$('variants-run');
+    if (vrun) vrun.onclick = () => actions.compareVariants();
+    const pload = this.$('parking-load');
+    if (pload) pload.onclick = () => actions.loadParking();
+    el.querySelectorAll('.parking-row').forEach((b) => {
+      b.onclick = () => {
+        tools.setSelection({ featureId: b.dataset.id });
+        actions.zoomToFeature(b.dataset.id);
+      };
+    });
     el.querySelectorAll('.cost-row').forEach((b) => {
       b.onclick = () => {
         tools.setSelection({ featureId: b.dataset.id });
@@ -798,6 +860,7 @@ export class UI {
       <h3>${t('Eigenschaften')} <span class="muted">(${tn(feats.length, '{n} Element', '{n} Elemente')})</span></h3>
       <p class="muted small">${esc(summary)}. ${t('Ziehen auf einem ausgewählten Element verschiebt alle; Shift+Klick ergänzt oder entfernt; Entf löscht.')}</p>
       <label class="field">${t('Ebene')}<select id="multi-layer" ${dis}><option value="">${layerIds.size > 1 ? t('(verschieden)') : ''}</option>${store.doc.layers.map((l) => `<option value="${l.id}" ${layerIds.size === 1 && layerIds.has(l.id) ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
+      ${(store.doc.phases || []).length ? `<label class="field">${t('Etappe')}<select id="multi-phase" ${dis}><option value="">${new Set(feats.map((f) => f.phase || '')).size > 1 ? t('(verschieden)') : t('Alle Etappen')}</option>${store.doc.phases.map((ph, i) => `<option value="${esc(ph.id)}" ${feats.every((f) => f.phase === ph.id) ? 'selected' : ''}>${esc(phaseLabel(ph, i))}</option>`).join('')}</select></label>` : ''}
       ${roads.length ? `<label class="field">${t('Status')} (${tn(roads.length, '{n} Strasse', '{n} Strassen')})<select id="multi-status" ${dis}><option value="">${statuses.size > 1 ? t('(verschieden)') : ''}</option>${STATUSES.map((st) => `<option value="${st.id}" ${statuses.size === 1 && statuses.has(st.id) ? 'selected' : ''}>${esc(t(st.label))}</option>`).join('')}</select></label>` : ''}
       <div class="btn-row">
         <button type="button" id="multi-zoom" class="btn small">${t('Hinzoomen')}</button>
@@ -807,6 +870,8 @@ export class UI {
     this.$('multi-layer').onchange = (e) => { if (e.target.value) actions.setFeaturesLayer(ids, e.target.value); };
     const st = this.$('multi-status');
     if (st) st.onchange = (e) => { if (e.target.value) actions.setFeaturesStatus(roads.map((f) => f.id), e.target.value); };
+    const mp = this.$('multi-phase');
+    if (mp) mp.onchange = (e) => actions.setFeaturesPhase(ids, e.target.value || null);
     this.$('multi-zoom').onclick = () => actions.zoomToFeatures(ids);
     this.$('multi-clear').onclick = () => tools.setSelection(null);
     this.$('multi-delete').onclick = () => tools.deleteSelection();
@@ -1044,6 +1109,7 @@ export class UI {
       <h3>${t({ road: 'Strasse', junction: 'Kreuzung / Punkt', roundabout: 'Kreisel', zone: 'Zone / Fläche' }[f.type])} <span class="muted">${esc(t(featureLabel(f)))}</span></h3>
       <label class="field">${t('Name')}<input type="text" id="prop-name" value="${esc(f.name)}" placeholder="${t('z. B. Hauptstrasse neu')}" ${dis}></label>
       <label class="field">${t('Ebene')}<select id="prop-layer" ${dis}>${options(layerOpts, f.layerId)}</select></label>
+      ${(store.doc.phases || []).length ? `<label class="field">${t('Etappe')}<select id="prop-phase" ${dis}><option value="">${t('Alle Etappen')}</option>${store.doc.phases.map((ph, i) => `<option value="${esc(ph.id)}" ${f.phase === ph.id ? 'selected' : ''}>${esc(phaseLabel(ph, i))}</option>`).join('')}</select></label>` : ''}
       ${specific}
       <label class="field">${t('Notiz')}<textarea id="prop-note" rows="2" placeholder="${t('Begründung, Hinweise…')}" ${dis}>${esc(f.note)}</textarea></label>
       <div class="btn-row">
@@ -1067,6 +1133,8 @@ export class UI {
     }
     this.$('prop-name').onchange = (e) => patch('Name ändern', (x) => { x.name = e.target.value.trim(); });
     this.$('prop-layer').onchange = (e) => patch('Ebene wechseln', (x) => { x.layerId = e.target.value; });
+    const phaseSel = this.$('prop-phase');
+    if (phaseSel) phaseSel.onchange = (e) => actions.setFeaturesPhase([f.id], e.target.value || null);
     this.$('prop-note').onchange = (e) => patch('Notiz ändern', (x) => { x.note = e.target.value; });
     this.$('prop-delete').onclick = () => tools.deleteSelection();
     this.$('prop-zoom').onclick = () => actions.zoomToFeature(f.id);
@@ -1218,6 +1286,41 @@ export class UI {
       row.querySelector('.layer-down').onclick = () => actions.moveLayer(id, 1);
       row.querySelector('.layer-delete').onclick = () => actions.deleteLayer(id);
     });
+    this.refreshPhases();
+  }
+
+  /** Etappen: Liste mit Name und Jahr, Zahl der Elemente, Ansicht „bis Etappe“. */
+  refreshPhases() {
+    const { store, actions } = this.ctx;
+    const box = this.$('phase-box');
+    if (!box) return;
+    const editable = actions.canEdit();
+    const dis = editable ? '' : 'disabled';
+    const phases = store.doc.phases || [];
+    const counts = {};
+    for (const f of store.doc.features) if (f.phase) counts[f.phase] = (counts[f.phase] || 0) + 1;
+    const view = actions.phaseView();
+    box.innerHTML = `
+      ${phases.map((ph, i) => `
+      <div class="phase-row" data-id="${esc(ph.id)}">
+        <span class="muted">${i + 1}.</span>
+        <input type="text" class="phase-name" value="${esc(ph.name)}" placeholder="${t('Etappe')} ${i + 1}" title="${t('Name der Etappe')}" ${editable ? '' : 'readonly'}>
+        <input type="number" class="phase-year" value="${ph.year ?? ''}" placeholder="${t('Jahr')}" min="1900" max="2200" title="${t('Jahr')}" ${editable ? '' : 'readonly'}>
+        <span class="muted count" title="${t('Elemente')}">${counts[ph.id] || 0}</span>
+        <button type="button" class="icon-btn phase-delete" title="${t('Etappe löschen')}" ${dis}>✕</button>
+      </div>`).join('')}
+      <div class="btn-row"><button type="button" id="phase-add" class="btn small" ${dis}>${t('+ Etappe')}</button></div>
+      ${phases.length ? `<label class="field">${t('Ansicht')}<select id="phase-view"><option value="">${t('Endzustand (alle Etappen)')}</option>${phases.map((ph, i) => `<option value="${esc(ph.id)}" ${view === ph.id ? 'selected' : ''}>${t('bis')} ${esc(phaseLabel(ph, i))}</option>`).join('')}</select></label>
+      <p class="muted small">${t('Elemente ohne Etappe gehören zu jedem Zustand. Etappe je Element in den Eigenschaften oder per Rechtsklick.')}</p>` : ''}`;
+    this.$('phase-add').onclick = () => actions.addPhase();
+    box.querySelectorAll('.phase-row').forEach((row) => {
+      const id = row.dataset.id;
+      row.querySelector('.phase-name').onchange = (e) => actions.patchPhase(id, 'Etappe umbenennen', (ph) => { ph.name = e.target.value.trim().slice(0, 40); });
+      row.querySelector('.phase-year').onchange = (e) => actions.patchPhase(id, 'Jahr der Etappe ändern', (ph) => { const y = parseInt(e.target.value, 10); ph.year = Number.isInteger(y) && y >= 1900 && y <= 2200 ? y : null; });
+      row.querySelector('.phase-delete').onclick = () => actions.removePhase(id);
+    });
+    const sel = this.$('phase-view');
+    if (sel) sel.onchange = (e) => actions.setPhaseView(e.target.value || null);
   }
 
   /** Sichtbarkeit ist auch im Nur-Ansicht-Modus erlaubt (lokal, ohne Undo-Eintrag im Nur-Lesen-Fall). */
@@ -1749,6 +1852,7 @@ export class UI {
         <button type="button" id="route-load" class="btn small">${t('Netz für Ansicht laden')}</button>
       </div>
       <p class="muted small" id="route-net">${esc(t(net))}</p>
+      ${actions.phaseView() ? `<p class="muted small"><strong>${t('Ansicht bis Etappe {name}: Fahrzeiten und Erreichbarkeit gelten für diesen Zustand.', { name: phaseLabel(store.doc.phases.find((ph) => ph.id === actions.phaseView()) || {}, store.doc.phases.findIndex((ph) => ph.id === actions.phaseView())) })}</strong></p>` : ''}
       ${pairsSection(store.doc, actions, tools, geometry)}
       ${busSection(store.doc, actions, tools)}
       ${isochroneSection(store.doc, actions, tools)}`;

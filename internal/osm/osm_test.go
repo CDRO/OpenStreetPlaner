@@ -334,3 +334,26 @@ func TestTransit(t *testing.T) {
 		t.Fatalf("Cache: %v %q", err, query)
 	}
 }
+
+func TestParking(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if !strings.Contains(r.Form.Get("data"), `way["amenity"="parking"]`) {
+			t.Errorf("Query: %s", r.Form.Get("data"))
+		}
+		fmt.Fprint(w, `{"elements":[
+		  {"type":"way","id":5,"tags":{"amenity":"parking","capacity":"40","parking":"surface","source":"x"},"geometry":[{"lat":47,"lon":8},{"lat":47,"lon":8.001},{"lat":47.001,"lon":8.001},{"lat":47,"lon":8}]},
+		  {"type":"way","id":6,"tags":{"amenity":"parking"},"geometry":[{"lat":47,"lon":8},{"lat":47,"lon":8.001}]}
+		]}`)
+	}))
+	defer up.Close()
+	c := New(t.TempDir())
+	c.OverpassURL = up.URL
+	got, err := c.Parking(context.Background(), BBox{South: 47, West: 8, North: 47.01, East: 8.01})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != 5 || got[0].Tags["capacity"] != "40" || got[0].Tags["source"] != "" || len(got[0].Geometry) != 4 {
+		t.Fatalf("Parkplätze: %+v", got)
+	}
+}

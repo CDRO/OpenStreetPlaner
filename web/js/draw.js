@@ -22,7 +22,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6 } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6, ghostIds = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -31,8 +31,15 @@ export function drawScene(ctx, map, s) {
   const widthOf = (f) => Math.min(200, Math.max(KIND_WIDTH[f.kind] * lineScale, roadWidthMeters(f) / mpp));
   const visible = doc.features.filter((f) => {
     const l = getLayer(doc, f.layerId);
-    return l && l.visible !== false;
+    return l && l.visible !== false && !(ghostIds && ghostIds.has(f.id));
   });
+  // Elemente späterer Etappen: nur als graue, gestrichelte Geister
+  if (ghostIds && ghostIds.size) {
+    for (const f of doc.features) {
+      const l = getLayer(doc, f.layerId);
+      if (ghostIds.has(f.id) && l && l.visible !== false) outlineFeature(ctx, P, f, 'rgba(110,110,110,0.7)', [6, 6], mpp, 3);
+    }
+  }
   const colorOf = (f) => (getLayer(doc, f.layerId) || {}).color || '#333';
 
   if (showOsm && osmWays.length) {
@@ -647,34 +654,37 @@ function drawRoutes(ctx, P, query, routes, routeDraft) {
 }
 
 /** Versionsvergleich: Halo um neue (grün) und geänderte (orange) Elemente, entfernte als rote gestrichelte Geister. */
+/** Umriss eines Elements in einer Farbe mit Strichmuster (Versionsvergleich, Etappen-Geister). */
+function outlineFeature(ctx, P, f, color, dash, mpp, width = 4) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.globalAlpha = 0.9;
+  ctx.setLineDash(dash);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (f.type === 'road' || f.type === 'zone') {
+    const pts = f.nodes.map(P);
+    ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    if (f.type === 'zone') ctx.closePath();
+    ctx.stroke();
+  } else if (f.type === 'junction') {
+    const c = P(f.at);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 14, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (f.type === 'roundabout') {
+    const c = P(f.center);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, Math.max(6, f.radius / mpp) + 6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawDiff(ctx, P, diff, mpp) {
-  const outline = (f, color, dash) => {
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 4;
-    ctx.globalAlpha = 0.9;
-    ctx.setLineDash(dash);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    if (f.type === 'road' || f.type === 'zone') {
-      const pts = f.nodes.map(P);
-      ctx.beginPath();
-      pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-      if (f.type === 'zone') ctx.closePath();
-      ctx.stroke();
-    } else if (f.type === 'junction') {
-      const c = P(f.at);
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, 14, 0, Math.PI * 2);
-      ctx.stroke();
-    } else if (f.type === 'roundabout') {
-      const c = P(f.center);
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, Math.max(6, f.radius / mpp) + 6, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.restore();
-  };
+  const outline = (f, color, dash) => outlineFeature(ctx, P, f, color, dash, mpp);
   // Entfernt gestrichelt, geändert punktiert, neu durchgezogen: auch ohne Farbe unterscheidbar
   for (const f of diff.removed) outline(f, '#c62828', [8, 6]);
   for (const c of diff.changed) outline(c.after, '#e08a00', [2, 5]);

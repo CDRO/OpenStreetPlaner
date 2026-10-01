@@ -48,3 +48,19 @@ test('Name und Route sind Teil des Undo-Schnappschusses', () => {
   store.redo();
   assert.equal(store.doc.name, 'Neu');
 });
+
+test('Etappen sind Teil des Snapshots: Anlegen ist eine Änderung und lässt sich rückgängig machen', async () => {
+  const { Store } = await import('../js/store.js');
+  const { createDocument, createPhase } = await import('../js/model.js');
+  const store = new Store(createDocument());
+  let events = 0;
+  store.subscribe(() => { events++; });
+  store.commit('Etappe', (d) => { createPhase(d, 'Erste', 2027); });
+  assert.equal(events, 1);
+  assert.equal(store.doc.phases.length, 1);
+  assert.ok(store.canUndo());
+  store.undo();
+  assert.equal(store.doc.phases.length, 0);
+  store.redo();
+  assert.equal(store.doc.phases[0].name, 'Erste');
+});

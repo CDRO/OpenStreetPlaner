@@ -5,6 +5,7 @@ import { circleRing, pathLength, project, unproject } from './geometry.js';
 import { t } from './i18n.js';
 
 export const DOC_VERSION = 1;
+export const MAX_PHASES = 10;
 
 // width: Bildschirmbreite in Pixeln (kleine Zoomstufen); widthM: reale Breite der Fahrbahn in Metern (grosse Zoomstufen);
 // speed: Standard-Tempolimit in km/h für den Routen-Rechner, wenn keines gesetzt ist (0 = nicht befahrbar);
@@ -370,6 +371,7 @@ export function createDocument({ name = 'Neuer Entwurf', center = [46.8, 8.23], 
     isochrone: null,
     costs: {},
     busLines: [],
+    phases: [],
   };
   createLayer(doc, 'Ebene 1');
   return doc;
@@ -453,6 +455,7 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     profile: null,
     parcels: null,
     note: '',
+    phase: null,
   };
 }
 
@@ -492,7 +495,7 @@ export function extendRoad(doc, roadId, latlngs, atEnd = true) {
 }
 
 export function createJunction({ layerId, at, kind = 'plain', name = '', turns = null, lines = [], osmId = null }) {
-  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), lines: normalizeLines(lines), osmId: normalizeOsmId(osmId, kind), note: '' };
+  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), lines: normalizeLines(lines), osmId: normalizeOsmId(osmId, kind), note: '', phase: null };
 }
 
 /** OSM-Knoten einer Bushaltestelle (null = selbst gesetzt); andere Punkte haben keinen OSM-Bezug. */
@@ -527,7 +530,7 @@ export function adoptBusRoute(doc, route, layerId) {
 }
 
 export function createZone({ layerId, nodes, kind = 'tempo30', name = '', busAllowed = false }) {
-  return { id: newId('z'), type: 'zone', layerId, name, kind, nodes: nodes.map(roundCoord), busAllowed: busAllowed === true, note: '' };
+  return { id: newId('z'), type: 'zone', layerId, name, kind, nodes: nodes.map(roundCoord), busAllowed: busAllowed === true, note: '', phase: null };
 }
 
 export function insertZoneNode(doc, zoneId, afterIndex, latlng) {
@@ -561,6 +564,7 @@ export function createRoundabout({ layerId, center, radius = 15, name = '' }) {
     center: roundCoord(center),
     radius: Math.round(radius * 10) / 10,
     note: '',
+    phase: null,
   };
 }
 
@@ -703,6 +707,7 @@ export function normalizeDocument(raw) {
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : nowIso(),
     view: { center: [46.8, 8.23], zoom: 8 },
     layers: [],
+    phases: normalizePhases(raw.phases),
     features: [],
     route: null,
     routePairs: normalizeRoutePairs(raw.routePairs),
@@ -728,11 +733,12 @@ export function normalizeDocument(raw) {
   }
   if (doc.layers.length === 0) createLayer(doc, 'Ebene 1');
   const layerIds = new Set(doc.layers.map((l) => l.id));
+  const phaseIds = new Set(doc.phases.map((ph) => ph.id));
   const features = Array.isArray(raw.features) ? raw.features : [];
   for (const f of features) {
     if (!f || typeof f !== 'object' || typeof f.id !== 'string') throw new Error('Ungültiges Element');
     const layerId = layerIds.has(f.layerId) ? f.layerId : doc.layers[0].id;
-    const base = { id: f.id, layerId, name: typeof f.name === 'string' ? f.name : '', note: typeof f.note === 'string' ? f.note : '' };
+    const base = { id: f.id, layerId, name: typeof f.name === 'string' ? f.name : '', note: typeof f.note === 'string' ? f.note : '', phase: typeof f.phase === 'string' && phaseIds.has(f.phase) ? f.phase : null };
     if (f.type === 'road') {
       if (!Array.isArray(f.nodes) || f.nodes.length < 2 || !f.nodes.every(isLatLng)) {
         throw new Error(`Strasse ${f.id} hat ungültige Punkte`);
@@ -821,7 +827,7 @@ export function toGeoJSON(doc) {
   const features = [];
   const layerName = (id) => (getLayer(doc, id) || {}).name || '';
   for (const f of doc.features) {
-    const common = { id: f.id, name: f.name, layer: layerName(f.layerId), note: f.note || '' };
+    const common = { id: f.id, name: f.name, layer: layerName(f.layerId), note: f.note || '', phase: f.phase ? ((doc.phases || []).find((ph) => ph.id === f.phase) || {}).name || f.phase : null };
     if (f.type === 'road') {
       f.segments.forEach((seg, i) => {
         features.push({
@@ -855,4 +861,56 @@ export function toGeoJSON(doc) {
     }
   }
   return { type: 'FeatureCollection', name: doc.name, features };
+}
+
+// --- Etappen -----------------------------------------------------------------------
+export function normalizePhases(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const ph of raw.slice(0, MAX_PHASES)) {
+    if (!ph || typeof ph !== 'object') continue;
+    const id = typeof ph.id === 'string' && ph.id && !seen.has(ph.id) ? ph.id.slice(0, 48) : newId('e');
+    seen.add(id);
+    const year = Number(ph.year);
+    out.push({ id, name: typeof ph.name === 'string' ? ph.name.trim().slice(0, 40) : '', year: Number.isInteger(year) && year >= 1900 && year <= 2200 ? year : null });
+  }
+  return out;
+}
+
+export function createPhase(doc, name = '', year = null) {
+  const phases = doc.phases || (doc.phases = []);
+  if (phases.length >= MAX_PHASES) return null;
+  const ph = { id: newId('e'), name: name || `Etappe ${phases.length + 1}`, year: Number.isInteger(year) ? year : null };
+  phases.push(ph);
+  return ph;
+}
+
+/** Entfernt eine Etappe; ihre Elemente gehören wieder zu allen Etappen. */
+export function removePhase(doc, id) {
+  doc.phases = (doc.phases || []).filter((ph) => ph.id !== id);
+  for (const f of doc.features) if (f.phase === id) f.phase = null;
+}
+
+export function phaseIndex(doc, id) {
+  return (doc.phases || []).findIndex((ph) => ph.id === id);
+}
+
+/** Gehört ein Element zum Zustand „bis Etappe“? Ohne Etappe immer, sonst wenn seine Etappe nicht später liegt. */
+export function featureInPhase(doc, f, phaseId) {
+  if (!phaseId || !f.phase) return true;
+  const want = phaseIndex(doc, phaseId);
+  const own = phaseIndex(doc, f.phase);
+  return own < 0 || want < 0 || own <= want;
+}
+
+/** Entwurf im Zustand „bis Etappe“: Elemente späterer Etappen fehlen (flache Kopie, Elemente geteilt). */
+export function docForPhase(doc, phaseId) {
+  if (!phaseId) return doc;
+  return { ...doc, features: doc.features.filter((f) => featureInPhase(doc, f, phaseId)) };
+}
+
+export function phaseLabel(ph, index = null) {
+  const name = ph.name || (index !== null ? `Etappe ${index + 1}` : 'Etappe');
+  return ph.year ? `${name} (${ph.year})` : name;
 }

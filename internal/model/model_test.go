@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -339,5 +340,34 @@ func TestBusFields(t *testing.T) {
 	}
 	if d.BusLines[1].OsmID != 0 {
 		t.Fatalf("negative osmId nicht bereinigt: %+v", d.BusLines[1])
+	}
+}
+
+func TestPhases(t *testing.T) {
+	d := sample()
+	y := 2030
+	bad := 1800
+	d.Phases = []Phase{{ID: "e1", Name: "Erste Etappe mit sehr langem Namen, der gekürzt wird", Year: &y}, {ID: "kaputt id", Year: &bad}, {ID: "e1"}}
+	d.Features[0].Phase = "e1"
+	d.Features[1].Phase = "fehlt"
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Phases) != 3 || d.Phases[0].ID != "e1" || len(d.Phases[0].Name) != 40 || *d.Phases[0].Year != 2030 {
+		t.Fatalf("Etappe 1: %+v", d.Phases[0])
+	}
+	if d.Phases[1].ID != "e_2" || d.Phases[1].Year != nil || d.Phases[2].ID != "e_3" {
+		t.Fatalf("Etappen 2/3: %+v %+v", d.Phases[1], d.Phases[2])
+	}
+	if d.Features[0].Phase != "e1" || d.Features[1].Phase != "" {
+		t.Fatalf("Element-Etappen: %q %q", d.Features[0].Phase, d.Features[1].Phase)
+	}
+	d.Phases = make([]Phase, 12)
+	for i := range d.Phases {
+		d.Phases[i] = Phase{ID: fmt.Sprintf("p%d", i)}
+	}
+	_ = Normalize(d)
+	if len(d.Phases) != MaxPhases {
+		t.Fatalf("Grenze: %d", len(d.Phases))
 	}
 }

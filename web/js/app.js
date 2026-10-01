@@ -6,13 +6,13 @@ import { Store } from './store.js';
 import { LocalState } from './local.js';
 import { api, setClientId } from './api.js';
 import {
-  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES, featureLabel, STATUSES, LEVELS, ROAD_ACCESS,
+  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES, featureLabel, STATUSES, LEVELS, ROAD_ACCESS, docForPhase, createPhase, removePhase, phaseLabel, featureInPhase,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
 import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
-import { buildGraphs, computeBusLines, computeIsochrone, routeOnGraph } from './routing.js';
+import { buildGraphs, computeBusLines, computeIsochrone, computeRoutes, routeOnGraph } from './routing.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
 import { nodesKey, newId } from './model.js';
 import { exportPdf, exportPng, exportReport } from './export.js';
@@ -24,11 +24,13 @@ import { diffDocuments } from './diff.js';
 import { applyStatic, detectLanguage, setLanguage, t, tn } from './i18n.js';
 import { exposure as computeExposure } from './buildings.js';
 import { costConfidence, staticConfidence, travelTimeConfidence } from './confidence.js';
+import { parkingBalance } from './parking.js';
+import { compareVariants } from './variants.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
 const POLL_INTERVAL_MS = 45000;
 
-const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features, costs: doc.costs || {}, routePairs: doc.routePairs || [], isochrone: doc.isochrone || null, busLines: doc.busLines || [] });
+const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features, costs: doc.costs || {}, routePairs: doc.routePairs || [], isochrone: doc.isochrone || null, busLines: doc.busLines || [], phases: doc.phases || [] });
 
 function download(filename, data, type = 'application/json') {
   const blob = data instanceof Blob ? data : new Blob([data], { type });
@@ -80,6 +82,8 @@ async function main() {
     routes: null,
     pairResults: [],
     busResults: [],
+    variants: null, // Variantenvergleich (auf Knopfdruck)
+    phaseView: null, // Ansicht „bis Etappe“ (ID) oder null = Endzustand
     iso: null,
     routeTimer: null,
     defaultZoneKind: 'tempo30',
@@ -167,6 +171,7 @@ async function main() {
   const osm = new OsmRoadCache((b) => api.roads(b));
   const buildings = new OsmRoadCache((b) => api.buildings(b)); // gleiche Zellen-Logik, andere Daten
   const transit = new OsmTransitCache((b) => api.transit(b)); // Haltestellen und Buslinien aus OSM
+  const parking = new OsmRoadCache((b) => api.parking(b)); // Parkplätze aus OSM (amenity=parking)
 
   const canEdit = () => !state.present && (!state.id || !!state.token);
 
@@ -249,6 +254,7 @@ async function main() {
     selection: tools.selection,
     multiIds: tools.multi,
     handleRadius: tools.touch ? 9 : 6,
+    ghostIds: state.phaseView ? new Set(store.doc.features.filter((f) => !featureInPhase(store.doc, f, state.phaseView)).map((f) => f.id)) : null,
     osmWays: osm.list(),
     showOsm: settings.showOsm,
     preview: tools.preview,
@@ -291,7 +297,7 @@ async function main() {
   function recomputeRoutes() {
     clearTimeout(state.routeTimer);
     state.routeTimer = setTimeout(() => {
-      const doc = store.doc;
+      const doc = effectiveDoc();
       const q = doc.route;
       const pairs = (doc.routePairs || []).filter((p) => p.from && p.to);
       const iso = doc.isochrone;
@@ -335,6 +341,11 @@ async function main() {
     b.cells = cellsFor(b).length;
     b.tooLarge = b.cells > MAX_CELLS;
     return b;
+  }
+
+  /** Entwurf im gewählten Etappen-Zustand (Elemente späterer Etappen fehlen), sonst der ganze Entwurf. */
+  function effectiveDoc() {
+    return state.phaseView ? docForPhase(store.doc, state.phaseView) : store.doc;
   }
 
   /** Lädt Haltestellen und Linien für die Ansicht nach, wenn sie klein genug ist (ohne Meldung). */
@@ -558,6 +569,75 @@ async function main() {
       if (store.doc.route) buildings.ensureArea(routeBounds(store.doc.route.from, store.doc.route.to, { factor: 0.1 }));
       ui.refreshAnalysis();
     },
+    // --- Variantenvergleich, Parkplatzbilanz, Etappen -------------------------------------
+    compareVariants() {
+      state.variants = compareVariants({ doc: store.doc, osmWays: osm.list(), model: settings.speedModel, buildings: buildings.list(), radiusM: settings.exposureRadius });
+      ui.refreshAnalysis();
+    },
+    variants: () => state.variants,
+    parkingStatus() {
+      if (parking.pending) return t('Parkplätze werden geladen… ({n} Zellen offen)', { n: parking.remaining });
+      if (parking.lastError) return `${t('Parkplätze')}: ${parking.lastError.message}`;
+      return parking.ways.size ? t('{n} OSM-Parkplätze geladen; Parkstreifen kommen aus den geladenen OSM-Strassen.', { n: parking.ways.size }) : t('Noch keine OSM-Parkplätze geladen; Parkstreifen kommen aus den geladenen OSM-Strassen.');
+    },
+    loadParking() {
+      const b = map.getBounds();
+      const n = cellsFor(b).length;
+      if (n > MAX_CELLS) return ui.toast(t('Ansicht zu gross ({n} Zellen, erlaubt {max}) – näher heranzoomen.', { n, max: MAX_CELLS }), 'error', 5000);
+      parking.ensureArea(b);
+      osm.ensureArea(b);
+      ui.refreshAnalysis();
+      return undefined;
+    },
+    parkingBalance: () => parkingBalance({ doc: store.doc, osmWays: osm.list(), parkingAreas: parking.list() }),
+    addPhase() {
+      if (!actions.requireEdit()) return;
+      let ok = false;
+      store.commit('Etappe hinzufügen', (d) => { ok = !!createPhase(d); });
+      if (!ok) ui.toast(t('Höchstens 10 Etappen.'), 'error');
+    },
+    patchPhase(id, label, fn) {
+      actions.commitDoc(label, (d) => {
+        const ph = (d.phases || []).find((x) => x.id === id);
+        if (ph) fn(ph);
+      });
+    },
+    removePhase(id) {
+      actions.commitDoc('Etappe löschen', (d) => removePhase(d, id));
+      if (state.phaseView === id) actions.setPhaseView(null);
+    },
+    setFeaturesPhase(ids, phaseId) {
+      actions.commitDoc(ids.length > 1 ? 'Etappe der Auswahl setzen' : 'Etappe setzen', (d) => {
+        const valid = !phaseId || (d.phases || []).some((ph) => ph.id === phaseId);
+        for (const id of ids) {
+          const f = getFeature(d, id);
+          if (f) f.phase = valid && phaseId ? phaseId : null;
+        }
+      });
+    },
+    phaseView: () => state.phaseView,
+    setPhaseView(id) {
+      state.phaseView = id && (store.doc.phases || []).some((ph) => ph.id === id) ? id : null;
+      map.requestRender();
+      recomputeRoutes();
+      ui.refreshAll();
+    },
+    /** Je Etappe kumuliert: Elemente, Kosten (sichtbare Ebenen), Fahrzeit der Hauptroute. */
+    phaseTable() {
+      const phases = store.doc.phases || [];
+      if (!phases.length) return [];
+      const q = store.doc.route;
+      const ways = osm.list();
+      return phases.map((ph, i) => {
+        const pdoc = docForPhase(store.doc, ph.id);
+        const row = { id: ph.id, label: phaseLabel(ph, i), features: pdoc.features.filter((f) => f.phase).length, own: store.doc.features.filter((f) => f.phase === ph.id).length, costs: estimateCosts(pdoc).total, routeTime: null };
+        if (q && ways.length) {
+          const r = computeRoutes({ osmWays: ways, doc: pdoc, from: q.from, to: q.to, model: settings.speedModel });
+          if (r.proposed && !r.proposed.error) row.routeTime = r.proposed.time;
+        }
+        return row;
+      });
+    },
     exposure() {
       if (!buildings.ways.size) return null;
       const hidden = new Set(store.doc.layers.filter((l) => l.visible === false).map((l) => l.id));
@@ -570,7 +650,7 @@ async function main() {
       map.requestRender();
     },
     async runExport({ format, mode, paper, orientation, dpi, scale = 2000, report = false, confidence = settings.reportConfidence !== false }) {
-      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure(), confidence: confidence ? actions.confidences() : null };
+      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure(), confidence: confidence ? actions.confidences() : null, variants: state.variants, parking: actions.parkingBalance(), phases: actions.phaseTable() };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
       else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
@@ -1434,6 +1514,7 @@ async function main() {
       if (tools.selection && !getFeature(d, tools.selection.featureId)) tools.selection = null;
       if (tools.hover && !getFeature(d, tools.hover.featureId)) tools.setHover(null);
       if (!getLayer(d, state.activeLayerId)) state.activeLayerId = d.layers[0].id;
+      if (state.phaseView && !(d.phases || []).some((ph) => ph.id === state.phaseView)) state.phaseView = null;
       map.requestRender();
       ui.refreshAll();
       ensureRouteNetwork();
@@ -1457,6 +1538,7 @@ async function main() {
     map.requestRender();
     ui.refreshRoute();
   });
+  parking.subscribe(() => ui.refreshAnalysis());
 
   map.on('moveend', () => {
     scheduleAutosave();
@@ -1498,6 +1580,12 @@ async function main() {
       if (!multi && f.type === 'road') {
         items.push({ separator: true }, { header: t('Zugang') });
         for (const a of ROAD_ACCESS) items.push({ label: t(a.label), checked: (f.access || 'all') === a.id, action: () => actions.patchFeature(f.id, 'Zugang ändern', (x) => { x.access = a.id; }) });
+      }
+      if ((doc.phases || []).length) {
+        items.push({ separator: true }, { header: t('Etappe') });
+        const phases = new Set(feats.map((x) => x.phase || ''));
+        items.push({ label: t('Alle Etappen'), checked: phases.size === 1 && phases.has(''), action: () => actions.setFeaturesPhase(ids, null) });
+        doc.phases.forEach((ph, i) => items.push({ label: phaseLabel(ph, i), checked: phases.size === 1 && phases.has(ph.id), action: () => actions.setFeaturesPhase(ids, ph.id) }));
       }
       items.push({ separator: true }, { label: t('Löschen'), danger: true, action: () => tools.deleteSelection() });
     }

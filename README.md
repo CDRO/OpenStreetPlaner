@@ -47,6 +47,9 @@ go run . -data ./data
 | Kontextmenü | Rechtsklick oder Langdruck auf ein Element: Hinzoomen, Eigenschaften, Ebene, Status, Führung des Abschnitts (ebenerdig/Brücke/Tunnel), Zugang, Löschen – für die ganze Auswahl, wenn mehrere gewählt sind. Rechtsklick auf einen Griff löscht wie bisher den Punkt |
 | Elementliste | Box „Elemente“ im Zeichnen-Tab: alle Elemente mit Typ, Ebene, Länge oder Status, Filter nach Name, Typ oder Ebene; Klick wählt aus und zoomt hin, Shift+Klick ergänzt die Auswahl |
 | Touch | Mit dem Finger sind Griffe und Trefferflächen grösser (16 statt 9 Pixel), Langdruck öffnet das Kontextmenü, die Seitenleiste ist ein Bottom-Sheet |
+| Variantenvergleich | Analyse-Tab: „Varianten vergleichen“ rechnet jede Ebene allein sichtbar: Elemente, neue Länge, Kosten, Fahrzeit-Differenz der Hauptroute und Summe der Paare, Parzellen, Gebäude entlang neuer Strassen, Warnungen; Tabelle im Bericht |
+| Parkplatzbilanz | Analyse-Tab: neu aus Parkstreifen im Querschnitt (6 m je Platz) und Parkflächen (25 m² je Platz), entfallen aus OSM-Parkstreifen (`parking:*`, `parking:lane:*`) an übernommenen Strassen ohne Parkstreifen im Querschnitt oder bei Rückbau und aus OSM-Parkplätzen (`amenity=parking`, `capacity` oder Fläche), die neue Strassen oder Flächen berühren; Positionen mit Sprung zum Element, Zeile im Bericht |
+| Etappierung | Ebenen-Tab: bis zehn Etappen mit Name und Jahr; Etappe je Element in den Eigenschaften, in der Mehrfachauswahl oder per Rechtsklick. Ansicht „bis Etappe“ zeigt den Zustand nach dieser Etappe: spätere Elemente grau gestrichelt, Routen, Paare, Buslinien und Erreichbarkeit im Netz dieses Zustands. Analyse-Tab und Bericht: Elemente, Kosten und Fahrzeit kumuliert je Etappe |
 | Ohne Farbsehen | Heute/Neu und Differenzen unterscheiden sich auch durch Muster: Route neu und Paare neu gestrichelt, nicht mehr erreichbares Netz gestrichelt, Versionsvergleich mit durchgezogen/punktiert/gestrichelt, betroffene Gebäude schraffiert (diagonal, Punkte, Kreuz), Zuversicht-Punkte mit ✓ ! ✕ |
 | Dunkelmodus | „Darstellung“ in der Karten-Box: wie das System, hell oder dunkel. Oberfläche über Farbtoken, Kacheln werden am Bildschirm invertiert gezeichnet (Export bleibt hell), native Eingabefelder folgen über `color-scheme` |
 | Zuversicht | Jedes Ergebnis trägt eine von drei Stufen (hoch, mittel, tief) mit aufklappbaren Gründen: Fahrzeiten nach dem Anteil der Strecke mit geschätztem Tempo (OSM ohne `maxspeed`, Entwurf ohne Tempolimit), unvollständig geladenem Netz, Tempolimit- statt Geometriemodell und fehlendem Höhenprofil; Buslinien zusätzlich mit Standard-Haltezeit; OSM-Linien nach Haltepositionen, Plattformen oder fehlenden Rollen; Kosten mit Band ±25 % (eigene Ansätze) bzw. ±40 % (Standardwerte), unbekannte Breiten und pauschale Brücken/Tunnel; Parzellen hoch (amtliche Vermessung), Gebäude und Normen-Check mittel. Keine Statistik, sondern Transparenz über Annahmen. Im PDF-Bericht als Zeile je Ergebnis, im Export-Dialog abschaltbar |
@@ -139,6 +142,7 @@ speichert nur einen Hash davon).
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
 | `POST` | `/api/parcels` | `{coords: [[lat, lng], …]}` → `{parcels: [{id, egrid, number, label, canton, polygons}]}` (geo.admin identify, Blöcke zu 25 Punkten, dedupliziert, 6 h Cache) |
 | `GET` | `/api/buildings?bbox=s,w,n,e` | OSM-Gebäude (`building=*`) als Umringe, bbox ≤ 0.06° |
+| `GET` | `/api/parking?bbox=s,w,n,e` | OSM-Parkplätze (`amenity=parking`) als Umringe mit `parking`, `capacity`, `name`, bbox ≤ 0.06° |
 | `GET` | `/api/transit?bbox=s,w,n,e` | `{stops: [{id, name, at, lines}], routes: [{id, ref, name, from, to, operator, colour, stops}]}` – Bushaltestellen im Bereich und Buslinien (`route=bus`), die ihn berühren, bbox ≤ 0.06°, höchstens 80 Linien à 60 Halte |
 | `POST` | `/api/profile` | `{coords: [[lat,lng],…]}` → `{points: [[dist,height],…]}` Höhenprofil |
 | `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache (Standardquelle) |
@@ -210,7 +214,8 @@ web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwri
       "busAllowed": false }
   ],
   "route": { "from": [47.049, 8.298], "to": [47.053, 8.306] },
-  "busLines": [{ "id": "b_…", "name": "12", "color": "#e53935", "stops": ["j_h1", "j_…"], "dwell": 20, "osmId": 7890 }]
+  "busLines": [{ "id": "b_…", "name": "12", "color": "#e53935", "stops": ["j_h1", "j_…"], "dwell": 20, "osmId": 7890 }],
+  "phases": [{ "id": "e_…", "name": "Etappe 1", "year": 2027 }]
 }
 ```
 
@@ -230,6 +235,8 @@ Anfrage des Routen-Rechners. `busLines` sind bis zu 20 Linien mit je bis zu
 60 Haltestellen (IDs von Bushaltestellen) und Haltezeit in Sekunden. `osmId`
 einer Bushaltestelle ist der OSM-Knoten, `osmId` einer Linie die OSM-Relation,
 aus der sie übernommen wurde (optional; verhindert Doppelte beim Übernehmen).
+`phases` sind bis zu zehn Etappen (Name, Jahr optional); jedes Element kann mit
+`phase` auf eine Etappe verweisen (fehlend = gehört zu jedem Zustand).
 
 ### Routen-Rechner: Annahmen
 

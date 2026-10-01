@@ -500,7 +500,7 @@ const JUNCTION_LABELS = [
 ];
 
 /** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
-export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null, busLines = null, confidence = null } = {}) {
+export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null, busLines = null, confidence = null, variants = null, parking = null, phases = null } = {}) {
   const blocks = [];
   // Zuversicht je Ergebnis (abschaltbar): eine kleine Zeile mit Stufe und Gründen
   const conf = (c, gap = 6) => { if (confidence && c) blocks.push({ text: confidenceText(c), size: 8.5, gap }); };
@@ -560,6 +560,26 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
     blocks.push({ text: `${t('Total (sichtbare Ebenen)')}: ${formatChf(est.total)}`, bold: true, gap: 2 });
     blocks.push({ text: t('Richtwerte: Strassen pro km (mit der Breite skaliert), Brücke und Tunnel als Zuschlag pro m, Knoten und Flächen pauschal; bestehende Strassen ohne Ansatz. Keine Kostenberechnung im Sinne der SIA, nur zur Einordnung.'), size: 9, gap: 4 });
     conf(confidence && confidence.costs, 10);
+  }
+  // Variantenvergleich
+  if (variants && variants.layers && variants.layers.length > 1) {
+    blocks.push({ text: t('Variantenvergleich (je Ebene allein)'), size: 13, bold: true, gap: 4 });
+    const dl = (sec) => (sec === null || sec === undefined ? '–' : `${sec > 0 ? '+' : sec < 0 ? '−' : '±'}${formatDuration(Math.abs(sec))}`);
+    variants.layers.forEach((r) => blocks.push({ text: `${r.name}: ${t('{n} Elemente', { n: r.features })}, ${Math.round(r.lengthNew)} m ${t('neu')}, ${formatChf(r.costs)} · ${t('Route')} ${dl(r.routeDelta)}${r.pairsCount ? ` · ${t('Paare')} ${dl(r.pairsDelta)}` : ''} · ${tn(r.parcels, '{n} Parzelle', '{n} Parzellen')}${r.buildings !== null ? ` · ${tn(r.buildings, '{n} Gebäude', '{n} Gebäude')}` : ''} · ${tn(r.warnings, '{n} Warnung', '{n} Warnungen')}`, gap: 2 }));
+    blocks.push({ text: '', gap: 6 });
+  }
+  // Parkplatzbilanz
+  if (parking && (parking.added.lanes || parking.added.zones || parking.removed.lanes || parking.removed.areas)) {
+    blocks.push({ text: t('Parkplatzbilanz'), size: 13, bold: true, gap: 4 });
+    blocks.push({ text: `${t('Neu')}: +${parking.added.lanes + parking.added.zones} (${t('{a} Parkstreifen, {b} Flächen', { a: parking.added.lanes, b: parking.added.zones })}) · ${t('Entfallen')}: −${parking.removed.lanes + parking.removed.areas} (${t('{a} Parkstreifen, {b} OSM-Parkplätze', { a: parking.removed.lanes, b: parking.removed.areas })}) · ${t('Bilanz')}: ${parking.net > 0 ? '+' : ''}${parking.net}`, gap: 2 });
+    parking.items.forEach((it) => blocks.push({ text: `  ${it.spaces > 0 ? '+' : ''}${it.spaces} ${it.label}${it.note ? ` (${it.note})` : ''}`, size: 9.5, gap: 1 }));
+    blocks.push({ text: t('Richtwerte: 6 m Strassenlänge je Längsparkplatz, 25 m² je Platz auf Flächen; OSM-Parkplätze ganz gezählt, sobald eine neue Strasse oder Fläche sie berührt.'), size: 9, gap: 8 });
+  }
+  // Etappierung
+  if (phases && phases.length) {
+    blocks.push({ text: t('Etappierung (kumuliert)'), size: 13, bold: true, gap: 4 });
+    phases.forEach((r) => blocks.push({ text: `${r.label}: ${t('{n} Elemente', { n: r.features })} (+${r.own}) · ${formatChf(r.costs)}${r.routeTime !== null ? ` · ${t('Fahrzeit neu')} ${formatDuration(r.routeTime)}` : ''}`, gap: 2 }));
+    blocks.push({ text: '', gap: 6 });
   }
   // Normen-Check
   if (checks && checks.length) {

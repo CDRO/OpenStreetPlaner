@@ -69,6 +69,9 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   const greens = samples.filter(([r, g, b]) => g > r + 40 && g > b + 40).length;
   const gaps = samples.length - greens; // Lücken zeigen den weissen Halo über der roten Strasse (rosa)
   assert.ok(greens >= 6 && gaps >= 3, `Striche und Lücken: grün ${greens}, Lücken ${gaps}`);
+  // Nachladende Netzzellen zeichnen den Routen-Tab neu; erst warten, sonst geht die Eingabe verloren
+  await page.waitForFunction(() => !window.stadtplaner.osm.pending, null, { timeout: 15000 });
+  await h.settle(300);
   await page.fill('.pair-name', 'Schule');
   await page.press('.pair-name', 'Enter');
   await h.settle(200);

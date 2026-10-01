@@ -140,6 +140,7 @@ type Client struct {
 	parcelCache  *memCache
 	bldgCache    *memCache
 	transitCache *memCache
+	parkingCache *memCache
 }
 
 // Building ist ein Gebäude aus OSM: geschlossener Umring als [lat, lng].

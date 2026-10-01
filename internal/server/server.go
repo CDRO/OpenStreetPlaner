@@ -125,6 +125,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/parcels", s.parcels)
 	m.HandleFunc("GET /api/buildings", s.buildings)
 	m.HandleFunc("GET /api/transit", s.transit)
+	m.HandleFunc("GET /api/parking", s.parking)
 	m.HandleFunc("GET /tiles/{z}/{x}/{y}", s.tile)
 	m.HandleFunc("GET /tiles/{source}/{z}/{x}/{y}", s.tileFrom)
 	m.HandleFunc("GET /api/tiles/sources", s.tileSources)
@@ -767,6 +768,20 @@ func (s *Server) buildings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list, err := s.osm.Buildings(r.Context(), bbox)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) parking(w http.ResponseWriter, r *http.Request) {
+	bbox, err := osm.ParseBBox(r.URL.Query().Get("bbox"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	list, err := s.osm.Parking(r.Context(), bbox)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -10,6 +10,7 @@ import {
   normalizeLines, normalizeBusLines, normalizeAccess, segmentAccess, createBusLine, BUS_COLORS, BUS_DWELL_DEFAULT,
   adoptBusRoute, normalizeOsmId, MAX_BUS_LINES,
   translateFeatures, featuresInBounds, shiftLatLng,
+  normalizePhases, createPhase, removePhase, featureInPhase, docForPhase, phaseLabel, MAX_PHASES,
 } from '../js/model.js';
 import { haversine } from '../js/geometry.js';
 
@@ -390,4 +391,38 @@ test('Mehrfachauswahl: gemeinsam verschieben hält die Form, Rahmen findet Eleme
   assert.deepEqual(featuresInBounds(doc, { north: 46.999, south: 47.0015, east: 7.999, west: 8.0025 }), ids, 'Rahmen in beliebiger Richtung');
   doc.layers[0].visible = false;
   assert.deepEqual(featuresInBounds(doc, { south: 46, north: 48, west: 7, east: 9 }), [], 'ausgeblendete Ebene zählt nicht');
+});
+
+test('Etappen: anlegen, prüfen, Zustand „bis Etappe“, löschen, Serialisierung', () => {
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const e1 = createPhase(doc, 'Erste', 2027);
+  const e2 = createPhase(doc, '', 'x');
+  assert.ok(e1 && e2 && e2.name === 'Etappe 2' && e2.year === null);
+  assert.equal(phaseLabel(e1, 0), 'Erste (2027)');
+  assert.equal(phaseLabel({ id: 'z', name: '', year: null }, 2), 'Etappe 3');
+  const r1 = createRoad({ layerId, nodes: [[47, 8], [47, 8.001]] });
+  const r2 = createRoad({ layerId, nodes: [[47, 8], [47, 8.002]] });
+  const r3 = createRoad({ layerId, nodes: [[47, 8], [47, 8.003]] });
+  r1.phase = e1.id;
+  r2.phase = e2.id;
+  doc.features.push(r1, r2, r3);
+  assert.ok(featureInPhase(doc, r1, e1.id) && !featureInPhase(doc, r2, e1.id) && featureInPhase(doc, r3, e1.id));
+  assert.ok(featureInPhase(doc, r2, e2.id) && featureInPhase(doc, r2, null));
+  assert.deepEqual(docForPhase(doc, e1.id).features.map((f) => f.id), [r1.id, r3.id]);
+  assert.equal(docForPhase(doc, null), doc);
+  assert.deepEqual(normalizePhases([{ id: 'a', name: ' Lang '.repeat(20), year: 2030 }, { id: 'a', year: 1800 }, 'x', { year: '2040' }]).map((p) => [p.id.length > 0, p.name.length, p.year]), [[true, 40, 2030], [true, 0, null], [true, 0, 2040]]);
+  assert.equal(normalizePhases(new Array(20).fill({})).length, MAX_PHASES);
+  const back = deserialize(serialize(doc));
+  assert.equal(back.phases.length, 2);
+  assert.equal(back.features[0].phase, e1.id);
+  const raw = JSON.parse(serialize(doc));
+  raw.features[1].phase = 'gibtsnicht';
+  assert.equal(normalizeDocument(raw).features[1].phase, null, 'unbekannte Etappe fällt weg');
+  removePhase(doc, e1.id);
+  assert.equal(doc.phases.length, 1);
+  assert.equal(r1.phase, null, 'Elemente der gelöschten Etappe gehören wieder zu allen');
+  for (let i = doc.phases.length; i < MAX_PHASES; i++) createPhase(doc);
+  assert.equal(createPhase(doc), null, 'Grenze');
+  assert.equal(toGeoJSON(doc).features.find((f) => f.properties.id === r2.id).properties.phase, 'Etappe 2');
 });

@@ -414,3 +414,14 @@ details.conf[open] > summary::after { content: ' ▾'; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .present-panel, :root:not([data-theme="light"]) .smap-attribution, :root:not([data-theme="light"]) .smap-scale { background: rgba(27,31,36,0.92); color: var(--text); border-color: var(--border); }
 }
+
+/* Etappen */
+.phase-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.phase-row .phase-name { flex: 1 1 100px; min-width: 0; }
+.phase-row .phase-year { width: 72px; }
+/* Varianten und Parkplätze */
+.route-table.variants { font-size: 12px; }
+.route-table.variants th, .route-table.variants td { padding: 3px 4px; }
+.parking-list { list-style: none; padding: 0; margin: 4px 0; }
+.parking-list li { padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.parking-list .badge { min-width: 34px; text-align: center; display: inline-block; }

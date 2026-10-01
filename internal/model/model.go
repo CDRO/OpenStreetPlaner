@@ -55,6 +55,15 @@ type Layer struct {
 	Visible *bool  `json:"visible"`
 }
 
+// Phase ist eine Etappe der Umsetzung; Elemente verweisen optional auf eine Etappe.
+type Phase struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Year *int   `json:"year"`
+}
+
+const MaxPhases = 10
+
 type Segment struct {
 	Level    string   `json:"level"`
 	Maxspeed *float64 `json:"maxspeed"`         // km/h; nil = wie die Strasse
@@ -176,6 +185,7 @@ type Feature struct {
 	LayerID string `json:"layerId"`
 	Name    string `json:"name"`
 	Note    string `json:"note"`
+	Phase   string `json:"phase,omitempty"` // Etappe (ID aus Document.Phases), leer = alle
 	// Strasse
 	Kind     string    `json:"kind,omitempty"`
 	Status   string    `json:"status,omitempty"`
@@ -285,6 +295,8 @@ type Document struct {
 	BusLines   []BusLine   `json:"busLines,omitempty"`
 	// Überschriebene Einheitskosten der Kostenschätzung (Schlüssel wie web/js/costs.js)
 	Costs map[string]float64 `json:"costs,omitempty"`
+	// Etappen der Umsetzung
+	Phases []Phase `json:"phases,omitempty"`
 }
 
 // Stats fasst einen Entwurf für Listen und Versionen zusammen.
@@ -389,10 +401,29 @@ func Normalize(d *Document) error {
 		d.Features = []Feature{}
 	}
 	featureIDs := make(map[string]bool, len(d.Features))
+	// Etappen: IDs, Namen und Jahr prüfen
+	if len(d.Phases) > MaxPhases {
+		d.Phases = d.Phases[:MaxPhases]
+	}
+	phaseIDs := map[string]bool{}
+	for i := range d.Phases {
+		ph := &d.Phases[i]
+		if !idPattern.MatchString(ph.ID) || phaseIDs[ph.ID] {
+			ph.ID = fmt.Sprintf("e_%d", i+1)
+		}
+		phaseIDs[ph.ID] = true
+		ph.Name = truncate(ph.Name, 40)
+		if ph.Year != nil && (*ph.Year < 1900 || *ph.Year > 2200) {
+			ph.Year = nil
+		}
+	}
 	for i := range d.Features {
 		f := &d.Features[i]
 		if !idPattern.MatchString(f.ID) {
 			return invalid("Element %d hat eine ungültige ID", i)
+		}
+		if f.Phase != "" && !phaseIDs[f.Phase] {
+			f.Phase = ""
 		}
 		if featureIDs[f.ID] {
 			return invalid("Element-ID %q doppelt", f.ID)
