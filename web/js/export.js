@@ -4,6 +4,7 @@
 
 import { LEVELS, ZONE_KINDS, roadWidthMeters, sectionSummary } from './model.js';
 import { formatDuration } from './routing.js';
+import { estimateCosts, formatChf } from './costs.js';
 import { haversine } from './geometry.js';
 
 /** Papierformate in Millimetern (Querformat). */
@@ -416,7 +417,7 @@ const JUNCTION_LABELS = [
 ];
 
 /** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
-export function reportBlocks(doc, { routes = null, comments = [], link = '' } = {}) {
+export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null } = {}) {
   const blocks = [];
   const date = new Date().toLocaleString('de-CH', { dateStyle: 'medium', timeStyle: 'short' });
   blocks.push({ text: doc.name, size: 18, bold: true });
@@ -444,6 +445,20 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '' } = 
   const cur = routes && routes.current && !routes.current.error ? routes.current : null;
   const neu = routes && routes.proposed && !routes.proposed.error ? routes.proposed : null;
   if (cur || neu) {
+  // Kostenschätzung
+  const est = estimateCosts(doc);
+  if (est.rows.length) {
+    blocks.push({ text: 'Kostenschätzung', size: 13, bold: true, gap: 4 });
+    est.layers.forEach((l) => blocks.push({ text: `${l.name}${l.visible ? '' : ' (ausgeblendet, nicht im Total)'}: ${formatChf(l.amount)}`, gap: 2 }));
+    blocks.push({ text: `Total (sichtbare Ebenen): ${formatChf(est.total)}`, bold: true, gap: 2 });
+    blocks.push({ text: 'Richtwerte: Strassen pro km (mit der Breite skaliert), Brücke und Tunnel als Zuschlag pro m, Knoten und Flächen pauschal; bestehende Strassen ohne Ansatz. Keine Kostenberechnung im Sinne der SIA, nur zur Einordnung.', size: 9, gap: 10 });
+  }
+  // Normen-Check
+  if (checks && checks.length) {
+    blocks.push({ text: 'Prüfung (Richtwerte VSS)', size: 13, bold: true, gap: 4 });
+    checks.forEach((c) => blocks.push({ text: `${c.severity === 'warn' ? 'Warnung' : 'Hinweis'}: ${c.text}`, gap: 2 }));
+    blocks.push({ text: '', gap: 6 });
+  }
     blocks.push({ text: 'Routenvergleich', size: 13, bold: true, gap: 4 });
     const fmt = (r) => (r ? `${(r.dist / 1000).toFixed(2)} km, ${formatDuration(r.time)}${r.sd > 0 ? ` (P15–P85 ${formatDuration(r.p15)} – ${formatDuration(r.p85)})` : ''}` : 'keine Verbindung');
     blocks.push({ text: `Heute: ${fmt(cur)}`, gap: 2 });

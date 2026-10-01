@@ -242,3 +242,19 @@ func TestSectionAndTurns(t *testing.T) {
 		t.Fatalf("Zone trägt Strassen-/Kreuzungsfelder: %+v", z)
 	}
 }
+
+func TestCosts(t *testing.T) {
+	d := sample()
+	d.Costs = map[string]float64{"road.main": 2500000.4, "bridge": -1, "Kaputt Key": 5, "tunnel": 1e12}
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Costs) != 1 || d.Costs["road.main"] != 2500000 {
+		t.Fatalf("Kosten: %+v", d.Costs)
+	}
+	d.Costs = map[string]float64{"x": -3}
+	_ = Normalize(d)
+	if d.Costs != nil {
+		t.Fatalf("leere Kosten sollten nil sein: %+v", d.Costs)
+	}
+}

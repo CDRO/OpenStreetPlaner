@@ -24,11 +24,14 @@ const (
 	MaxRadius    = 500.0
 	MaxSpeed     = 200.0
 	MaxWidth     = 60.0
+	MaxCost      = 1e10
+	MaxCostKeys  = 50
 )
 
 var (
 	idPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,48}$`)
 	colorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+	costKey      = regexp.MustCompile(`^[a-z0-9.]{1,40}$`)
 
 	RoadKinds     = []string{"motorway", "trunk", "main", "secondary", "residential", "service", "path", "other"}
 	Levels        = []string{"ground", "bridge", "tunnel"}
@@ -197,6 +200,8 @@ type Document struct {
 	Layers    []Layer   `json:"layers"`
 	Features  []Feature `json:"features"`
 	Route     *Route    `json:"route,omitempty"`
+	// Überschriebene Einheitskosten der Kostenschätzung (Schlüssel wie web/js/costs.js)
+	Costs map[string]float64 `json:"costs,omitempty"`
 }
 
 // Stats fasst einen Entwurf für Listen und Versionen zusammen.
@@ -431,6 +436,22 @@ func Normalize(d *Document) error {
 	if d.Route != nil {
 		d.Route.From = round6(d.Route.From)
 		d.Route.To = round6(d.Route.To)
+	}
+	if len(d.Costs) > 0 {
+		clean := make(map[string]float64, len(d.Costs))
+		for k, v := range d.Costs {
+			if !costKey.MatchString(k) || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > MaxCost {
+				continue
+			}
+			clean[k] = math.Round(v)
+			if len(clean) >= MaxCostKeys {
+				break
+			}
+		}
+		d.Costs = clean
+		if len(d.Costs) == 0 {
+			d.Costs = nil
+		}
 	}
 	return nil
 }

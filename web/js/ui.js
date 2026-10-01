@@ -3,6 +3,7 @@
 
 import { JUNCTION_KINDS, LEVELS, ROAD_KINDS, SECTION_LIMITS, STATUSES, ZONE_KINDS, defaultSection, docStats, featureLabel, getFeature, junctionKind, junctionTurns, roadKind, roadSpeed, roadWidthMeters, sectionSummary, sectionWidth, segmentSpeed, splitRoadAtNode, validProfile } from './model.js';
 import { DPI, PAPER } from './export.js';
+import { COST_ITEMS, costValue, formatChf } from './costs.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
 import { TOOLS } from './tools.js';
@@ -232,6 +233,7 @@ export class UI {
       if (this.ctx.tools.tool !== 'route') this.ctx.tools.setTool('route');
     }
     if (name === 'comments') this.refreshComments();
+    if (name === 'analysis') this.refreshAnalysis();
   }
 
   // --- Suche ---------------------------------------------------------------------
@@ -331,6 +333,76 @@ export class UI {
     this.refreshComments();
     this.refreshDrawActions();
     this.refreshPresent();
+    if (this.$('tab-analysis') && this.$('tab-analysis').classList.contains('active')) this.refreshAnalysis();
+  }
+
+  // --- Analyse: Kosten und Normen-Check ---------------------------------------------------
+
+  refreshAnalysis() {
+    const { store, actions, tools, map } = this.ctx;
+    const el = this.$('analysis-panel');
+    if (!el) return;
+    const doc = store.doc;
+    const editable = actions.canEdit();
+    const dis = editable ? '' : 'disabled';
+    const est = actions.costEstimate();
+    const checks = actions.runChecks();
+    const warns = checks.filter((c) => c.severity === 'warn').length;
+    const groups = [];
+    for (const item of COST_ITEMS) {
+      let g = groups.find((x) => x.name === item.group);
+      if (!g) {
+        g = { name: item.group, items: [] };
+        groups.push(g);
+      }
+      g.items.push(item);
+    }
+    const overridden = Object.keys(doc.costs || {}).length;
+    const openState = Array.from(el.querySelectorAll('details')).map((d) => d.open); // bleibt über das Neuzeichnen erhalten
+    el.innerHTML = `
+      <h3>Kostenschätzung</h3>
+      <p class="muted small">Grobe Richtwerte für Schweizer Verhältnisse: Strassen pro Kilometer (mit der Breite skaliert), Brücken und Tunnel als Zuschlag pro Meter, Knoten und Flächen pauschal. Bestehende Strassen werden nicht gerechnet; ein Umbau wird als „Neu“ markiert. Die Summe zählt nur sichtbare Ebenen, Varianten also per Ein-/Ausblenden.</p>
+      <table class="route-table">
+        <thead><tr><th>Ebene</th><th class="num">Kosten</th></tr></thead>
+        <tbody>
+          ${est.layers.map((l) => `<tr class="${l.visible ? '' : 'muted'}"><td>${esc(l.name)}${l.visible ? '' : ' (ausgeblendet)'}</td><td class="num">${formatChf(l.amount)}</td></tr>`).join('')}
+          <tr class="total"><td>Total (sichtbare Ebenen)</td><td class="num"><strong>${formatChf(est.total)}</strong></td></tr>
+        </tbody>
+      </table>
+      <details class="box">
+        <summary>Positionen (${est.rows.length})</summary>
+        ${est.rows.length ? `<ul class="cost-list">${est.rows.map((r) => `<li><button type="button" class="linkish cost-row" data-id="${esc(r.featureId)}">${esc(r.label)}</button> <span class="muted small">${esc(r.detail)}</span><span class="num">${formatChf(r.amount)}</span></li>`).join('')}</ul>` : '<p class="muted small">Keine Elemente.</p>'}
+      </details>
+      <details class="box">
+        <summary>Einheitskosten anpassen${overridden ? ` <span class="muted">(${overridden} geändert)</span>` : ''}</summary>
+        ${groups.map((g) => `<div class="cost-group"><div class="muted small">${esc(g.name)}</div>${g.items.map((it) => `
+          <label class="cost-item"><span>${esc(it.label)}</span><input type="number" class="cost-input" data-key="${it.key}" min="0" step="${it.value >= 1e6 ? 100000 : it.value >= 10000 ? 10000 : 10}" value="${costValue(doc, it.key)}" ${dis}><span class="muted small">${esc(it.unit)}</span></label>`).join('')}</div>`).join('')}
+        <button type="button" id="cost-reset" class="btn small" ${dis || !overridden ? 'disabled' : ''}>Alle auf Standard</button>
+      </details>
+      <h3>Normen-Check</h3>
+      <p class="muted small">Richtwerte nach VSS: Kurvenradius zum Tempo, Steigung aus dem Höhenprofil, Kreiselgrösse, Fahrstreifenbreite, Tempo in Zonen, nicht angeschlossene Enden. ${checks.length ? `${warns} Warnung${warns === 1 ? '' : 'en'}, ${checks.length - warns} Hinweis${checks.length - warns === 1 ? '' : 'e'}.` : 'Keine Auffälligkeiten.'}</p>
+      ${checks.length ? `<ul class="check-list">${checks.map((c) => `<li class="${c.severity}"><button type="button" class="linkish check-row" data-id="${esc(c.id)}">${esc(c.text)}</button></li>`).join('')}</ul>` : ''}`;
+    el.querySelectorAll('details').forEach((d, i) => { if (openState[i]) d.open = true; });
+    el.querySelectorAll('.cost-row').forEach((b) => {
+      b.onclick = () => {
+        tools.setSelection({ featureId: b.dataset.id });
+        actions.zoomToFeature(b.dataset.id);
+      };
+    });
+    el.querySelectorAll('.cost-input').forEach((inp) => {
+      inp.onchange = () => actions.setCost(inp.dataset.key, inp.value === '' ? null : Number(inp.value));
+    });
+    const reset = this.$('cost-reset');
+    if (reset) reset.onclick = () => actions.resetCosts();
+    el.querySelectorAll('.check-row').forEach((b) => {
+      b.onclick = () => {
+        const c = checks.find((x) => x.id === b.dataset.id);
+        if (!c) return;
+        tools.setSelection({ featureId: c.featureId });
+        if (c.at) map.flyTo(c.at, Math.max(map.getZoom(), 17));
+        else actions.zoomToFeature(c.featureId);
+      };
+    });
   }
 
   /** Aktionsleiste „Fertig / Letzter Punkt / Abbrechen“ während einer laufenden Zeichnung. */

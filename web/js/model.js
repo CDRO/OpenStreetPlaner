@@ -21,6 +21,27 @@ export const ROAD_KINDS = [
 
 export const MAX_WIDTH_M = 60;
 
+// --- Kostenansätze ----------------------------------------------------------------------
+// Schlüssel der Einheitskosten (Werte und Beschriftungen in costs.js); im Entwurf als doc.costs überschreibbar.
+export const COST_KEYS = [
+  'road.motorway', 'road.trunk', 'road.main', 'road.secondary', 'road.residential', 'road.service', 'road.path', 'road.other',
+  'bridge', 'tunnel', 'remove', 'roundabout',
+  'junction.signals', 'junction.interchange', 'junction.crossing', 'junction.busstop', 'junction.plain',
+  'zone.tempo30', 'zone.tempo20', 'zone.pedestrian', 'zone.parking',
+];
+export const MAX_COST = 1e10;
+
+/** Prüft überschriebene Einheitskosten: nur bekannte Schlüssel, 0 … MAX_COST; leeres Objekt, wenn nichts gesetzt. */
+export function normalizeCosts(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const key of COST_KEYS) {
+    const v = Number(raw[key]);
+    if (raw[key] !== undefined && raw[key] !== null && Number.isFinite(v) && v >= 0 && v <= MAX_COST) out[key] = Math.round(v);
+  }
+  return out;
+}
+
 export function roadKind(road) {
   return ROAD_KINDS.find((k) => k.id === road.kind) || ROAD_KINDS[ROAD_KINDS.length - 1];
 }
@@ -272,6 +293,7 @@ export function createDocument({ name = 'Neuer Entwurf', center = [46.8, 8.23], 
     layers: [],
     features: [],
     route: null,
+    costs: {},
   };
   createLayer(doc, 'Ebene 1');
   return doc;
@@ -511,6 +533,7 @@ export function normalizeDocument(raw) {
     layers: [],
     features: [],
     route: null,
+    costs: normalizeCosts(raw.costs),
   };
   if (raw.route && isLatLng(raw.route.from) && isLatLng(raw.route.to)) {
     doc.route = { from: roundCoord(raw.route.from), to: roundCoord(raw.route.to) };

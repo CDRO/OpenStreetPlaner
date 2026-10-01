@@ -16,11 +16,13 @@ import { computeRoutes } from './routing.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
 import { nodesKey } from './model.js';
 import { exportPdf, exportPng, exportReport } from './export.js';
+import { estimateCosts } from './costs.js';
+import { runChecks } from './checks.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
 const POLL_INTERVAL_MS = 45000;
 
-const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features });
+const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features, costs: doc.costs || {}, routePairs: doc.routePairs || [], isochrone: doc.isochrone || null });
 
 function download(filename, data, type = 'application/json') {
   const blob = data instanceof Blob ? data : new Blob([data], { type });
@@ -390,8 +392,22 @@ async function main() {
       ui.refreshComments();
       map.requestRender();
     },
+    costEstimate: () => estimateCosts(store.doc),
+    setCost(key, value) {
+      if (!actions.requireEdit()) return;
+      store.commit('Einheitskosten ändern', (d) => {
+        if (!d.costs) d.costs = {};
+        if (value === null || !Number.isFinite(value) || value < 0) delete d.costs[key];
+        else d.costs[key] = Math.round(value);
+      });
+    },
+    resetCosts() {
+      if (!actions.requireEdit()) return;
+      store.commit('Einheitskosten zurücksetzen', (d) => { d.costs = {}; });
+    },
+    runChecks: () => runChecks(store.doc, { osmWays: osm.list() }),
     async runExport({ format, mode, paper, orientation, dpi, report = false }) {
-      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments };
+      const opts = { mode, paper, orientation, dpi, routes: actions.routes(), link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks() };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
       else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
