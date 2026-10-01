@@ -3,7 +3,7 @@
 // ebenerdige Abschnitte, Brücken, Kreisel, Kreuzungen, Pfeile, Beschriftung,
 // Bearbeitungsgriffe, Zeichenvorschau, Einrast-Markierung.
 
-import { ROAD_KINDS, getLayer, roadMedian, roadWidthMeters, sectionBands, segmentSpeed, zoneKind } from './model.js';
+import { ROAD_KINDS, getLayer, roadMedian, roadWidthMeters, sectionBands, segmentAccess, segmentSpeed, zoneKind } from './model.js';
 
 const KIND_WIDTH = Object.fromEntries(ROAD_KINDS.map((k) => [k.id, k.width]));
 
@@ -17,7 +17,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -112,6 +112,30 @@ export function drawScene(ctx, map, s) {
     }
     if (bands) drawSectionBands(ctx, P, f, bands, pxPerM, colorOf(f), f.status === 'existing' ? 0.7 : 1);
   }
+  // Busschleusen: gelbe Strichelung in der Achse, ab Zoom 16 mit „BUS“
+  for (const f of roads) {
+    if (f.status === 'remove') continue;
+    for (let i = 0; i < f.segments.length; i++) {
+      if (segmentAccess(f, i) !== 'bus') continue;
+      const a = P(f.nodes[i]);
+      const b = P(f.nodes[i + 1]);
+      ctx.save();
+      ctx.setLineDash([8, 6]);
+      stroke(ctx, [a, b], '#ffd600', Math.max(2, widthOf(f) * 0.35), 'butt');
+      ctx.restore();
+      if (zoom >= 16 && Math.hypot(b.x - a.x, b.y - a.y) > 36) {
+        let angle = Math.atan2(b.y - a.y, b.x - a.x);
+        if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
+        ctx.save();
+        ctx.translate((a.x + b.x) / 2, (a.y + b.y) / 2);
+        ctx.rotate(angle);
+        text(ctx, 'BUS', 0, 0.5, { font: 'bold 9px system-ui, sans-serif', color: '#5d4037', halo: 'rgba(255,214,0,0.9)', align: 'center', baseline: 'middle' });
+        ctx.restore();
+      }
+    }
+  }
+  // Buslinien: dünne farbige Linien entlang der berechneten Strecke (Netz mit Entwurf), Nummer an der ersten Haltestelle
+  if (busLines) drawBusLines(ctx, P, busLines, zoom);
   // Kreisel
   for (const f of visible) {
     if (f.type !== 'roundabout') continue;
@@ -130,6 +154,9 @@ export function drawScene(ctx, map, s) {
     else circle(ctx, c, 9, { stroke: colorOf(f), width: 3, fill });
     if (glyph) text(ctx, glyph, c.x, c.y + 0.5, { font: 'bold 11px system-ui, sans-serif', color: '#222', align: 'center', baseline: 'middle' });
     if (f.turns && zoom >= 16) drawTurnBans(ctx, c, f.turns);
+    if (f.kind === 'busstop' && f.lines && f.lines.length && zoom >= 15) {
+      text(ctx, f.lines.join(' '), c.x + 12, c.y + 0.5, { font: 'bold 10px system-ui, sans-serif', color: '#5d4037', halo: 'rgba(255,255,255,0.9)', align: 'left', baseline: 'middle' });
+    }
   }
   // Einbahn-Pfeile
   if (zoom >= 15) {
@@ -600,6 +627,29 @@ function drawDiff(ctx, P, diff, mpp) {
   for (const f of diff.removed) outline(f, '#c62828', [8, 6]);
   for (const c of diff.changed) outline(c.after, '#e08a00', []);
   for (const f of diff.added) outline(f, '#2a9d3f', []);
+}
+
+/** Buslinien: [{ id, name, color, path }] – path = berechnete Strecke mit Entwurf. */
+function drawBusLines(ctx, P, lines, zoom) {
+  for (const l of lines) {
+    if (!l.path || l.path.length < 2) continue;
+    const pts = l.path.map(P);
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    stroke(ctx, pts, '#ffffff', 5, 'round');
+    ctx.setLineDash([10, 4]);
+    stroke(ctx, pts, l.color, 3, 'round');
+    ctx.restore();
+    if (zoom >= 14) {
+      const p = pts[0];
+      ctx.save();
+      ctx.fillStyle = l.color;
+      const w = ctx.measureText(l.name).width + 10;
+      ctx.fillRect(p.x + 8, p.y - 18, Math.max(22, w), 14);
+      text(ctx, l.name, p.x + 8 + Math.max(22, w) / 2, p.y - 11, { font: 'bold 10px system-ui, sans-serif', color: '#fff', align: 'center', baseline: 'middle' });
+      ctx.restore();
+    }
+  }
 }
 
 export const ISO_COLORS = ['#2a9d3f', '#e0b400', '#e07a00', '#c62828', '#7b3fbf'];

@@ -7,7 +7,7 @@
 // eingerastet sind, teilen diesen Abschnitt beim Aufbau des Netzes.
 
 import { closestPointOnSegment, haversine, mercatorScale, project, unproject } from './geometry.js';
-import { junctionTurns, pointInPolygon, segmentSpeed, validProfile, zoneKind } from './model.js';
+import { BUS_DWELL_DEFAULT, junctionTurns, pointInPolygon, segmentAccess, segmentSpeed, validProfile, zoneKind } from './model.js';
 import { polylineRadii } from './smooth.js';
 import { NODE_DELAY, expectedSpeedKmh, segmentGrades, segmentTime, summarize } from './speedmodel.js';
 
@@ -56,12 +56,13 @@ export function turnKind(a, b, c) {
   return d > 0 ? 'left' : 'right';
 }
 
-/** Strengstes Zonen-Tempolimit an einem Punkt (null = keine Zone mit Limit). */
-export function zoneSpeedAt(zones, latlng) {
+/** Strengstes Zonen-Tempolimit an einem Punkt (null = keine Zone mit Limit). Busse dürfen freigegebene Flächen mit 20 km/h durchfahren. */
+export function zoneSpeedAt(zones, latlng, vehicle = 'car') {
   let cap = null;
   for (const z of zones) {
-    const speed = zoneKind(z).speed;
+    let speed = zoneKind(z).speed;
     if (speed === null || !pointInPolygon(latlng, z.nodes)) continue;
+    if (vehicle === 'bus' && z.busAllowed && speed < 20) speed = 20;
     cap = cap === null ? speed : Math.min(cap, speed);
   }
   return cap;
@@ -85,9 +86,12 @@ export function parseMaxspeed(tag) {
   return null;
 }
 
-/** Ist ein OSM-Way für Autos befahrbar? */
-export function isDrivable(tags = {}) {
+/** Ist ein OSM-Way befahrbar? vehicle 'car' (Standard) oder 'bus' (Busspuren, bus=yes, psv=yes). */
+export function isDrivable(tags = {}, vehicle = 'car') {
+  const busOk = tags.bus === 'yes' || tags.psv === 'yes' || tags.highway === 'busway';
+  if (vehicle === 'bus' && busOk && (DRIVABLE.has(tags.highway) || tags.highway === 'busway')) return true;
   if (!DRIVABLE.has(tags.highway)) return false;
+  if (vehicle === 'bus' && (tags.bus === 'no' || tags.psv === 'no')) return false;
   const access = tags.motor_vehicle || tags.motorcar || tags.vehicle || tags.access;
   if (access === 'no' || access === 'private') return false;
   return true;
@@ -247,15 +251,16 @@ export function insertPointsOnLine(points, candidates, toleranceMeters = 1) {
  * neue Strassen kommen dazu, Kreisel verbinden ihre Anschlüsse, Kreuzungen
  * kosten Zeit.
  */
-export function buildGraph({ osmWays = [], doc = null, mode = 'current', model = 'limit' }) {
+export function buildGraph({ osmWays = [], doc = null, mode = 'current', model = 'limit', vehicle = 'car' }) {
   const g = new Graph(model);
+  g.vehicle = vehicle;
   const geometry = model === 'geometry';
   // Nur sichtbare Ebenen zählen: Ebenen ein- und ausblenden ist der Variantenvergleich.
   const hidden = doc ? new Set(doc.layers.filter((l) => l.visible === false).map((l) => l.id)) : new Set();
   const visible = mode === 'proposed' && doc ? doc.features.filter((f) => !hidden.has(f.layerId)) : [];
   const roads = visible.filter((f) => f.type === 'road');
   const zones = visible.filter((f) => f.type === 'zone' && zoneKind(f).speed !== null);
-  if (zones.length) g.speedCap = (ll) => zoneSpeedAt(zones, ll);
+  if (zones.length) g.speedCap = (ll) => zoneSpeedAt(zones, ll, vehicle);
   const replaced = new Set(roads.filter((r) => r.osmId).map((r) => r.osmId));
   const draftNodes = [];
   for (const r of roads) {
@@ -263,7 +268,7 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
     for (const n of r.nodes) draftNodes.push({ ll: n, p: project(n) });
   }
   for (const w of osmWays) {
-    if (replaced.has(w.id) || !isDrivable(w.tags)) continue;
+    if (replaced.has(w.id) || !isDrivable(w.tags, vehicle)) continue;
     const pts = draftNodes.length ? insertPointsOnLine(w.geometry, draftNodes) : w.geometry;
     g.addPolyline(pts, waySpeed(w.tags), wayDirection(w.tags));
   }
@@ -271,7 +276,12 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
     const roundabouts = visible.filter((f) => f.type === 'roundabout');
     for (const r of roads) {
       if (r.status === 'remove') continue;
-      const speeds = r.segments.map((_, i) => segmentSpeed(r, i));
+      // Busschleusen (Zugang nur Bus) sind für Autos gesperrt; Busse fahren dort höchstens 30
+      const speeds = r.segments.map((_, i) => {
+        const access = segmentAccess(r, i);
+        if (access === 'bus') return vehicle === 'bus' ? Math.min(30, segmentSpeed(r, i)) : 0;
+        return segmentSpeed(r, i);
+      });
       let grades = null;
       const profile = geometry ? validProfile(r) : null;
       if (profile) {
@@ -549,11 +559,58 @@ export function computeIsochrone({ osmWays, doc, from, minutes = [5, 10, 15], mo
 }
 
 /** Baut beide Netze einmal; Routen und Isochronen teilen sie sich. */
-export function buildGraphs({ osmWays, doc, model = 'limit' }) {
+export function buildGraphs({ osmWays, doc, model = 'limit', vehicle = 'car' }) {
   return {
-    current: buildGraph({ osmWays, doc, mode: 'current', model }),
-    proposed: buildGraph({ osmWays, doc, mode: 'proposed', model }),
+    current: buildGraph({ osmWays, doc, mode: 'current', model, vehicle }),
+    proposed: buildGraph({ osmWays, doc, mode: 'proposed', model, vehicle }),
   };
+}
+
+/**
+ * Fahrzeiten der Buslinien: je Linie die Strecke über alle Haltestellen (Bus-Netz),
+ * heute und neu, plus Haltezeit je Zwischenhalt. Liefert [{ id, stops, current, proposed }],
+ * current/proposed = { time, dist, path, legs, error } (error, wenn ein Abschnitt keine Verbindung hat).
+ */
+export function computeBusLines({ osmWays, doc, model = 'limit', graphs = null }) {
+  if (!doc || !doc.busLines || !doc.busLines.length) return [];
+  const g = graphs || buildGraphs({ osmWays, doc, model, vehicle: 'bus' });
+  const stopAt = (id) => {
+    const f = doc.features.find((x) => x.id === id && x.type === 'junction');
+    return f ? f.at : null;
+  };
+  const out = [];
+  for (const line of doc.busLines) {
+    const stops = line.stops.map(stopAt).filter(Boolean);
+    const entry = { id: line.id, stops: stops.length, current: null, proposed: null };
+    if (stops.length < 2) {
+      out.push(entry);
+      continue;
+    }
+    const dwell = Number.isFinite(line.dwell) ? line.dwell : BUS_DWELL_DEFAULT;
+    for (const mode of ['current', 'proposed']) {
+      let time = 0;
+      let dist = 0;
+      const path = [];
+      const legs = [];
+      let error = null;
+      for (let i = 1; i < stops.length; i++) {
+        const r = routeOnGraph(g[mode], stops[i - 1], stops[i]);
+        if (r.error) {
+          error = r.error;
+          legs.push({ error: r.error });
+          continue;
+        }
+        time += r.time;
+        dist += r.dist;
+        legs.push({ time: r.time, dist: r.dist });
+        for (const p of r.path) if (!path.length || path[path.length - 1][0] !== p[0] || path[path.length - 1][1] !== p[1]) path.push(p);
+      }
+      time += dwell * Math.max(0, stops.length - 2);
+      entry[mode] = error ? { error, time, dist, path, legs } : { time, dist, path, legs };
+    }
+    out.push(entry);
+  }
+  return out;
 }
 
 /** Route auf einem fertigen Netz; Start und Ziel werden temporär angebunden. */

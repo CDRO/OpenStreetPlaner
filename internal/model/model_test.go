@@ -300,3 +300,37 @@ func TestRoutePairsAndIsochrone(t *testing.T) {
 		t.Fatalf("ungültiger Ursprung nicht verworfen")
 	}
 }
+
+func TestBusFields(t *testing.T) {
+	d := sample()
+	d.Features[0].Access = "bus"
+	d.Features[0].Segments = []Segment{{Level: "ground", Access: "egal"}, {Level: "ground", Access: "all"}}
+	yes := true
+	no := false
+	d.Features = append(d.Features,
+		Feature{ID: "bs1", Type: "junction", LayerID: d.Layers[0].ID, Kind: "busstop", At: &LatLng{47, 8}, Lines: []string{" 12 ", "12", "", "45"}},
+		Feature{ID: "bs2", Type: "junction", LayerID: d.Layers[0].ID, Kind: "busstop", At: &LatLng{47, 8.01}},
+		Feature{ID: "zb", Type: "zone", LayerID: d.Layers[0].ID, Kind: "pedestrian", Nodes: []LatLng{{47, 8}, {47, 8.01}, {47.01, 8}}, BusAllowed: &yes},
+		Feature{ID: "zn", Type: "zone", LayerID: d.Layers[0].ID, Kind: "pedestrian", Nodes: []LatLng{{47, 8}, {47, 8.01}, {47.01, 8}}, BusAllowed: &no},
+	)
+	d.BusLines = []BusLine{{ID: "kaputt!", Name: "Linie 12 lang lang", Stops: []string{"bs1", "fehlt", "bs2"}, Dwell: 999}}
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	r := d.Features[0]
+	if r.Access != "bus" || r.Segments[0].Access != "" || r.Segments[1].Access != "all" {
+		t.Fatalf("Zugang: %s %+v", r.Access, r.Segments)
+	}
+	n := len(d.Features)
+	bs := d.Features[n-4]
+	if len(bs.Lines) != 2 || bs.Lines[0] != "12" || bs.Lines[1] != "45" {
+		t.Fatalf("Linien: %v", bs.Lines)
+	}
+	if d.Features[n-2].BusAllowed == nil || !*d.Features[n-2].BusAllowed || d.Features[n-1].BusAllowed != nil {
+		t.Fatalf("busAllowed: %v %v", d.Features[n-2].BusAllowed, d.Features[n-1].BusAllowed)
+	}
+	b := d.BusLines[0]
+	if b.ID != "b_1" || b.Name != "Linie 12 lan" || len(b.Stops) != 2 || b.Dwell != 20 || b.Color == "" {
+		t.Fatalf("Buslinie: %+v", b)
+	}
+}

@@ -57,8 +57,25 @@ type Layer struct {
 
 type Segment struct {
 	Level    string   `json:"level"`
-	Maxspeed *float64 `json:"maxspeed"` // km/h; nil = wie die Strasse
+	Maxspeed *float64 `json:"maxspeed"`         // km/h; nil = wie die Strasse
+	Access   string   `json:"access,omitempty"` // "" = wie die Strasse, "all", "bus" (Busschleuse)
 }
+
+// BusLine ist eine Buslinie: Haltestellen (IDs von Punkten der Art busstop) in Reihenfolge.
+type BusLine struct {
+	ID    string   `json:"id"`
+	Name  string   `json:"name"`
+	Color string   `json:"color"`
+	Stops []string `json:"stops"`
+	Dwell float64  `json:"dwell"` // Sekunden Halt je Zwischenhaltestelle
+}
+
+const (
+	MaxBusLines = 20
+	MaxBusStops = 60
+)
+
+var accessValues = []string{"all", "bus"}
 
 // Section ist der Querschnitt einer Strasse in Metern (Regeln wie web/js/model.js).
 type Section struct {
@@ -165,6 +182,7 @@ type Feature struct {
 	Maxspeed *float64  `json:"maxspeed,omitempty"` // km/h; nil = Standard je Strassentyp
 	Width    *float64  `json:"width,omitempty"`    // Meter; nil = Standard je Strassentyp
 	Section  *Section  `json:"section,omitempty"`  // Querschnitt; nil = nur Breite/Standard
+	Access   string    `json:"access,omitempty"`   // "all" (Standard) oder "bus": nur Busse
 	OsmID    int64     `json:"osmId,omitempty"`    // OSM-Way, aus dem die Strasse übernommen wurde
 	Nodes    []LatLng  `json:"nodes,omitempty"`
 	Segments []Segment `json:"segments,omitempty"`
@@ -173,8 +191,11 @@ type Feature struct {
 	// Berührte Parzellen einer Strasse, mit Kennung der Punktfolge
 	Parcels *ParcelInfo `json:"parcels,omitempty"`
 	// Kreuzung / Punkt-Massnahme
-	At    *LatLng `json:"at,omitempty"`
-	Turns *Turns  `json:"turns,omitempty"` // Abbiegeregeln; nil = Standard
+	At    *LatLng  `json:"at,omitempty"`
+	Turns *Turns   `json:"turns,omitempty"` // Abbiegeregeln; nil = Standard
+	Lines []string `json:"lines,omitempty"` // Liniennummern einer Bushaltestelle
+	// Fläche
+	BusAllowed *bool `json:"busAllowed,omitempty"` // Busse dürfen gesperrte Flächen durchfahren
 	// Kreisel
 	Center *LatLng `json:"center,omitempty"`
 	Radius float64 `json:"radius,omitempty"`
@@ -260,6 +281,7 @@ type Document struct {
 	// Weitere Routenpaare und Erreichbarkeitsanfrage des Routen-Rechners
 	RoutePairs []RoutePair `json:"routePairs,omitempty"`
 	Isochrone  *Isochrone  `json:"isochrone,omitempty"`
+	BusLines   []BusLine   `json:"busLines,omitempty"`
 	// Überschriebene Einheitskosten der Kostenschätzung (Schlüssel wie web/js/costs.js)
 	Costs map[string]float64 `json:"costs,omitempty"`
 }
@@ -407,8 +429,12 @@ func Normalize(d *Document) error {
 					v := math.Round(*ms)
 					segs[j].Maxspeed = &v
 				}
+				if j < len(f.Segments) {
+					segs[j].Access = oneOf(accessValues, f.Segments[j].Access, "")
+				}
 			}
 			f.Segments = segs
+			f.Access = oneOf(accessValues, f.Access, "all")
 			f.Kind = oneOf(RoadKinds, f.Kind, "other")
 			f.Status = oneOf(Statuses, f.Status, "new")
 			if f.Oneway == nil {
@@ -445,7 +471,7 @@ func Normalize(d *Document) error {
 					}
 				}
 			}
-			f.At, f.Turns, f.Center, f.Radius = nil, nil, nil, 0
+			f.At, f.Turns, f.Lines, f.BusAllowed, f.Center, f.Radius = nil, nil, nil, nil, nil, 0
 		case "junction":
 			if f.At == nil || !validLatLng(*f.At) {
 				return invalid("Kreuzung %s hat keine gültige Position", f.ID)
@@ -454,7 +480,28 @@ func Normalize(d *Document) error {
 			f.At = &p
 			f.Kind = oneOf(JunctionKinds, f.Kind, "plain")
 			f.Turns = normalizeTurns(f.Turns)
-			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius = "", nil, nil, nil, nil, 0
+			lines := make([]string, 0, len(f.Lines))
+			for _, l := range f.Lines {
+				l = truncate(l, 12)
+				if l == "" || len(lines) >= 10 {
+					continue
+				}
+				dup := false
+				for _, x := range lines {
+					if x == l {
+						dup = true
+					}
+				}
+				if !dup {
+					lines = append(lines, l)
+				}
+			}
+			if len(lines) > 0 {
+				f.Lines = lines
+			} else {
+				f.Lines = nil
+			}
+			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius, f.Access, f.BusAllowed = "", nil, nil, nil, nil, 0, "", nil
 			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile, f.Parcels = nil, 0, nil, nil, nil, nil
 		case "roundabout":
 			if f.Center == nil || !validLatLng(*f.Center) {
@@ -469,7 +516,7 @@ func Normalize(d *Document) error {
 				f.Radius = MaxRadius
 			}
 			f.Radius = math.Round(f.Radius*10) / 10
-			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At, f.Turns = "", "", nil, nil, nil, nil, nil
+			f.Kind, f.Status, f.Oneway, f.Nodes, f.Segments, f.At, f.Turns, f.Lines, f.Access, f.BusAllowed = "", "", nil, nil, nil, nil, nil, nil, "", nil
 			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile, f.Parcels = nil, 0, nil, nil, nil, nil
 		case "zone":
 			if len(f.Nodes) < 3 {
@@ -485,7 +532,10 @@ func Normalize(d *Document) error {
 				f.Nodes[j] = round6(n)
 			}
 			f.Kind = oneOf(ZoneKinds, f.Kind, "other")
-			f.Status, f.Oneway, f.Segments, f.At, f.Turns, f.Center, f.Radius = "", nil, nil, nil, nil, nil, 0
+			if f.BusAllowed != nil && !*f.BusAllowed {
+				f.BusAllowed = nil
+			}
+			f.Status, f.Oneway, f.Segments, f.At, f.Turns, f.Lines, f.Access, f.Center, f.Radius = "", nil, nil, nil, nil, nil, "", nil, 0
 			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile, f.Parcels = nil, 0, nil, nil, nil, nil
 		default:
 			return invalid("unbekannter Elementtyp %q", f.Type)
@@ -543,6 +593,30 @@ func Normalize(d *Document) error {
 			d.Isochrone.Minutes = mins
 			d.Isochrone.Mode = oneOf(isochroneModes, d.Isochrone.Mode, "proposed")
 		}
+	}
+	if len(d.BusLines) > MaxBusLines {
+		d.BusLines = d.BusLines[:MaxBusLines]
+	}
+	for i := range d.BusLines {
+		b := &d.BusLines[i]
+		if !idPattern.MatchString(b.ID) {
+			b.ID = fmt.Sprintf("b_%d", i+1)
+		}
+		b.Name = truncate(b.Name, 12)
+		if !colorPattern.MatchString(b.Color) {
+			b.Color = LayerColors[i%len(LayerColors)]
+		}
+		stops := make([]string, 0, len(b.Stops))
+		for _, st := range b.Stops {
+			if featureIDs[st] && len(stops) < MaxBusStops {
+				stops = append(stops, st)
+			}
+		}
+		b.Stops = stops
+		if math.IsNaN(b.Dwell) || b.Dwell < 0 || b.Dwell > 300 {
+			b.Dwell = 20
+		}
+		b.Dwell = math.Round(b.Dwell)
 	}
 	if len(d.Costs) > 0 {
 		clean := make(map[string]float64, len(d.Costs))

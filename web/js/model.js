@@ -224,6 +224,64 @@ export const JUNCTION_KINDS = [
   { id: 'busstop', label: 'Bushaltestelle', turns: false },
 ];
 
+// --- Bus -----------------------------------------------------------------------------
+export const ROAD_ACCESS = [
+  { id: 'all', label: 'Alle Fahrzeuge' },
+  { id: 'bus', label: 'Nur Bus (Busschleuse)' },
+];
+export const BUS_COLORS = ['#e53935', '#1e88e5', '#43a047', '#fb8c00', '#8e24aa', '#00897b', '#6d4c41', '#3949ab'];
+export const MAX_BUS_LINES = 20;
+export const MAX_BUS_STOPS = 60;
+export const BUS_DWELL_DEFAULT = 20; // Sekunden Halt je Zwischenhaltestelle
+
+export function normalizeAccess(v, fallback = null) {
+  return v === 'all' || v === 'bus' ? v : fallback;
+}
+
+/** Zugang eines Abschnitts: Abschnitt, sonst Strasse, sonst alle. */
+export function segmentAccess(road, i) {
+  const seg = road.segments && road.segments[i];
+  return (seg && seg.access) || road.access || 'all';
+}
+
+/** Liniennummern einer Haltestelle: höchstens 10, je 12 Zeichen, ohne Doppelte. */
+export function normalizeLines(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const v of raw) {
+    const s = String(v ?? '').trim().slice(0, 12);
+    if (s && !out.includes(s)) out.push(s);
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+/** Buslinien eines Entwurfs: Name, Farbe, Haltestellen (IDs von Punkten) und Haltezeit je Zwischenhalt. */
+export function normalizeBusLines(raw, featureIds = null) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const l of raw.slice(0, MAX_BUS_LINES)) {
+    if (!l || typeof l !== 'object') continue;
+    const stops = Array.isArray(l.stops) ? l.stops.filter((id) => typeof id === 'string' && (!featureIds || featureIds.has(id))).slice(0, MAX_BUS_STOPS) : [];
+    const dwell = Number(l.dwell);
+    out.push({
+      id: typeof l.id === 'string' && l.id ? l.id.slice(0, 48) : newId('b'),
+      name: typeof l.name === 'string' ? l.name.trim().slice(0, 12) : '',
+      color: typeof l.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(l.color) ? l.color : BUS_COLORS[out.length % BUS_COLORS.length],
+      stops,
+      dwell: Number.isFinite(dwell) && dwell >= 0 && dwell <= 300 ? Math.round(dwell) : BUS_DWELL_DEFAULT,
+    });
+  }
+  return out;
+}
+
+export function createBusLine(doc, name = '') {
+  const lines = doc.busLines || (doc.busLines = []);
+  const line = { id: newId('b'), name: name || String(lines.length + 1), color: BUS_COLORS[lines.length % BUS_COLORS.length], stops: [], dwell: BUS_DWELL_DEFAULT };
+  lines.push(line);
+  return line;
+}
+
 export function junctionKind(j) {
   return JUNCTION_KINDS.find((k) => k.id === j.kind) || JUNCTION_KINDS[0];
 }
@@ -310,6 +368,7 @@ export function createDocument({ name = 'Neuer Entwurf', center = [46.8, 8.23], 
     routePairs: [],
     isochrone: null,
     costs: {},
+    busLines: [],
   };
   createLayer(doc, 'Ebene 1');
   return doc;
@@ -373,7 +432,7 @@ export function moveLayer(doc, id, delta) {
   doc.layers.splice(j, 0, layer);
 }
 
-export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false, maxspeed = null, osmId = null, width = null, section = null }) {
+export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 'new', level = 'ground', oneway = false, maxspeed = null, osmId = null, width = null, section = null, access = 'all' }) {
   const pts = nodes.map(roundCoord);
   return {
     id: newId('r'),
@@ -386,9 +445,10 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     maxspeed: normalizeMaxspeed(maxspeed),
     width: normalizeWidth(width),
     section: normalizeSection(section),
+    access: normalizeAccess(access, 'all'),
     osmId: Number.isInteger(osmId) && osmId > 0 ? osmId : null,
     nodes: pts,
-    segments: pts.slice(1).map(() => ({ level, maxspeed: null })),
+    segments: pts.slice(1).map(() => ({ level, maxspeed: null, access: null })),
     profile: null,
     parcels: null,
     note: '',
@@ -420,22 +480,22 @@ export function extendRoad(doc, roadId, latlngs, atEnd = true) {
   if (!road || road.type !== 'road' || !latlngs.length) return;
   const pts = latlngs.map(roundCoord);
   if (atEnd) {
-    const last = road.segments[road.segments.length - 1] || { level: 'ground', maxspeed: null };
+    const last = road.segments[road.segments.length - 1] || { level: 'ground', maxspeed: null, access: null };
     road.nodes.push(...pts);
-    road.segments.push(...pts.map(() => ({ level: last.level, maxspeed: null })));
+    road.segments.push(...pts.map(() => ({ level: last.level, maxspeed: null, access: null })));
   } else {
-    const first = road.segments[0] || { level: 'ground', maxspeed: null };
+    const first = road.segments[0] || { level: 'ground', maxspeed: null, access: null };
     road.nodes.unshift(...pts);
-    road.segments.unshift(...pts.map(() => ({ level: first.level, maxspeed: null })));
+    road.segments.unshift(...pts.map(() => ({ level: first.level, maxspeed: null, access: null })));
   }
 }
 
-export function createJunction({ layerId, at, kind = 'plain', name = '', turns = null }) {
-  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), note: '' };
+export function createJunction({ layerId, at, kind = 'plain', name = '', turns = null, lines = [] }) {
+  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), lines: normalizeLines(lines), note: '' };
 }
 
-export function createZone({ layerId, nodes, kind = 'tempo30', name = '' }) {
-  return { id: newId('z'), type: 'zone', layerId, name, kind, nodes: nodes.map(roundCoord), note: '' };
+export function createZone({ layerId, nodes, kind = 'tempo30', name = '', busAllowed = false }) {
+  return { id: newId('z'), type: 'zone', layerId, name, kind, nodes: nodes.map(roundCoord), busAllowed: busAllowed === true, note: '' };
 }
 
 export function insertZoneNode(doc, zoneId, afterIndex, latlng) {
@@ -583,6 +643,7 @@ export function normalizeDocument(raw) {
     routePairs: normalizeRoutePairs(raw.routePairs),
     isochrone: normalizeIsochrone(raw.isochrone),
     costs: normalizeCosts(raw.costs),
+    busLines: [],
   };
   if (raw.route && isLatLng(raw.route.from) && isLatLng(raw.route.to)) {
     doc.route = { from: roundCoord(raw.route.from), to: roundCoord(raw.route.to) };
@@ -616,6 +677,7 @@ export function normalizeDocument(raw) {
       const segments = nodes.slice(1).map((_, i) => ({
         level: idIn(LEVELS, segs[i] && segs[i].level, 'ground'),
         maxspeed: normalizeMaxspeed(segs[i] && segs[i].maxspeed),
+        access: normalizeAccess(segs[i] && segs[i].access, null),
       }));
       doc.features.push({
         ...base,
@@ -626,6 +688,7 @@ export function normalizeDocument(raw) {
         maxspeed: normalizeMaxspeed(f.maxspeed),
         width: normalizeWidth(f.width),
         section: normalizeSection(f.section),
+        access: normalizeAccess(f.access, 'all'),
         osmId: Number.isInteger(f.osmId) && f.osmId > 0 ? f.osmId : null,
         nodes,
         segments,
@@ -634,7 +697,7 @@ export function normalizeDocument(raw) {
       });
     } else if (f.type === 'junction') {
       if (!isLatLng(f.at)) throw new Error(`Kreuzung ${f.id} hat keine Position`);
-      doc.features.push({ ...base, type: 'junction', kind: idIn(JUNCTION_KINDS, f.kind, 'plain'), at: roundCoord(f.at), turns: normalizeTurns(f.turns) });
+      doc.features.push({ ...base, type: 'junction', kind: idIn(JUNCTION_KINDS, f.kind, 'plain'), at: roundCoord(f.at), turns: normalizeTurns(f.turns), lines: normalizeLines(f.lines) });
     } else if (f.type === 'roundabout') {
       if (!isLatLng(f.center)) throw new Error(`Kreisel ${f.id} hat kein Zentrum`);
       const radius = Number.isFinite(f.radius) && f.radius > 0 ? Math.min(500, f.radius) : 15;
@@ -643,11 +706,12 @@ export function normalizeDocument(raw) {
       if (!Array.isArray(f.nodes) || f.nodes.length < 3 || !f.nodes.every(isLatLng)) {
         throw new Error(`Zone ${f.id} hat ungültige Punkte`);
       }
-      doc.features.push({ ...base, type: 'zone', kind: idIn(ZONE_KINDS, f.kind, 'other'), nodes: f.nodes.map(roundCoord) });
+      doc.features.push({ ...base, type: 'zone', kind: idIn(ZONE_KINDS, f.kind, 'other'), nodes: f.nodes.map(roundCoord), busAllowed: f.busAllowed === true });
     } else {
       throw new Error(`Unbekannter Elementtyp: ${f.type}`);
     }
   }
+  doc.busLines = normalizeBusLines(raw.busLines, new Set(doc.features.filter((f) => f.type === 'junction').map((f) => f.id)));
   return doc;
 }
 
@@ -696,7 +760,7 @@ export function toGeoJSON(doc) {
       f.segments.forEach((seg, i) => {
         features.push({
           type: 'Feature',
-          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, maxspeed: segmentSpeed(f, i), width: roadWidthMeters(f), section: f.section ? sectionSummary(f.section) : null, osmId: f.osmId, segment: i, level: seg.level },
+          properties: { ...common, type: 'road', kind: f.kind, status: f.status, oneway: f.oneway, maxspeed: segmentSpeed(f, i), width: roadWidthMeters(f), section: f.section ? sectionSummary(f.section) : null, access: segmentAccess(f, i), osmId: f.osmId, segment: i, level: seg.level },
           geometry: {
             type: 'LineString',
             coordinates: [f.nodes[i], f.nodes[i + 1]].map(([lat, lng]) => [lng, lat]),
@@ -706,7 +770,7 @@ export function toGeoJSON(doc) {
     } else if (f.type === 'junction') {
       features.push({
         type: 'Feature',
-        properties: { ...common, type: 'junction', kind: f.kind, turns: f.turns || null },
+        properties: { ...common, type: 'junction', kind: f.kind, turns: f.turns || null, lines: f.lines || [] },
         geometry: { type: 'Point', coordinates: [f.at[1], f.at[0]] },
       });
     } else if (f.type === 'roundabout') {

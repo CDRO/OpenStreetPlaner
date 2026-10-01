@@ -5,6 +5,7 @@ import {
   parseMaxspeed, isDrivable, waySpeed, wayDirection, buildGraph, attachPoint, shortestPath, computeRoutes,
   insertPointsOnLine, formatDuration, keyOf, turnKind, TURN_COST, ROUNDABOUT_SPEED,
   reachTimes, isochronePieces, computeIsochrone, computeRoutesMany,
+  buildGraphs, routeOnGraph, computeBusLines,
 } from '../js/routing.js';
 import { createDocument, createLayer, createRoad, createRoundabout, createJunction, createZone } from '../js/model.js';
 import { project as projectLL } from '../js/geometry.js';
@@ -327,4 +328,77 @@ test('Erreichbarkeit: reachTimes, Kantenstücke je Band, Isochronen heute/neu/Di
   assert.equal(many.length, 2);
   assert.ok(many[0].current.path && many[0].proposed.path);
   assert.ok(many[1].current.error && many[1].proposed.path, 'Paar b nur mit Entwurf erreichbar');
+});
+
+test('Bus: Busspuren und Freigaben in OSM-Tags, Busschleusen sperren Autos, Flächen-Freigabe', () => {
+  assert.equal(isDrivable({ highway: 'busway' }), false);
+  assert.equal(isDrivable({ highway: 'busway' }, 'bus'), true);
+  assert.equal(isDrivable({ highway: 'residential', motor_vehicle: 'no', bus: 'yes' }), false);
+  assert.equal(isDrivable({ highway: 'residential', motor_vehicle: 'no', bus: 'yes' }, 'bus'), true);
+  assert.equal(isDrivable({ highway: 'service', access: 'no', psv: 'yes' }, 'bus'), true);
+  assert.equal(isDrivable({ highway: 'residential', bus: 'no' }, 'bus'), false);
+  assert.equal(isDrivable({ highway: 'residential' }, 'bus'), true);
+  // Umweg mit Tempo 20: die Busschleuse (höchstens 30) lohnt sich für den Bus
+  const ways = detourWays().map((w) => ({ ...w, tags: { ...w.tags, maxspeed: '20' } }));
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const from = [47, 8];
+  const to = [47.01, 8.01];
+  const road = createRoad({ layerId, nodes: [from, to], kind: 'main', maxspeed: 50, access: 'bus' });
+  doc.features.push(road);
+  const car = buildGraphs({ osmWays: ways, doc });
+  const bus = buildGraphs({ osmWays: ways, doc, vehicle: 'bus' });
+  const carRoute = routeOnGraph(car.proposed, from, to);
+  const busRoute = routeOnGraph(bus.proposed, from, to);
+  assert.ok(Math.abs(carRoute.dist - routeOnGraph(car.current, from, to).dist) < 1e-6, 'Auto: Busschleuse zählt nicht, Umweg wie heute');
+  assert.ok(busRoute.dist < carRoute.dist * 0.8, 'Bus: Diagonale durch die Busschleuse');
+  // Bus höchstens 30 km/h in der Schleuse: langsamer als dieselbe Strasse für alle mit 50
+  road.access = 'all';
+  const open = routeOnGraph(buildGraphs({ osmWays: ways, doc }).proposed, from, to);
+  assert.ok(Math.abs(open.dist - busRoute.dist) < 1e-6 && open.time < busRoute.time, `Schleuse bremst den Bus: ${busRoute.time} > ${open.time}`);
+  // Abschnitt statt ganze Strasse
+  road.segments[0].access = 'bus';
+  assert.ok(Math.abs(routeOnGraph(buildGraphs({ osmWays: ways, doc }).proposed, from, to).dist - carRoute.dist) < 1e-6, 'Abschnitts-Zugang sperrt Autos');
+  // Fussgängerzone mit Bus-Freigabe: Bus 20 km/h, Auto gesperrt
+  const zone = createZone({ layerId, nodes: [[46.999, 8.004], [46.999, 8.006], [47.001, 8.006], [47.001, 8.004]], kind: 'pedestrian', busAllowed: true });
+  assert.equal(zoneSpeedAt([zone], [47, 8.005]), 0);
+  assert.equal(zoneSpeedAt([zone], [47, 8.005], 'bus'), 20);
+  zone.busAllowed = false;
+  assert.equal(zoneSpeedAt([zone], [47, 8.005], 'bus'), 0);
+  const tempo = createZone({ layerId, nodes: zone.nodes, kind: 'tempo30', busAllowed: true });
+  assert.equal(zoneSpeedAt([tempo], [47, 8.005], 'bus'), 30, 'Freigabe hebt nur Sperren auf');
+});
+
+test('Buslinien: Fahrzeit über alle Halte inkl. Haltezeit, heute und neu, zu wenig Halte', () => {
+  const ways = detourWays().map((w) => ({ ...w, tags: { ...w.tags, maxspeed: '20' } }));
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const s1 = createJunction({ layerId, at: [47, 8], kind: 'busstop', lines: ['12'] });
+  const s2 = createJunction({ layerId, at: [47, 8.01], kind: 'busstop', lines: ['12'] });
+  const s3 = createJunction({ layerId, at: [47.01, 8.01], kind: 'busstop', lines: ['12'] });
+  doc.features.push(s1, s2, s3);
+  doc.busLines = [
+    { id: 'b1', name: '12', color: '#e53935', stops: [s1.id, s2.id, s3.id], dwell: 20 },
+    { id: 'b2', name: '7', color: '#1e88e5', stops: [s1.id, 'fehlt'], dwell: 20 },
+  ];
+  let res = computeBusLines({ osmWays: ways, doc });
+  assert.equal(res.length, 2);
+  assert.equal(res[0].stops, 3);
+  const legs = res[0].proposed.legs;
+  assert.equal(legs.length, 2);
+  assert.ok(Math.abs(res[0].proposed.time - (legs[0].time + legs[1].time + 20)) < 1e-9, 'ein Zwischenhalt à 20 s');
+  assert.ok(Math.abs(res[0].proposed.time - res[0].current.time) < 1e-9, 'ohne Entwurf gleich');
+  assert.ok(res[0].proposed.path.length > 3 && res[0].proposed.dist > 1500);
+  assert.equal(res[1].stops, 1);
+  assert.equal(res[1].current, null);
+  // Busschleuse als Diagonale: Linie wird schneller, Haltezeit 0
+  doc.features.push(createRoad({ layerId, nodes: [[47, 8], [47.01, 8.01]], kind: 'main', maxspeed: 50, access: 'bus' }));
+  doc.busLines[0].stops = [s1.id, s3.id];
+  doc.busLines[0].dwell = 0;
+  res = computeBusLines({ osmWays: ways, doc });
+  assert.ok(res[0].proposed.dist < res[0].current.dist * 0.8 && res[0].proposed.time < res[0].current.time, 'Bus nutzt die Schleuse');
+  assert.equal(computeBusLines({ osmWays: ways, doc: createDocument() }).length, 0);
+  // Haltestelle ohne Netz in der Nähe meldet einen Fehler je Modus
+  doc.busLines[0].stops = [s1.id, createJunction({ layerId, at: [48, 9], kind: 'busstop' }).id];
+  assert.equal(computeBusLines({ osmWays: ways, doc })[0].stops, 1, 'unbekannte Haltestelle zählt nicht');
 });

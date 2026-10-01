@@ -325,3 +325,14 @@ body.present .banner { display: none !important; }
 .diff-list li.changed { border-left-color: #e08a00; }
 .diff-list li.removed { border-left-color: #c62828; }
 .diff-list li .linkish { color: inherit; font-weight: 600; }
+
+/* Buslinien */
+.bus-line { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; margin: 6px 0; }
+.bus-line.active { border-color: #e08a00; background: #fff7e8; }
+.bus-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.bus-head input.bus-name { width: 56px; }
+.bus-head input.bus-dwell { width: 56px; }
+.bus-head input.bus-color { width: 28px; height: 24px; padding: 0; border: 0; background: none; }
+.bus-stops { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.stop-chip { display: inline-flex; align-items: center; gap: 2px; background: #f1f3f5; border-radius: 12px; padding: 2px 6px; font-size: 12px; }
+.stop-chip .icon-btn { width: 20px; height: 20px; font-size: 10px; }

@@ -2,7 +2,7 @@
 // Karten-Canvas plus Titel, Legende, Massstab und OSM-Attribution zusammengesetzt;
 // das PDF bettet dieses Bild als JPEG (DCTDecode) in eine A4-Seite ein.
 
-import { LEVELS, ZONE_KINDS, roadWidthMeters, sectionSummary } from './model.js';
+import { LEVELS, ZONE_KINDS, roadWidthMeters, sectionSummary, segmentAccess } from './model.js';
 import { formatDuration } from './routing.js';
 import { estimateCosts, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
@@ -499,7 +499,7 @@ const JUNCTION_LABELS = [
 ];
 
 /** Textseiten des Berichts: Massnahmen, Routenvergleich, Kommentare. */
-export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null } = {}) {
+export function reportBlocks(doc, { routes = null, comments = [], link = '', checks = null, exposure = null, pairs = null, isochrone = null, busLines = null } = {}) {
   const blocks = [];
   const date = new Date().toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
   blocks.push({ text: doc.name, size: 18, bold: true });
@@ -519,6 +519,8 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
     const special = r.segments.filter((s) => s.level !== 'ground').length;
     if (special) parts.push(t('{n} Abschnitt(e) Brücke/Tunnel', { n: special }));
     if (r.oneway) parts.push(t('Einbahn'));
+    const busOnly = r.segments.filter((sg, i) => segmentAccess(r, i) === 'bus').length;
+    if (busOnly) parts.push(busOnly === r.segments.length ? t('Nur Bus') : t('{n} Abschnitt(e) nur Bus', { n: busOnly }));
     const pc = validParcels(r);
     if (pc) parts.push(tn(pc.items.length, '{n} Parzelle', '{n} Parzellen'));
     parts.push(`${t('Ebene')} ${layerName(r.layerId)}`);
@@ -588,6 +590,24 @@ export function reportBlocks(doc, { routes = null, comments = [], link = '', che
       blocks.push({ text: `${p.name || t('Paar')}: ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : '–'} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : '–'}${delta}`, gap: 2 });
     });
     if (n) blocks.push({ text: t('Summe über {n} Verbindungen: {sum}, im Mittel {mean} je Fahrt', { n, sum: `${sum > 0 ? '+' : sum < 0 ? '−' : '±'}${formatDuration(Math.abs(sum))}`, mean: formatDuration(Math.abs(sum / n)) }), bold: true, gap: 8 });
+  }
+  // Buslinien
+  const busDefs = (doc.busLines || []).filter((l) => l.stops.length >= 2);
+  if (busDefs.length && busLines && busLines.length) {
+    blocks.push({ text: t('Buslinien'), size: 13, bold: true, gap: 4 });
+    busDefs.forEach((l) => {
+      const r = busLines.find((x) => x.id === l.id);
+      const cur = r && r.current && !r.current.error ? r.current : null;
+      const neu = r && r.proposed && !r.proposed.error ? r.proposed : null;
+      const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+      let delta = '';
+      if (cur && neu) {
+        const d = neu.time - cur.time;
+        delta = ` · ${t('Differenz')} ${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
+      }
+      blocks.push({ text: `${t('Linie')} ${l.name || '–'} (${tn(l.stops.length, '{n} Haltestelle', '{n} Haltestellen')}): ${t('heute')} ${cur ? `${fmtKm(cur.dist)}, ${formatDuration(cur.time)}` : t('keine Verbindung')} · ${t('neu')} ${neu ? `${fmtKm(neu.dist)}, ${formatDuration(neu.time)}` : t('keine Verbindung')}${delta}`, gap: 2 });
+    });
+    blocks.push({ text: '', gap: 6 });
   }
   // Erreichbarkeit
   if (doc.isochrone && isochrone && !isochrone.error) {

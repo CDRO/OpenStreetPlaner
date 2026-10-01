@@ -6,13 +6,13 @@ import { Store } from './store.js';
 import { LocalState } from './local.js';
 import { api, setClientId } from './api.js';
 import {
-  cloneDocument, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON,
+  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
 import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
-import { buildGraphs, computeIsochrone, routeOnGraph } from './routing.js';
+import { buildGraphs, computeBusLines, computeIsochrone, routeOnGraph } from './routing.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
 import { nodesKey, newId } from './model.js';
 import { exportPdf, exportPng, exportReport } from './export.js';
@@ -27,7 +27,7 @@ import { currentSubscription, permissionState, pushSupported, registerWorker, su
 
 const POLL_INTERVAL_MS = 45000;
 
-const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features, costs: doc.costs || {}, routePairs: doc.routePairs || [], isochrone: doc.isochrone || null });
+const contentKey = (doc) => JSON.stringify({ name: doc.name, layers: doc.layers, features: doc.features, costs: doc.costs || {}, routePairs: doc.routePairs || [], isochrone: doc.isochrone || null, busLines: doc.busLines || [] });
 
 function download(filename, data, type = 'application/json') {
   const blob = data instanceof Blob ? data : new Blob([data], { type });
@@ -78,6 +78,7 @@ async function main() {
     searchMarker: null,
     routes: null,
     pairResults: [],
+    busResults: [],
     iso: null,
     routeTimer: null,
     defaultZoneKind: 'tempo30',
@@ -238,6 +239,10 @@ async function main() {
     showHandles: tools.tool === 'select' && canEdit(),
     routes: store.doc.route ? state.routes : null,
     pairs: state.pairResults,
+    busLines: (store.doc.busLines || []).map((l) => {
+      const r = state.busResults.find((x) => x.id === l.id);
+      return { id: l.id, name: l.name, color: l.color, path: r && r.proposed ? r.proposed.path : null };
+    }),
     isochrone: store.doc.isochrone ? state.iso : null,
     routeTarget: tools.routeTarget,
     parcels: selectedParcelPolygons(),
@@ -272,6 +277,12 @@ async function main() {
       const q = doc.route;
       const pairs = (doc.routePairs || []).filter((p) => p.from && p.to);
       const iso = doc.isochrone;
+      const busLines = (doc.busLines || []).filter((l) => l.stops.length >= 2);
+      try {
+        state.busResults = busLines.length ? computeBusLines({ osmWays: osm.list(), doc, model: settings.speedModel }) : [];
+      } catch {
+        state.busResults = [];
+      }
       if (!q && !pairs.length && !iso) {
         state.routes = null;
         state.pairResults = [];
@@ -313,6 +324,10 @@ async function main() {
     const queries = [];
     if (doc.route) queries.push(doc.route);
     for (const p of doc.routePairs || []) if (p.from && p.to) queries.push(p);
+    for (const l of doc.busLines || []) {
+      const stops = l.stops.map((id) => getFeature(doc, id)).filter((f) => f && f.at);
+      for (let i = 1; i < stops.length; i++) queries.push({ from: stops[i - 1].at, to: stops[i].at });
+    }
     for (const q of queries) {
       const b = routeBounds(q.from, q.to);
       if (b.tooLarge) {
@@ -529,7 +544,7 @@ async function main() {
       map.requestRender();
     },
     async runExport({ format, mode, paper, orientation, dpi, scale = 2000, report = false }) {
-      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
+      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure() };
       let blob;
       if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
       else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
@@ -934,6 +949,30 @@ async function main() {
     },
     removePair(id) {
       actions.commitDoc('Routenpaar löschen', (d) => { d.routePairs = (d.routePairs || []).filter((x) => x.id !== id); });
+    },
+    busResults: () => state.busResults,
+    addBusLine() {
+      if (!actions.requireEdit()) return;
+      if ((store.doc.busLines || []).length >= 20) return ui.toast(t('Höchstens 20 Buslinien.'), 'error');
+      let id = null;
+      store.commit('Buslinie hinzufügen', (d) => { id = createBusLine(d).id; });
+      if (id) tools.captureRoute({ busLine: id });
+      ui.refreshRoute();
+    },
+    captureBusStops(id) {
+      if (!actions.requireEdit()) return;
+      tools.captureRoute({ busLine: id });
+      ui.refreshRoute();
+    },
+    patchBusLine(id, label, fn) {
+      actions.commitDoc(label, (d) => {
+        const l = (d.busLines || []).find((x) => x.id === id);
+        if (l) fn(l);
+      });
+    },
+    removeBusLine(id) {
+      actions.commitDoc('Buslinie löschen', (d) => { d.busLines = (d.busLines || []).filter((x) => x.id !== id); });
+      if (tools.routeTarget && tools.routeTarget.busLine === id) tools.cancel();
     },
     isochrone: () => state.iso,
     captureIsochrone() {
@@ -1342,7 +1381,7 @@ async function main() {
   }
   ui.refreshAll();
   connectEvents();
-  if (store.doc.route || (store.doc.routePairs || []).length || store.doc.isochrone) {
+  if (store.doc.route || (store.doc.routePairs || []).length || store.doc.isochrone || (store.doc.busLines || []).length) {
     ensureRouteNetwork();
     recomputeRoutes();
   }

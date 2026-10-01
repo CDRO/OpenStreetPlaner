@@ -43,7 +43,7 @@ export class ToolController {
     this.preview = null;
     this.snapPoint = null;
     this.routeDraft = null; // Start gesetzt, Ziel fehlt noch
-    this.routeTarget = null; // null = Hauptroute, sonst { pairId } oder { isochrone: true }
+    this.routeTarget = null; // null = Hauptroute, sonst { pairId }, { isochrone: true } oder { busLine: id }
     this.commentDraft = null; // Position für einen neuen Kommentar
     this.modifiers = { Shift: false, Control: false, Alt: false };
 
@@ -565,6 +565,7 @@ export class ToolController {
   routeClick(e) {
     const ll = roundCoord(e.latlng);
     const target = this.routeTarget;
+    if (target && target.busLine) return this.busStopClick(e, target.busLine);
     if (target && target.isochrone) {
       this.routeTarget = null;
       this.store.commit('Isochronen-Ursprung setzen', (doc) => {
@@ -599,12 +600,64 @@ export class ToolController {
     this.onStatus(this.toolInfo().hint);
   }
 
-  /** Nächste Klicks im Routen-Werkzeug setzen ein Paar (pairId) oder den Isochronen-Ursprung. */
+  /**
+   * Haltestellen einer Buslinie: Klick auf eine bestehende Bushaltestelle hängt sie an die Linie,
+   * Klick anderswo setzt eine neue Haltestelle (eingerastet) und hängt sie an. Esc beendet.
+   */
+  busStopClick(e, lineId) {
+    const doc = this.store.doc;
+    const line = (doc.busLines || []).find((l) => l.id === lineId);
+    if (!line) {
+      this.routeTarget = null;
+      return;
+    }
+    // Bestehende Haltestelle unter dem Zeiger hat Vorrang vor Strassenpunkten an derselben Stelle
+    const existing = this.nearestBusStop(e.point);
+    if (existing) {
+      if (line.stops[line.stops.length - 1] === existing.id) return this.toast(t('Diese Haltestelle ist bereits die letzte der Linie.'));
+      this.store.commit('Haltestelle an Linie anhängen', (d) => {
+        const l = d.busLines.find((x) => x.id === lineId);
+        const stop = getFeature(d, existing.id);
+        if (!l || !stop) return;
+        l.stops.push(stop.id);
+        if (l.name && !stop.lines.includes(l.name)) stop.lines.push(l.name);
+      });
+      this.onStatus(t('Haltestelle {n} angehängt – weitere anklicken oder neue setzen, Esc beendet.', { n: line.stops.length }));
+      return;
+    }
+    const r = this.snap(e);
+    const layerId = this.getActiveLayerId();
+    this.store.commit('Haltestelle setzen', (d) => {
+      const l = d.busLines.find((x) => x.id === lineId);
+      const stop = createJunction({ layerId, at: r.latlng, kind: 'busstop', lines: l && l.name ? [l.name] : [] });
+      d.features.push(stop);
+      if (l) l.stops.push(stop.id);
+    });
+    this.onStatus(t('Haltestelle {n} gesetzt – weitere anklicken oder neue setzen, Esc beendet.', { n: line.stops.length }));
+  }
+
+  /** Sichtbare Bushaltestelle innerhalb der Klick-Toleranz (Pixel), sonst null. */
+  nearestBusStop(point) {
+    const doc = this.store.doc;
+    let best = null;
+    for (const f of doc.features) {
+      if (f.type !== 'junction' || f.kind !== 'busstop') continue;
+      const layer = getLayer(doc, f.layerId);
+      if (!layer || layer.visible === false) continue;
+      const p = this.map.project(f.at);
+      const d = Math.hypot(p.x - point.x, p.y - point.y);
+      if (d <= PICK_TOLERANCE && (!best || d < best.d)) best = { f, d };
+    }
+    return best ? best.f : null;
+  }
+
+  /** Nächste Klicks im Routen-Werkzeug setzen ein Paar (pairId), den Isochronen-Ursprung oder Haltestellen einer Buslinie. */
   captureRoute(target) {
     this.routeTarget = target;
     this.routeDraft = null;
     if (this.tool !== 'route') this.setTool('route');
-    this.onStatus(target && target.isochrone ? t('Ursprung der Erreichbarkeit auf der Karte anklicken.') : t('Start des Paars auf der Karte anklicken, dann das Ziel.'));
+    if (target && target.busLine) this.onStatus(t('Haltestellen der Linie anklicken oder neue setzen; Esc beendet.'));
+    else this.onStatus(target && target.isochrone ? t('Ursprung der Erreichbarkeit auf der Karte anklicken.') : t('Start des Paars auf der Karte anklicken, dann das Ziel.'));
     this.onSceneChange();
   }
 

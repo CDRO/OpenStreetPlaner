@@ -8,7 +8,7 @@ import { featureTitle } from './diff.js';
 import { COST_ITEMS, costValue, formatChf } from './costs.js';
 import { parcelLabel, validParcels } from './parcels.js';
 import { ISO_COLORS, ISO_DIFF_COLORS } from './draw.js';
-import { ISOCHRONE_PRESETS } from './model.js';
+import { ISOCHRONE_PRESETS, ROAD_ACCESS, segmentAccess, normalizeLines } from './model.js';
 import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
 import { TOOLS } from './tools.js';
@@ -68,6 +68,52 @@ function pairsSection(doc, actions, tools, geometry) {
     <p class="muted small">${t('Feste Verbindungen wie Schule, Bahnhof oder Nachbardorf: heute gegen neu{typ}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte.', { typ: geometry ? t(' (typische Zeit)') : '' })}</p>
     ${pairs.length ? `<table class="route-table pairs"><thead><tr><th>#</th><th>${t('Name')}</th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th><th></th></tr></thead><tbody>${rows}${total}</tbody></table>` : ''}
     <div class="btn-row"><button type="button" id="pair-add" class="btn small" ${dis}>${t('+ Paar hinzufügen')}</button>${capturing ? `<span class="muted small">${t('Start und Ziel auf der Karte anklicken (Esc bricht ab).')}</span>` : ''}</div>`;
+}
+
+/** Buslinien: Haltestellen in Reihenfolge, Fahrzeit heute/neu über das Bus-Netz. */
+function busSection(doc, actions, tools) {
+  const lines = doc.busLines || [];
+  const results = actions.busResults();
+  const editable = actions.canEdit();
+  const dis = editable ? '' : 'disabled';
+  const capturing = tools.routeTarget && tools.routeTarget.busLine;
+  const fmtKm = (m) => `${(m / 1000).toFixed(2)} km`;
+  const stopName = (id, i) => {
+    const f = doc.features.find((x) => x.id === id);
+    return f ? (f.name || `${t('Haltestelle')} ${i + 1}`) : `${t('Haltestelle')} ${i + 1}`;
+  };
+  const rows = lines.map((l) => {
+    const r = results.find((x) => x.id === l.id);
+    const cur = r && r.current && !r.current.error ? r.current : null;
+    const neu = r && r.proposed && !r.proposed.error ? r.proposed : null;
+    let delta = '–';
+    if (cur && neu) {
+      const d = neu.time - cur.time;
+      delta = `${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
+    }
+    const err = r && ((r.current && r.current.error) || (r.proposed && r.proposed.error));
+    const stops = l.stops.map((id, i) => `<span class="stop-chip"><button type="button" class="linkish stop-focus" data-stop="${esc(id)}">${i + 1}. ${esc(stopName(id, i))}</button>${editable ? `<button type="button" class="icon-btn stop-up" data-id="${esc(l.id)}" data-i="${i}" title="${t('Nach vorne')}" ${i === 0 ? 'disabled' : ''}>◀</button><button type="button" class="icon-btn stop-del" data-id="${esc(l.id)}" data-i="${i}" title="${t('Aus der Linie entfernen')}">✕</button>` : ''}</span>`).join('');
+    return `
+      <div class="bus-line ${capturing === l.id ? 'active' : ''}">
+        <div class="bus-head">
+          <input type="color" class="bus-color" data-id="${esc(l.id)}" value="${esc(l.color)}" title="${t('Linienfarbe')}" ${dis}>
+          <input type="text" class="bus-name" data-id="${esc(l.id)}" value="${esc(l.name)}" placeholder="12" title="${t('Liniennummer')}" ${dis}>
+          <label class="muted small">${t('Halt')} <input type="number" class="bus-dwell" data-id="${esc(l.id)}" min="0" max="300" step="5" value="${l.dwell}" ${dis}> s</label>
+          <button type="button" class="btn small bus-capture ${capturing === l.id ? 'primary' : ''}" data-id="${esc(l.id)}" ${dis}>${t('Haltestellen setzen')}</button>
+          <button type="button" class="icon-btn bus-del" data-id="${esc(l.id)}" title="${t('Linie löschen')}" ${dis}>✕</button>
+        </div>
+        <div class="bus-stops">${stops || `<span class="muted small">${t('Noch keine Haltestellen – „Haltestellen setzen“ und auf der Karte klicken.')}</span>`}</div>
+        ${l.stops.length >= 2 ? `<table class="route-table"><thead><tr><th></th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th></tr></thead><tbody>
+          <tr><td>${t('Fahrzeit')} <span class="muted small">(${t('inkl. Halte')})</span></td><td class="num">${cur ? formatDuration(cur.time) : '–'}</td><td class="num">${neu ? formatDuration(neu.time) : '–'}</td><td class="num">${delta}</td></tr>
+          <tr><td>${t('Distanz')}</td><td class="num">${cur ? fmtKm(cur.dist) : '–'}</td><td class="num">${neu ? fmtKm(neu.dist) : '–'}</td><td></td></tr>
+        </tbody></table>${err ? `<p class="muted small">${esc(t(err))}</p>` : ''}` : ''}
+      </div>`;
+  }).join('');
+  return `
+    <h4>${t('Buslinien')}</h4>
+    <p class="muted small">${t('Haltestellen in Reihenfolge; die Fahrzeit folgt dem Bus-Netz: Busschleusen (Zugang „Nur Bus“) und freigegebene Flächen sind für Busse offen, für Autos gesperrt. Je Zwischenhalt kommt die Haltezeit dazu.')}</p>
+    ${rows}
+    <div class="btn-row"><button type="button" id="bus-add" class="btn small" ${dis}>${t('+ Buslinie')}</button>${capturing ? `<span class="muted small">${t('Haltestellen anklicken oder neue setzen (Esc beendet).')}</span>` : ''}</div>`;
 }
 
 /** Erreichbarkeit ab einem Ursprung als Isochronen-Netz. */
@@ -609,6 +655,18 @@ export class UI {
           </tbody>
         </table>`;
     }
+    const busDefs = doc.busLines || [];
+    const busRes = actions.busResults();
+    if (busDefs.length && busRes.length) {
+      const rows = busDefs.map((l) => {
+        const r = busRes.find((x) => x.id === l.id);
+        const cur = r && r.current && !r.current.error ? r.current : null;
+        const neu = r && r.proposed && !r.proposed.error ? r.proposed : null;
+        if (!cur && !neu) return '';
+        return `<tr><td><span class="dot" style="background:${esc(l.color)}"></span>${t('Linie')} ${esc(l.name)}</td><td>${cur ? formatDuration(cur.time) : '–'}</td><td>${neu ? formatDuration(neu.time) : '–'}</td></tr>`;
+      }).join('');
+      if (rows) route += `<h3>${t('Buslinien')}</h3><table class="route-table"><thead><tr><th></th><th>${t('Heute')}</th><th>${t('Neu')}</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
     const pairDefs = doc.routePairs || [];
     const pairRes = actions.pairResults();
     if (pairDefs.length && pairRes.length) {
@@ -761,6 +819,7 @@ export class UI {
         <label class="field">${t('Strassentyp')}<select id="prop-kind" ${dis}>${options(ROAD_KINDS, f.kind)}</select></label>
         <label class="field">${t('Status')}<select id="prop-status" ${dis}>${options(STATUSES, f.status)}</select></label>
         <label class="check"><input type="checkbox" id="prop-oneway"${f.oneway ? ' checked' : ''} ${dis}> ${t('Einbahn (in Zeichenrichtung)')}</label>
+        <label class="field">${t('Zugang')}<select id="prop-access" ${dis}>${options(ROAD_ACCESS, f.access || 'all')}</select></label>
         <label class="field">${t('Tempolimit (km/h)')}
           <div class="speed-row">
             <input type="number" id="prop-maxspeed" min="5" max="200" step="5" value="${f.maxspeed ?? ''}" placeholder="${t('Standard')} ${roadSpeed({ ...f, maxspeed: null }) || '–'}" ${dis}>
@@ -791,6 +850,8 @@ export class UI {
           </div>
           <button type="button" id="seg-apply-all" class="btn small" ${dis}>${t('Diese Führung auf alle Abschnitte anwenden')}</button>
           <label class="field">${t('Tempolimit dieses Abschnitts (km/h)')}<input type="number" id="seg-maxspeed" min="5" max="200" step="5" value="${seg.maxspeed ?? ''}" placeholder="${t('wie Strasse')} (${segmentSpeed({ ...f, segments: [{ level: 'ground', maxspeed: null }] }, 0) || '–'})" ${dis}></label>
+          <label class="field">${t('Zugang dieses Abschnitts')}<select id="seg-access" ${dis}><option value="" ${seg.access ? '' : 'selected'}>${t('wie Strasse')} (${t(ROAD_ACCESS.find((a) => a.id === (f.access || 'all')).label)})</option>${ROAD_ACCESS.map((a) => `<option value="${a.id}" ${seg.access === a.id ? 'selected' : ''}>${t(a.label)}</option>`).join('')}</select></label>
+          ${segmentAccess(f, segIndex) === 'bus' ? `<p class="muted small">${t('Busschleuse: für Autos gesperrt, Busse fahren mit höchstens 30 km/h durch.')}</p>` : ''}
           <div class="btn-row">
             <button type="button" id="seg-split-before" class="btn small" ${dis || segIndex < 1 ? 'disabled' : ''} title="${t('Strasse am Anfang dieses Abschnitts in zwei Strassen teilen')}">${t('Vor Abschnitt teilen')}</button>
             <button type="button" id="seg-split-after" class="btn small" ${dis || segIndex > f.segments.length - 2 ? 'disabled' : ''} title="${t('Strasse am Ende dieses Abschnitts in zwei Strassen teilen')}">${t('Nach Abschnitt teilen')}</button>
@@ -807,12 +868,15 @@ export class UI {
             ${[['left', '↰ links'], ['straight', '↑ geradeaus'], ['right', '↱ rechts'], ['uturn', '↶ wenden']].map(([k, l]) => `<label class="check"><input type="checkbox" class="turn" data-turn="${k}" ${turns[k] ? 'checked' : ''} ${dis}> ${t(l)}</label>`).join('')}
           </div>
           ${f.turns ? `<button type="button" id="turns-reset" class="btn small" ${dis}>${t('Standard')}</button>` : ''}
-        </div>` : ''}`;
+        </div>` : ''}
+        ${f.kind === 'busstop' ? `<label class="field">${t('Liniennummern (durch Komma)')}<input type="text" id="prop-lines" value="${esc((f.lines || []).join(', '))}" placeholder="12, 45" ${dis}></label>
+        <p class="muted small">${t('Haltestellen lassen sich im Auswahl-Werkzeug am Griff verschieben. Buslinien mit Fahrzeit stehen im Routen-Tab.')}</p>` : ''}`;
     } else if (f.type === 'roundabout') {
       specific = `<label class="field">${t('Radius (m)')}<input type="number" id="prop-radius" min="4" max="200" step="0.5" value="${f.radius}" ${dis}></label>`;
     } else if (f.type === 'zone') {
       const k = ZONE_KINDS.find((z) => z.id === f.kind) || ZONE_KINDS[4];
       specific = `<label class="field">${t('Art der Fläche')}<select id="prop-zkind" ${dis}>${options(ZONE_KINDS, f.kind)}</select></label>
+        ${k.speed !== null && k.speed < 30 ? `<label class="check"><input type="checkbox" id="prop-bus-allowed" ${f.busAllowed ? 'checked' : ''} ${dis}> ${t('Busse dürfen durchfahren (20 km/h)')}</label>` : ''}
         <p class="muted small">${k.speed === 0 ? t('Für Autos gesperrt (Routen-Rechner).') : k.speed ? t('Tempolimit {v} km/h für alle Strassen in der Fläche (Routen-Rechner).', { v: k.speed }) : t('Ohne Wirkung auf den Routen-Rechner.')} ${tn(f.nodes.length, '{n} Eckpunkt.', '{n} Eckpunkte.')}</p>`;
     }
     box.innerHTML = `
@@ -850,6 +914,8 @@ export class UI {
       this.$('prop-kind').onchange = (e) => patch('Strassentyp ändern', (x) => { x.kind = e.target.value; });
       this.$('prop-status').onchange = (e) => patch('Status ändern', (x) => { x.status = e.target.value; });
       this.$('prop-oneway').onchange = (e) => patch('Einbahn ändern', (x) => { x.oneway = e.target.checked; });
+      this.$('prop-access').onchange = (e) => patch('Zugang ändern', (x) => { x.access = e.target.value; });
+      this.$('seg-access').onchange = (e) => patch('Zugang des Abschnitts ändern', (x) => { x.segments[segIndex].access = e.target.value || null; });
       const setSpeed = (v) => patch('Tempolimit ändern', (x) => { x.maxspeed = v === '' || v === null ? null : Math.max(5, Math.min(200, Math.round(Number(v) / 5) * 5)); });
       this.$('prop-maxspeed').onchange = (e) => setSpeed(e.target.value === '' ? null : e.target.value);
       box.querySelectorAll('.speed').forEach((b) => { b.onclick = () => setSpeed(b.dataset.speed === '' ? null : b.dataset.speed); });
@@ -880,8 +946,12 @@ export class UI {
       });
       const reset = this.$('turns-reset');
       if (reset) reset.onclick = () => patch('Abbiegeregeln zurücksetzen', (x) => { x.turns = null; });
+      const lines = this.$('prop-lines');
+      if (lines) lines.onchange = (e) => patch('Liniennummern ändern', (x) => { x.lines = normalizeLines(e.target.value.split(',')); });
     } else if (f.type === 'zone') {
       this.$('prop-zkind').onchange = (e) => patch('Art der Fläche ändern', (x) => { x.kind = e.target.value; });
+      const busAllowed = this.$('prop-bus-allowed');
+      if (busAllowed) busAllowed.onchange = (e) => patch('Busdurchfahrt ändern', (x) => { x.busAllowed = e.target.checked; });
     } else if (f.type === 'roundabout') {
       this.$('prop-radius').onchange = (e) => {
         const r = Math.max(4, Math.min(200, Number(e.target.value) || 15));
@@ -899,6 +969,26 @@ export class UI {
     el.querySelectorAll('.pair-set').forEach((b) => { b.onclick = () => actions.capturePair(b.dataset.id); });
     el.querySelectorAll('.pair-swap').forEach((b) => { b.onclick = () => actions.swapPair(b.dataset.id); });
     el.querySelectorAll('.pair-del').forEach((b) => { b.onclick = () => actions.removePair(b.dataset.id); });
+  }
+
+  wireBus() {
+    const { actions } = this.ctx;
+    const el = this.$('route-panel');
+    const add = this.$('bus-add');
+    if (add) add.onclick = () => actions.addBusLine();
+    el.querySelectorAll('.bus-name').forEach((inp) => { inp.onchange = () => actions.patchBusLine(inp.dataset.id, 'Buslinie umbenennen', (l) => { l.name = inp.value.trim().slice(0, 12); }); });
+    el.querySelectorAll('.bus-color').forEach((inp) => { inp.onchange = () => actions.patchBusLine(inp.dataset.id, 'Linienfarbe ändern', (l) => { l.color = inp.value; }); });
+    el.querySelectorAll('.bus-dwell').forEach((inp) => { inp.onchange = () => actions.patchBusLine(inp.dataset.id, 'Haltezeit ändern', (l) => { l.dwell = Math.max(0, Math.min(300, Math.round(Number(inp.value) || 0))); }); });
+    el.querySelectorAll('.bus-capture').forEach((b) => { b.onclick = () => actions.captureBusStops(b.dataset.id); });
+    el.querySelectorAll('.bus-del').forEach((b) => { b.onclick = () => actions.removeBusLine(b.dataset.id); });
+    el.querySelectorAll('.stop-del').forEach((b) => { b.onclick = () => actions.patchBusLine(b.dataset.id, 'Haltestelle aus Linie entfernen', (l) => { l.stops.splice(Number(b.dataset.i), 1); }); });
+    el.querySelectorAll('.stop-up').forEach((b) => {
+      b.onclick = () => actions.patchBusLine(b.dataset.id, 'Haltestelle verschieben', (l) => {
+        const i = Number(b.dataset.i);
+        if (i > 0) [l.stops[i - 1], l.stops[i]] = [l.stops[i], l.stops[i - 1]];
+      });
+    });
+    el.querySelectorAll('.stop-focus').forEach((b) => { b.onclick = () => actions.zoomToFeature(b.dataset.stop); });
   }
 
   wireIsochrone() {
@@ -1492,8 +1582,10 @@ export class UI {
       </div>
       <p class="muted small" id="route-net">${esc(t(net))}</p>
       ${pairsSection(store.doc, actions, tools, geometry)}
+      ${busSection(store.doc, actions, tools)}
       ${isochroneSection(store.doc, actions, tools)}`;
     this.wirePairs();
+    this.wireBus();
     this.wireIsochrone();
     this.$('route-tool').onclick = () => tools.setTool('route');
     this.$('route-model').onchange = (e) => actions.updateSettings({ speedModel: e.target.checked ? 'geometry' : 'limit' });

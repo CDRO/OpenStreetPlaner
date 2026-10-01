@@ -39,6 +39,8 @@ go run . -data ./data
 | Routen-Rechner | Start A und Ziel B klicken: schnellste Fahrroute im heutigen OSM-Netz vs. im Netz mit dem Entwurf (neue Strassen dazu, Rückbau weg, übernommene Strassen mit ihren Änderungen, nur sichtbare Ebenen), Distanz und Fahrzeit aus Tempolimits, gezeichnete Kreuzungen kosten Zeit (Ampel 20 s, Stop 8 s, Vortritt 3 s), Kreisel verbinden ihre Anschlüsse. **Abbiegen**: an Knoten mit drei und mehr Armen kostet rechts 2 s, links 5 s, wenden 15 s (Rechtsverkehr, aus dem Richtungswechsel berechnet); Abbiegeverbote an gezeichneten Kreuzungen sperren die Richtung, Anschlüsse und Kreisel sind kostenfrei. Die Suche läuft über (Knoten, Vorgänger)-Zustände, damit Verbote korrekt wirken |
 | Routenpaare | Routen-Tab: weitere benannte Start-Ziel-Paare (Schule, Bahnhof, Nachbardorf), je heute/neu mit Differenz, Summe und Mittel der Zeitgewinne; nummerierte Marker auf der Karte, Tabelle im Bericht und im Präsentationsmodus. Alle Paare rechnen auf denselben beiden Netzen |
 | Erreichbarkeit | Routen-Tab: Isochronen-Netz ab einem Ursprung für 5/10/15 min (weitere Vorgaben), als „heute“, „neu“ oder Differenz (grün: nur mit Entwurf erreichbar, rot: nur heute). Kennzahl: erreichbare Netz-Kilometer je Band; Suche bricht bei der höchsten Schwelle ab, Kanten werden anteilig gezeichnet. Das OSM-Netz um den Ursprung wird automatisch geladen (Radius aus Minuten × 50 km/h × 0.7) |
+| Buslinien | Routen-Tab: Linien mit Nummer, Farbe und Haltezeit je Zwischenhalt (Standard 20 s). „Haltestellen setzen“ und auf die Karte klicken: Klick auf eine bestehende Bushaltestelle hängt sie an, Klick anderswo setzt eine neue (eingerastet) und trägt die Liniennummer ein. Haltestellen lassen sich im Auswahl-Werkzeug am Griff verschieben, in der Linie nach vorne schieben oder entfernen; Liniennummern stehen am Punkt und ab Zoom 15 auf der Karte. Fahrzeit und Distanz heute/neu über alle Halte inkl. Haltezeit, Differenz; Linienverlauf gestrichelt in der Linienfarbe, Tabelle im Bericht und im Präsentationsmodus |
+| Busausnahmen | Zugang je Strasse oder Abschnitt: „Alle Fahrzeuge“ oder „Nur Bus (Busschleuse)“ – für Autos gesperrt, Busse höchstens 30 km/h, gelb gestrichelt mit „BUS“ ab Zoom 16. Fussgängerzonen und andere gesperrte/langsame Flächen können „Busse dürfen durchfahren (20 km/h)“ erhalten. Buslinien rechnen auf dem Bus-Netz (zusätzlich OSM `highway=busway`, `bus=yes`, `psv=yes`), Routen-Rechner, Routenpaare und Erreichbarkeit auf dem Auto-Netz |
 | Geschwindigkeitsmodell | Schalter im Routen-Tab: Fahrzeit aus der Strassenführung statt nur aus dem Limit. Kurvenradien aus der Geometrie (v = √(3 m/s² · R)), Steigung aus dem Höhenprofil, Wartezeiten an Kreuzungen und Kreiseln mit Streuung. Ergebnis als typische Zeit mit Band P15–P85 |
 | Glätten / Vereinfachen | Strassen per Catmull-Rom-Spline glätten (Abschnittseigenschaften bleiben) oder per Douglas-Peucker auf 1 m vereinfachen |
 | Höhenprofil | Pro Strasse vom swisstopo-Profildienst laden: Gelände, Steigungen, Brücken über und Tunnel unter dem Gelände als Diagramm; fliesst ins Geschwindigkeitsmodell ein |
@@ -190,11 +192,15 @@ web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwri
       "segments": [{ "level": "ground", "maxspeed": null }, { "level": "tunnel", "maxspeed": 30 }] },
     { "id": "j_…", "type": "junction", "layerId": "l_…", "kind": "signals", "at": [47.05, 8.30],
       "turns": { "left": false, "right": true, "straight": true, "uturn": false } },
+    { "id": "j_h1", "type": "junction", "layerId": "l_…", "kind": "busstop", "at": [47.051, 8.302],
+      "lines": ["12", "45"] },
     { "id": "k_…", "type": "roundabout", "layerId": "l_…", "center": [47.052, 8.305], "radius": 14 },
     { "id": "z_…", "type": "zone", "layerId": "l_…", "kind": "tempo30",
-      "nodes": [[47.049, 8.299], [47.049, 8.303], [47.052, 8.303], [47.052, 8.299]] }
+      "nodes": [[47.049, 8.299], [47.049, 8.303], [47.052, 8.303], [47.052, 8.299]],
+      "busAllowed": false }
   ],
-  "route": { "from": [47.049, 8.298], "to": [47.053, 8.306] }
+  "route": { "from": [47.049, 8.298], "to": [47.053, 8.306] },
+  "busLines": [{ "id": "b_…", "name": "12", "color": "#e53935", "stops": ["j_h1", "j_…"], "dwell": 20 }]
 }
 ```
 
@@ -205,8 +211,13 @@ optional (null = Standard je Strassentyp), ebenso `width` (Meter) und
 `residential`, `service`, `path` oder `other`; `kind` einer Kreuzung
 `plain`, `signals`, `priority`, `stop`, `interchange`, `crossing` oder
 `busstop`. `turns` einer Kreuzung ist optional (null = links, rechts und
-geradeaus erlaubt, wenden nicht). `osmId` verweist auf den übernommenen
-OSM-Way, `route` ist die gespeicherte Anfrage des Routen-Rechners.
+geradeaus erlaubt, wenden nicht); `lines` einer Bushaltestelle sind bis zu
+zehn Liniennummern. `access` einer Strasse und `access` eines Abschnitts
+sind optional (`all` oder `bus`; Abschnitt vor Strasse, Standard alle).
+`busAllowed` einer Fläche erlaubt Bussen die Durchfahrt mit 20 km/h.
+`osmId` verweist auf den übernommenen OSM-Way, `route` ist die gespeicherte
+Anfrage des Routen-Rechners. `busLines` sind bis zu 20 Linien mit je bis zu
+60 Haltestellen (IDs von Bushaltestellen) und Haltezeit in Sekunden.
 
 ### Routen-Rechner: Annahmen
 
@@ -218,7 +229,9 @@ OSM-Way, `route` ist die gespeicherte Anfrage des Routen-Rechners.
   30, Zufahrt 20; Fuss-/Veloweg nicht befahrbar).
 - Einbahnen werden beachtet (OSM `oneway`, Zeichenrichtung im Entwurf).
 - Zonen mit Tempolimit deckeln jeden Abschnitt, dessen Mittelpunkt in der
-  Fläche liegt; Fussgängerzonen sperren ihn.
+  Fläche liegt; Fussgängerzonen sperren ihn (für Busse mit Freigabe 20 km/h).
+- Busschleusen (Zugang „Nur Bus“) fehlen im Auto-Netz; im Bus-Netz gelten sie
+  mit höchstens 30 km/h. Buslinien addieren je Zwischenhalt die Haltezeit.
 - Geschwindigkeitsmodell (optional): erwartete Geschwindigkeit je Abschnitt
   = min(Limit, Kurvengeschwindigkeit √(a·R) mit a = 3 m/s², Limit ×
   Steigungsfaktor). Streuung der freien Fahrgeschwindigkeit je Tempo-Niveau
@@ -235,7 +248,7 @@ OSM-Way, `route` ist die gespeicherte Anfrage des Routen-Rechners.
 
 ```sh
 make test            # go vet + go test + Frontend-Unit-Tests (node --test)
-make test-browser    # Browser-Tests (basics, osm-editing, ux); braucht Go und Playwright mit Chromium
+make test-browser    # Browser-Tests (basics … lang, bus); braucht Go und Playwright mit Chromium
 make run             # Server lokal
 make docker          # Image bauen
 ```

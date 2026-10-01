@@ -7,6 +7,7 @@ import {
   removeLayer, moveLayer, featureLabel,
   ROAD_KINDS, defaultSection, normalizeSection, sectionWidth, sectionBands, sectionSummary, roadMedian, junctionTurns,
   normalizeRoutePairs, normalizeIsochrone,
+  normalizeLines, normalizeBusLines, normalizeAccess, segmentAccess, createBusLine, BUS_COLORS, BUS_DWELL_DEFAULT,
 } from '../js/model.js';
 
 function docWithRoad() {
@@ -277,4 +278,52 @@ test('Routenpaare und Isochronen-Einstellung werden geprüft und gespeichert', (
   assert.deepEqual(back.routePairs, pairs);
   assert.deepEqual(back.isochrone, doc.isochrone);
   assert.deepEqual(createDocument().routePairs, []);
+});
+
+test('Bus: Zugang je Strasse/Abschnitt, Liniennummern, Buslinien und Flächen-Freigabe', () => {
+  assert.equal(normalizeAccess('bus'), 'bus');
+  assert.equal(normalizeAccess('egal', 'all'), 'all');
+  assert.deepEqual(normalizeLines([' 12 ', '12', '', 45, 'x'.repeat(20), null]), ['12', '45', 'xxxxxxxxxxxx']);
+  assert.equal(normalizeLines(new Array(30).fill(0).map((_, i) => String(i))).length, 10);
+  assert.deepEqual(normalizeLines('12'), []);
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const road = createRoad({ layerId, nodes: [[47, 8], [47, 8.001], [47, 8.002]], access: 'bus' });
+  assert.equal(segmentAccess(road, 0), 'bus');
+  road.segments[1].access = 'all';
+  assert.equal(segmentAccess(road, 1), 'all');
+  assert.equal(segmentAccess(createRoad({ layerId, nodes: [[47, 8], [47, 8.001]] }), 0), 'all');
+  const stopA = createJunction({ layerId, at: [47, 8], kind: 'busstop', lines: ['12', '12', ' 45 '] });
+  const stopB = createJunction({ layerId, at: [47, 8.002], kind: 'busstop' });
+  assert.deepEqual(stopA.lines, ['12', '45']);
+  assert.deepEqual(stopB.lines, []);
+  const zone = createZone({ layerId, nodes: [[47, 8], [47, 8.01], [47.01, 8]], kind: 'pedestrian', busAllowed: true });
+  doc.features.push(road, stopA, stopB, zone);
+  const line = createBusLine(doc, '12');
+  assert.equal(line.name, '12');
+  assert.equal(line.color, BUS_COLORS[0]);
+  assert.equal(line.dwell, BUS_DWELL_DEFAULT);
+  assert.equal(createBusLine(doc).name, '2');
+  line.stops.push(stopA.id, stopB.id);
+  const lines = normalizeBusLines([{ id: 'kaputt', name: ' Linie 12 lang lang ', color: 'rot', stops: [stopA.id, 'fehlt', 7, stopB.id], dwell: 999 }, 'x', { dwell: 45.4 }], new Set([stopA.id, stopB.id]));
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines[0], { id: 'kaputt', name: 'Linie 12 lan', color: BUS_COLORS[0], stops: [stopA.id, stopB.id], dwell: BUS_DWELL_DEFAULT });
+  assert.ok(lines[1].id.startsWith('b_') && lines[1].dwell === 45 && lines[1].color === BUS_COLORS[1]);
+  assert.equal(normalizeBusLines(new Array(30).fill({})).length, 20);
+  // Normalisierung über das Dokument: unbekannte Haltestellen fliegen raus, Zugang bleibt, Flächen-Freigabe bleibt
+  const raw = JSON.parse(serialize(doc));
+  raw.busLines[0].stops.push('gibtsnicht');
+  raw.features[0].access = 'egal';
+  raw.features[0].segments[0].access = 'bus';
+  const back = normalizeDocument(raw);
+  assert.deepEqual(back.busLines[0].stops, [stopA.id, stopB.id]);
+  assert.equal(back.features[0].access, 'all');
+  assert.equal(segmentAccess(back.features[0], 0), 'bus');
+  assert.equal(segmentAccess(back.features[0], 1), 'all');
+  assert.deepEqual(back.features[1].lines, ['12', '45']);
+  assert.equal(back.features[3].busAllowed, true);
+  assert.deepEqual(deserialize(serialize(back)).busLines, back.busLines);
+  assert.deepEqual(createDocument().busLines, []);
+  const gj = toGeoJSON(back);
+  assert.equal(gj.features.find((f) => f.properties.id === stopA.id).properties.lines.join(','), '12,45');
 });

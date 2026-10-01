@@ -21,7 +21,7 @@ export function extractKeys(root) {
     }
     // Rückgängig-Beschriftungen und Listen-Labels
     for (const m of src.matchAll(/\b(?:commit|patch|commitDoc)\('((?:[^'\\]|\\.)*)'/g)) add(m[1]);
-    for (const m of src.matchAll(/patchLayer\([^,]+, '((?:[^'\\]|\\.)*)'/g)) add(m[1]);
+    for (const m of src.matchAll(/patch(?:Layer|BusLine)\([^,]+, '((?:[^'\\]|\\.)*)'/g)) add(m[1]);
     for (const m of src.matchAll(/patchLayer\([^,]+, visible \? '([^']*)' : '([^']*)'/g)) { add(m[1]); add(m[2]); }
     if (['model.js', 'costs.js', 'tools.js', 'export.js'].includes(name)) {
       for (const m of src.matchAll(/\b(?:label|hint|group):\s*'((?:[^'\\]|\\.)*)'/g)) add(m[1]);

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pdfFromJpeg, exportSize, documentBounds, buildPdf, wrapText, pdfWinAnsi, textWidth, reportBlocks, mppForScale, zoomForScale, scaleDenominator } from '../js/export.js';
-import { createDocument, createRoad, createRoundabout } from '../js/model.js';
+import { createDocument, createRoad, createRoundabout, createJunction } from '../js/model.js';
 
 const ascii = (bytes, from, len) => new TextDecoder('latin1').decode(bytes.subarray(from, from + len));
 
@@ -111,6 +111,13 @@ test('reportBlocks fasst Massnahmen, Route und Kommentare zusammen', () => {
   assert.ok(all.includes('Heute: 1.50 km, 2:00 min') && all.includes('P15–P85'));
   assert.ok(all.includes('Differenz: −0.30 km, −0:20 min'));
   assert.ok(all.includes('Anna') && all.includes('↳ Gemeinde: Wird geprüft'));
+  // Busschleuse und Buslinie
+  road.access = 'bus';
+  doc.features.push(createJunction({ layerId, at: [47, 8], kind: 'busstop' }), createJunction({ layerId, at: [47, 8.01], kind: 'busstop' }));
+  doc.busLines = [{ id: 'b1', name: '12', color: '#e53935', stops: [doc.features[2].id, doc.features[3].id], dwell: 20 }];
+  const bus = reportBlocks(doc, { busLines: [{ id: 'b1', stops: 2, current: { dist: 1800, time: 240 }, proposed: { dist: 1100, time: 150 } }] }).map((b) => b.text).join('\n');
+  assert.ok(bus.includes('Nur Bus'), bus);
+  assert.ok(bus.includes('Buslinien') && bus.includes('Linie 12 (2 Haltestellen): heute 1.80 km, 4:00 min · neu 1.10 km, 2:30 min · Differenz −1:30 min'), bus);
 });
 
 test('Fester Massstab: Zoom aus Massstab und zurück', () => {
