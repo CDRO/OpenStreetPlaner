@@ -573,6 +573,20 @@ func TestParcelsAndBuildingsEndpoints(t *testing.T) {
 	if res.StatusCode != 400 {
 		t.Fatalf("ein Punkt: %d", res.StatusCode)
 	}
+	treq, _ := http.NewRequest("GET", ts.URL+"/api/transit?bbox=47,8,47.01,8.01", nil)
+	tres, err := http.DefaultClient.Do(treq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transit struct {
+		Stops  []osm.BusStop  `json:"stops"`
+		Routes []osm.BusRoute `json:"routes"`
+	}
+	_ = json.NewDecoder(tres.Body).Decode(&transit)
+	tres.Body.Close()
+	if tres.StatusCode != 200 || transit.Stops == nil || transit.Routes == nil {
+		t.Fatalf("transit: %d %+v", tres.StatusCode, transit)
+	}
 	req, _ := http.NewRequest("GET", ts.URL+"/api/buildings?bbox=47,8,47.01,8.01", nil)
 	bres, err := http.DefaultClient.Do(req)
 	if err != nil {

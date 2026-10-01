@@ -40,6 +40,7 @@ go run . -data ./data
 | Routenpaare | Routen-Tab: weitere benannte Start-Ziel-Paare (Schule, Bahnhof, Nachbardorf), je heute/neu mit Differenz, Summe und Mittel der Zeitgewinne; nummerierte Marker auf der Karte, Tabelle im Bericht und im Präsentationsmodus. Alle Paare rechnen auf denselben beiden Netzen |
 | Erreichbarkeit | Routen-Tab: Isochronen-Netz ab einem Ursprung für 5/10/15 min (weitere Vorgaben), als „heute“, „neu“ oder Differenz (grün: nur mit Entwurf erreichbar, rot: nur heute). Kennzahl: erreichbare Netz-Kilometer je Band; Suche bricht bei der höchsten Schwelle ab, Kanten werden anteilig gezeichnet. Das OSM-Netz um den Ursprung wird automatisch geladen (Radius aus Minuten × 50 km/h × 0.7) |
 | Buslinien | Routen-Tab: Linien mit Nummer, Farbe und Haltezeit je Zwischenhalt (Standard 20 s). „Haltestellen setzen“ und auf die Karte klicken: Klick auf eine bestehende Bushaltestelle hängt sie an, Klick anderswo setzt eine neue (eingerastet) und trägt die Liniennummer ein. Haltestellen lassen sich im Auswahl-Werkzeug am Griff verschieben, in der Linie nach vorne schieben oder entfernen; Liniennummern stehen am Punkt und ab Zoom 15 auf der Karte. Fahrzeit und Distanz heute/neu über alle Halte inkl. Haltezeit, Differenz; Linienverlauf gestrichelt in der Linienfarbe, Tabelle im Bericht und im Präsentationsmodus |
+| Bestehender ÖV aus OSM | Routen-Tab, „Bestehende Linien aus OSM“: „Für Ansicht laden“ holt Bushaltestellen (`highway=bus_stop`, `public_transport=platform/stop_position` mit `bus=yes`) und Buslinien (Relationen `route=bus` mit Haltestellenfolge, Nummer, Name, Betreiber, Farbe) für den Kartenausschnitt (ab Zoom 13; beim Setzen von Haltestellen ab Zoom 14 automatisch). Haltestellen erscheinen blau mit „H“ und Namen; beim Setzen von Haltestellen hängt ein Klick darauf sie an die Linie (einmalig als eigene Haltestelle mit OSM-Kennung angelegt). „Übernehmen“ legt eine Linie mit allen Haltestellen in Reihenfolge an, bereits übernommene Haltestellen werden wiederverwendet; danach lässt sich die Linie wie jede andere bearbeiten, und Fahrzeit heute/neu zeigt sofort, was der Entwurf für sie bedeutet |
 | Busausnahmen | Zugang je Strasse oder Abschnitt: „Alle Fahrzeuge“ oder „Nur Bus (Busschleuse)“ – für Autos gesperrt, Busse höchstens 30 km/h, gelb gestrichelt mit „BUS“ ab Zoom 16. Fussgängerzonen und andere gesperrte/langsame Flächen können „Busse dürfen durchfahren (20 km/h)“ erhalten. Buslinien rechnen auf dem Bus-Netz (zusätzlich OSM `highway=busway`, `bus=yes`, `psv=yes`), Routen-Rechner, Routenpaare und Erreichbarkeit auf dem Auto-Netz |
 | Geschwindigkeitsmodell | Schalter im Routen-Tab: Fahrzeit aus der Strassenführung statt nur aus dem Limit. Kurvenradien aus der Geometrie (v = √(3 m/s² · R)), Steigung aus dem Höhenprofil, Wartezeiten an Kreuzungen und Kreiseln mit Streuung. Ergebnis als typische Zeit mit Band P15–P85 |
 | Glätten / Vereinfachen | Strassen per Catmull-Rom-Spline glätten (Abschnittseigenschaften bleiben) oder per Douglas-Peucker auf 1 m vereinfachen |
@@ -130,6 +131,7 @@ speichert nur einen Hash davon).
 | `GET` | `/api/roads?bbox=s,w,n,e` | OSM-Strassen im Bereich (max. 0.06°) |
 | `POST` | `/api/parcels` | `{coords: [[lat, lng], …]}` → `{parcels: [{id, egrid, number, label, canton, polygons}]}` (geo.admin identify, Blöcke zu 25 Punkten, dedupliziert, 6 h Cache) |
 | `GET` | `/api/buildings?bbox=s,w,n,e` | OSM-Gebäude (`building=*`) als Umringe, bbox ≤ 0.06° |
+| `GET` | `/api/transit?bbox=s,w,n,e` | `{stops: [{id, name, at, lines}], routes: [{id, ref, name, from, to, operator, colour, stops}]}` – Bushaltestellen im Bereich und Buslinien (`route=bus`), die ihn berühren, bbox ≤ 0.06°, höchstens 80 Linien à 60 Halte |
 | `POST` | `/api/profile` | `{coords: [[lat,lng],…]}` → `{points: [[dist,height],…]}` Höhenprofil |
 | `GET` | `/tiles/{z}/{x}/{y}.png` | Kachel-Proxy mit Cache (Standardquelle) |
 | `GET` | `/tiles/{source}/{z}/{x}/{y}.png` | Kachel einer benannten Quelle |
@@ -193,14 +195,14 @@ web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwri
     { "id": "j_…", "type": "junction", "layerId": "l_…", "kind": "signals", "at": [47.05, 8.30],
       "turns": { "left": false, "right": true, "straight": true, "uturn": false } },
     { "id": "j_h1", "type": "junction", "layerId": "l_…", "kind": "busstop", "at": [47.051, 8.302],
-      "lines": ["12", "45"] },
+      "name": "Dorf", "lines": ["12", "45"], "osmId": 123456 },
     { "id": "k_…", "type": "roundabout", "layerId": "l_…", "center": [47.052, 8.305], "radius": 14 },
     { "id": "z_…", "type": "zone", "layerId": "l_…", "kind": "tempo30",
       "nodes": [[47.049, 8.299], [47.049, 8.303], [47.052, 8.303], [47.052, 8.299]],
       "busAllowed": false }
   ],
   "route": { "from": [47.049, 8.298], "to": [47.053, 8.306] },
-  "busLines": [{ "id": "b_…", "name": "12", "color": "#e53935", "stops": ["j_h1", "j_…"], "dwell": 20 }]
+  "busLines": [{ "id": "b_…", "name": "12", "color": "#e53935", "stops": ["j_h1", "j_…"], "dwell": 20, "osmId": 7890 }]
 }
 ```
 
@@ -217,7 +219,9 @@ sind optional (`all` oder `bus`; Abschnitt vor Strasse, Standard alle).
 `busAllowed` einer Fläche erlaubt Bussen die Durchfahrt mit 20 km/h.
 `osmId` verweist auf den übernommenen OSM-Way, `route` ist die gespeicherte
 Anfrage des Routen-Rechners. `busLines` sind bis zu 20 Linien mit je bis zu
-60 Haltestellen (IDs von Bushaltestellen) und Haltezeit in Sekunden.
+60 Haltestellen (IDs von Bushaltestellen) und Haltezeit in Sekunden. `osmId`
+einer Bushaltestelle ist der OSM-Knoten, `osmId` einer Linie die OSM-Relation,
+aus der sie übernommen wurde (optional; verhindert Doppelte beim Übernehmen).
 
 ### Routen-Rechner: Annahmen
 

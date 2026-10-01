@@ -308,12 +308,13 @@ func TestBusFields(t *testing.T) {
 	yes := true
 	no := false
 	d.Features = append(d.Features,
-		Feature{ID: "bs1", Type: "junction", LayerID: d.Layers[0].ID, Kind: "busstop", At: &LatLng{47, 8}, Lines: []string{" 12 ", "12", "", "45"}},
-		Feature{ID: "bs2", Type: "junction", LayerID: d.Layers[0].ID, Kind: "busstop", At: &LatLng{47, 8.01}},
+		Feature{ID: "bs1", Type: "junction", LayerID: d.Layers[0].ID, Kind: "busstop", At: &LatLng{47, 8}, Lines: []string{" 12 ", "12", "", "45"}, OsmID: 4711},
+		Feature{ID: "bs2", Type: "junction", LayerID: d.Layers[0].ID, Kind: "busstop", At: &LatLng{47, 8.01}, OsmID: -3},
 		Feature{ID: "zb", Type: "zone", LayerID: d.Layers[0].ID, Kind: "pedestrian", Nodes: []LatLng{{47, 8}, {47, 8.01}, {47.01, 8}}, BusAllowed: &yes},
 		Feature{ID: "zn", Type: "zone", LayerID: d.Layers[0].ID, Kind: "pedestrian", Nodes: []LatLng{{47, 8}, {47, 8.01}, {47.01, 8}}, BusAllowed: &no},
 	)
-	d.BusLines = []BusLine{{ID: "kaputt!", Name: "Linie 12 lang lang", Stops: []string{"bs1", "fehlt", "bs2"}, Dwell: 999}}
+	d.BusLines = []BusLine{{ID: "kaputt!", Name: "Linie 12 lang lang", Stops: []string{"bs1", "fehlt", "bs2"}, Dwell: 999, OsmID: 100}, {ID: "b2", OsmID: -1}}
+	d.Features[1].OsmID = 5 // einfache Kreuzung: kein OSM-Bezug
 	if err := Normalize(d); err != nil {
 		t.Fatal(err)
 	}
@@ -323,14 +324,20 @@ func TestBusFields(t *testing.T) {
 	}
 	n := len(d.Features)
 	bs := d.Features[n-4]
-	if len(bs.Lines) != 2 || bs.Lines[0] != "12" || bs.Lines[1] != "45" {
-		t.Fatalf("Linien: %v", bs.Lines)
+	if len(bs.Lines) != 2 || bs.Lines[0] != "12" || bs.Lines[1] != "45" || bs.OsmID != 4711 {
+		t.Fatalf("Linien: %v %d", bs.Lines, bs.OsmID)
+	}
+	if d.Features[n-3].OsmID != 0 || d.Features[1].OsmID != 0 {
+		t.Fatalf("osmId nicht bereinigt: %d %d", d.Features[n-3].OsmID, d.Features[1].OsmID)
 	}
 	if d.Features[n-2].BusAllowed == nil || !*d.Features[n-2].BusAllowed || d.Features[n-1].BusAllowed != nil {
 		t.Fatalf("busAllowed: %v %v", d.Features[n-2].BusAllowed, d.Features[n-1].BusAllowed)
 	}
 	b := d.BusLines[0]
-	if b.ID != "b_1" || b.Name != "Linie 12 lan" || len(b.Stops) != 2 || b.Dwell != 20 || b.Color == "" {
+	if b.ID != "b_1" || b.Name != "Linie 12 lan" || len(b.Stops) != 2 || b.Dwell != 20 || b.Color == "" || b.OsmID != 100 {
 		t.Fatalf("Buslinie: %+v", b)
+	}
+	if d.BusLines[1].OsmID != 0 {
+		t.Fatalf("negative osmId nicht bereinigt: %+v", d.BusLines[1])
 	}
 }

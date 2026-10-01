@@ -124,6 +124,12 @@ export class OsmRoadCache {
     return true;
   }
 
+  /** Lädt die Zellen eines Bereichs erneut (z. B. auf ausdrücklichen Wunsch oder nach einem Fehler). */
+  refreshArea(bounds) {
+    for (const cell of cellsFor(bounds)) this.loadedCells.delete(cell.key);
+    return this.ensureArea(bounds);
+  }
+
   get remaining() {
     return this.queue.length + this.active;
   }
@@ -142,13 +148,17 @@ export class OsmRoadCache {
     }
   }
 
+  /** Übernimmt die Antwort einer Zelle in den Speicher. */
+  absorb(ways) {
+    for (const w of ways) {
+      if (!Array.isArray(w.geometry) || w.geometry.length < 2) continue;
+      this.ways.set(w.id, { id: w.id, tags: w.tags || {}, geometry: w.geometry });
+    }
+  }
+
   async loadCell(cell) {
     try {
-      const ways = await this.loader(cell.bounds);
-      for (const w of ways) {
-        if (!Array.isArray(w.geometry) || w.geometry.length < 2) continue;
-        this.ways.set(w.id, { id: w.id, tags: w.tags || {}, geometry: w.geometry });
-      }
+      this.absorb(await this.loader(cell.bounds));
       this.loadedCells.add(cell.key);
     } catch (e) {
       this.lastError = e;
@@ -167,5 +177,33 @@ export class OsmRoadCache {
         if (resolve) resolve();
       }
     }
+  }
+}
+
+/**
+ * Haltestellen und Buslinien aus OSM, zellenweise wie die Strassen. loader(bounds) -> Promise<{ stops, routes }>.
+ * stops: Map id -> { id, name, at, lines }, routes: Map id -> { id, ref, name, from, to, operator, colour, stops }.
+ */
+export class OsmTransitCache extends OsmRoadCache {
+  constructor(loader, opts) {
+    super(loader, opts);
+    this.stops = new Map();
+    this.routes = new Map();
+  }
+
+  absorb(data) {
+    for (const s of (data && data.stops) || []) if (s && Number.isInteger(s.id) && Array.isArray(s.at)) this.stops.set(s.id, s);
+    for (const r of (data && data.routes) || []) if (r && Number.isInteger(r.id) && Array.isArray(r.stops) && r.stops.length >= 2) this.routes.set(r.id, r);
+    this.ways = this.stops; // Zähler (ways.size) der Basisklasse: geladene Haltestellen
+  }
+
+  stopList() {
+    return Array.from(this.stops.values());
+  }
+
+  /** Linien natürlich nach Nummer sortiert (2 vor 10). */
+  routeList() {
+    const num = (s) => { const m = /^\d+/.exec(s || ''); return m ? Number(m[0]) : Infinity; };
+    return Array.from(this.routes.values()).sort((a, b) => (num(a.ref) - num(b.ref)) || String(a.ref || '').localeCompare(String(b.ref || '')) || String(a.name || '').localeCompare(String(b.name || '')));
   }
 }

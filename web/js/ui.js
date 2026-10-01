@@ -113,7 +113,31 @@ function busSection(doc, actions, tools) {
     <h4>${t('Buslinien')}</h4>
     <p class="muted small">${t('Haltestellen in Reihenfolge; die Fahrzeit folgt dem Bus-Netz: Busschleusen (Zugang „Nur Bus“) und freigegebene Flächen sind für Busse offen, für Autos gesperrt. Je Zwischenhalt kommt die Haltezeit dazu.')}</p>
     ${rows}
-    <div class="btn-row"><button type="button" id="bus-add" class="btn small" ${dis}>${t('+ Buslinie')}</button>${capturing ? `<span class="muted small">${t('Haltestellen anklicken oder neue setzen (Esc beendet).')}</span>` : ''}</div>`;
+    <div class="btn-row"><button type="button" id="bus-add" class="btn small" ${dis}>${t('+ Buslinie')}</button>${capturing ? `<span class="muted small">${t('Haltestellen anklicken oder neue setzen (Esc beendet).')}</span>` : ''}</div>
+    ${transitSection(doc, actions)}`;
+}
+
+/** Bestehende Buslinien aus OSM (route=bus) mit ihrer Haltestellenfolge zum Übernehmen. */
+function transitSection(doc, actions) {
+  const routes = actions.transitRoutes();
+  const editable = actions.canEdit();
+  const dis = editable ? '' : 'disabled';
+  const adopted = new Set((doc.busLines || []).map((l) => l.osmId).filter(Boolean));
+  const shown = routes.slice(0, 60);
+  const items = shown.map((r) => {
+    const title = r.name || [r.from, r.to].filter(Boolean).join(' – ') || `#${r.id}`;
+    const action = adopted.has(r.id)
+      ? `<span class="muted small">${t('übernommen')}</span>`
+      : `<button type="button" class="btn small transit-adopt" data-id="${r.id}" ${dis}>${t('Übernehmen')}</button>`;
+    return `<li><span class="bus-badge" style="background:${esc(r.colour || '#3d5afe')}">${esc(r.ref || '–')}</span><span class="transit-name" title="${esc(r.operator || '')}">${esc(title)}</span><span class="muted small">${tn(r.stops.length, '{n} Haltestelle', '{n} Haltestellen')}</span>${action}</li>`;
+  }).join('');
+  const more = routes.length > shown.length ? `<p class="muted small">${t('… und {n} weitere Linien; Ansicht verkleinern.', { n: routes.length - shown.length })}</p>` : '';
+  return `
+    <div class="transit">
+      <div class="transit-head"><strong>${t('Bestehende Linien aus OSM')}</strong><button type="button" id="transit-load" class="btn small">${t('Für Ansicht laden')}</button></div>
+      <p class="muted small" id="transit-status">${esc(actions.transitStatus())}</p>
+      ${items ? `<ul class="transit-list">${items}</ul>${more}` : ''}
+    </div>`;
 }
 
 /** Erreichbarkeit ab einem Ursprung als Isochronen-Netz. */
@@ -989,6 +1013,9 @@ export class UI {
       });
     });
     el.querySelectorAll('.stop-focus').forEach((b) => { b.onclick = () => actions.zoomToFeature(b.dataset.stop); });
+    const load = this.$('transit-load');
+    if (load) load.onclick = () => actions.loadTransit();
+    el.querySelectorAll('.transit-adopt').forEach((b) => { b.onclick = () => actions.adoptBusRoute(Number(b.dataset.id)); });
   }
 
   wireIsochrone() {

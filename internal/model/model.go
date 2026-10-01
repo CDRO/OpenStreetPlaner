@@ -67,7 +67,8 @@ type BusLine struct {
 	Name  string   `json:"name"`
 	Color string   `json:"color"`
 	Stops []string `json:"stops"`
-	Dwell float64  `json:"dwell"` // Sekunden Halt je Zwischenhaltestelle
+	Dwell float64  `json:"dwell"`           // Sekunden Halt je Zwischenhaltestelle
+	OsmID int64    `json:"osmId,omitempty"` // OSM-Relation, aus der die Linie übernommen wurde
 }
 
 const (
@@ -502,7 +503,10 @@ func Normalize(d *Document) error {
 				f.Lines = nil
 			}
 			f.Status, f.Oneway, f.Nodes, f.Segments, f.Center, f.Radius, f.Access, f.BusAllowed = "", nil, nil, nil, nil, 0, "", nil
-			f.Maxspeed, f.OsmID, f.Width, f.Section, f.Profile, f.Parcels = nil, 0, nil, nil, nil, nil
+			f.Maxspeed, f.Width, f.Section, f.Profile, f.Parcels = nil, nil, nil, nil, nil
+			if f.OsmID < 0 || f.Kind != "busstop" {
+				f.OsmID = 0 // nur Bushaltestellen verweisen auf einen OSM-Knoten
+			}
 		case "roundabout":
 			if f.Center == nil || !validLatLng(*f.Center) {
 				return invalid("Kreisel %s hat kein gültiges Zentrum", f.ID)
@@ -617,6 +621,9 @@ func Normalize(d *Document) error {
 			b.Dwell = 20
 		}
 		b.Dwell = math.Round(b.Dwell)
+		if b.OsmID < 0 {
+			b.OsmID = 0
+		}
 	}
 	if len(d.Costs) > 0 {
 		clean := make(map[string]float64, len(d.Costs))

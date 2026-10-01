@@ -336,3 +336,11 @@ body.present .banner { display: none !important; }
 .bus-stops { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .stop-chip { display: inline-flex; align-items: center; gap: 2px; background: #f1f3f5; border-radius: 12px; padding: 2px 6px; font-size: 12px; }
 .stop-chip .icon-btn { width: 20px; height: 20px; font-size: 10px; }
+
+/* Bestehende Linien aus OSM */
+.transit { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+.transit-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+.transit-list { list-style: none; padding: 0; margin: 4px 0; max-height: 280px; overflow: auto; }
+.transit-list li { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.transit-list .transit-name { flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bus-badge { color: #fff; border-radius: 4px; padding: 0 6px; font-weight: 600; font-size: 12px; min-width: 26px; text-align: center; text-shadow: 0 0 2px rgba(0,0,0,0.5); }

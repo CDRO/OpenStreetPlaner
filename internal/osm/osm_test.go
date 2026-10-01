@@ -274,3 +274,63 @@ func TestBuildings(t *testing.T) {
 		t.Fatalf("Gebäude: %+v", got)
 	}
 }
+
+func TestTransit(t *testing.T) {
+	var query string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		query = r.Form.Get("data")
+		fmt.Fprint(w, `{"elements":[
+		  {"type":"node","id":1,"lat":47.001,"lon":8.001,"tags":{"highway":"bus_stop","name":"Dorf","route_ref":"12;7"}},
+		  {"type":"node","id":2,"lat":47.002,"lon":8.002,"tags":{"public_transport":"stop_position","bus":"yes","name":"Post"}},
+		  {"type":"node","id":3,"lat":47.003,"lon":8.003,"tags":{"public_transport":"platform","bus":"yes","name":"Post"}},
+		  {"type":"node","id":4,"lat":48,"lon":9,"tags":{"highway":"bus_stop","name":"Weit weg"}},
+		  {"type":"node","id":5,"lat":47.004,"lon":8.004,"tags":{"public_transport":"platform","train":"yes","name":"Bahn"}},
+		  {"type":"relation","id":100,"tags":{"route":"bus","ref":"12","name":"Bus 12: Dorf - Weit weg","colour":"#FF0000","operator":"PostAuto"},
+		   "members":[{"type":"way","ref":900,"role":""},{"type":"node","ref":1,"role":"stop"},{"type":"node","ref":3,"role":"platform"},{"type":"node","ref":2,"role":"stop"},{"type":"node","ref":2,"role":"stop_exit_only"},{"type":"node","ref":4,"role":"stop"},{"type":"node","ref":99,"role":"stop"}]},
+		  {"type":"relation","id":101,"tags":{"route":"bus","ref":"7"},"members":[{"type":"node","ref":3,"role":"platform"},{"type":"node","ref":1,"role":"platform"}]},
+		  {"type":"relation","id":102,"tags":{"route":"bus","ref":"1"},"members":[{"type":"node","ref":1,"role":"stop"}]},
+		  {"type":"relation","id":103,"tags":{"route":"tram","ref":"2"},"members":[{"type":"node","ref":1,"role":"stop"},{"type":"node","ref":2,"role":"stop"}]}
+		]}`)
+	}))
+	defer up.Close()
+	c := New(t.TempDir())
+	c.OverpassURL = up.URL
+	got, err := c.Transit(context.Background(), BBox{South: 47, West: 8, North: 47.01, East: 8.01})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, `relation["route"="bus"]`) || !strings.Contains(query, `node(r.r)`) {
+		t.Fatalf("Query: %s", query)
+	}
+	// Haltestellen: nur Bus-Knoten im Bereich (1, 2, 3), nicht 4 (ausserhalb) und 5 (Bahn)
+	if len(got.Stops) != 3 || got.Stops[0].ID != 1 || got.Stops[2].ID != 3 {
+		t.Fatalf("Haltestellen: %+v", got.Stops)
+	}
+	if strings.Join(got.Stops[0].Lines, ",") != "12,7" || got.Stops[0].At != [2]float64{47.001, 8.001} {
+		t.Fatalf("Linien an Haltestelle 1: %+v", got.Stops[0])
+	}
+	if strings.Join(got.Stops[2].Lines, ",") != "7" {
+		t.Fatalf("Linien an Haltestelle 3 (nur Plattform-Linie): %+v", got.Stops[2])
+	}
+	// Linien: 7 (Plattformen) vor 12 (natürliche Sortierung); Tram und Einzelhalt fliegen raus
+	if len(got.Routes) != 2 || got.Routes[0].Ref != "7" || got.Routes[1].Ref != "12" {
+		t.Fatalf("Linien: %+v", got.Routes)
+	}
+	r12 := got.Routes[1]
+	ids := []int64{}
+	for _, s := range r12.Stops {
+		ids = append(ids, s.ID)
+	}
+	if fmt.Sprint(ids) != "[1 2 4]" || r12.Colour != "#ff0000" || r12.Operator != "PostAuto" || r12.Stops[0].Name != "Dorf" {
+		t.Fatalf("Linie 12: %+v", r12)
+	}
+	if len(got.Routes[0].Stops) != 2 || got.Routes[0].Stops[0].ID != 3 {
+		t.Fatalf("Linie 7 (Plattformen): %+v", got.Routes[0])
+	}
+	// Zweiter Aufruf aus dem Cache
+	query = ""
+	if again, err := c.Transit(context.Background(), BBox{South: 47, West: 8, North: 47.01, East: 8.01}); err != nil || len(again.Routes) != 2 || query != "" {
+		t.Fatalf("Cache: %v %q", err, query)
+	}
+}

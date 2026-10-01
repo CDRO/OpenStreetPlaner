@@ -17,7 +17,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -38,6 +38,9 @@ export function drawScene(ctx, map, s) {
     for (const w of osmWays) strokePath(ctx, w.geometry.map(P));
     ctx.restore();
   }
+
+  // Bestehende Haltestellen aus OSM (blau; übernommene erscheinen als eigene Haltestellen)
+  if (transit && zoom >= 13) drawOsmStops(ctx, P, transit, zoom);
 
   // Zonen (Flächen) unter allem anderen
   for (const f of visible) {
@@ -630,6 +633,20 @@ function drawDiff(ctx, P, diff, mpp) {
 }
 
 /** Buslinien: [{ id, name, color, path }] – path = berechnete Strecke mit Entwurf. */
+function drawOsmStops(ctx, P, { stops, adopted }, zoom) {
+  const r = zoom >= 15 ? 6 : 4;
+  for (const s of stops) {
+    if (adopted && adopted.has(s.id)) continue;
+    const c = P(s.at);
+    circle(ctx, c, r, { stroke: 'rgba(61,90,254,0.8)', width: 2, fill: 'rgba(255,255,255,0.9)' });
+    if (zoom >= 15) text(ctx, 'H', c.x, c.y + 0.5, { font: 'bold 8px system-ui, sans-serif', color: '#3d5afe', align: 'center', baseline: 'middle' });
+    if (zoom >= 16 && s.name) {
+      const label = s.lines && s.lines.length ? `${s.name} (${s.lines.join(' ')})` : s.name;
+      text(ctx, label, c.x + r + 3, c.y + 0.5, { font: '10px system-ui, sans-serif', color: '#3d5afe', halo: 'rgba(255,255,255,0.9)', align: 'left', baseline: 'middle' });
+    }
+  }
+}
+
 function drawBusLines(ctx, P, lines, zoom) {
   for (const l of lines) {
     if (!l.path || l.path.length < 2) continue;

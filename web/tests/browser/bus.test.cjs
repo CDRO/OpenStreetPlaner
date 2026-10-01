@@ -16,6 +16,26 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
       { id: 2, tags: { highway: 'residential', maxspeed: '20' }, geometry: [[47.06, 8.305], [47.05, 8.305], [47.04, 8.305]] },
     ]),
   }));
+  // ÖV aus OSM: bis zum letzten Abschnitt leer, damit das automatische Nachladen beim Setzen von Haltestellen nichts findet
+  let transitReady = false;
+  let transitCalls = 0;
+  await page.route(/\/api\/transit\?/, (route) => {
+    transitCalls++;
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(transitReady ? {
+        stops: [
+          { id: 501, name: 'Dorfplatz', at: [47.05, 8.32], lines: ['12'] },
+          { id: 502, name: 'Kirche', at: [47.04, 8.305], lines: ['12', '7'] },
+          { id: 503, name: 'Schule', at: [47.05, 8.3125] },
+        ],
+        routes: [
+          { id: 9001, ref: '12', name: 'Bus 12: Dorfplatz – Kirche', colour: '#00aa00', operator: 'Ortsbus', stops: [{ id: 501, name: 'Dorfplatz', at: [47.05, 8.32] }, { id: 503, name: 'Schule', at: [47.05, 8.3125] }, { id: 502, name: 'Kirche', at: [47.04, 8.305] }] },
+          { id: 9002, ref: '7', name: 'Bus 7', stops: [{ id: 502, name: 'Kirche', at: [47.04, 8.305] }, { id: 501, name: 'Dorfplatz', at: [47.05, 8.32] }] },
+        ],
+      } : { stops: [], routes: [] }),
+    });
+  });
   await page.evaluate(() => {
     const sp = window.stadtplaner;
     sp.store.commit('Entwurf', (d) => {
@@ -195,6 +215,69 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.equal(doc.features.filter((f) => f.kind === 'busstop').length, 3, 'Haltestellen bleiben als Punkte');
   await page.waitForFunction(() => window.stadtplaner.actions.busResults().length === 0, null, { timeout: 5000 });
   console.log('✓ Linie löschen');
+
+  // --- Bestehende Haltestellen und Linien aus OSM ------------------------------------------
+  assert.ok(transitCalls >= 1, 'beim Setzen von Haltestellen wurde die Ansicht automatisch nachgeladen');
+  await page.evaluate(() => window.stadtplaner.map.setView([47.05, 8.31], 16));
+  await h.settle(200);
+  await page.waitForSelector('#transit-load');
+  assert.ok((await page.textContent('#transit-status')).includes('Noch nichts geladen'));
+  transitReady = true;
+  const before = transitCalls;
+  await page.click('#transit-load');
+  await page.waitForFunction(() => document.querySelectorAll('.transit-adopt').length === 2, null, { timeout: 10000 });
+  assert.ok(transitCalls > before, '„Für Ansicht laden“ holt die Zellen erneut');
+  panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
+  assert.ok(panel.includes('3 Haltestellen und 2 Linien aus OSM geladen'), panel);
+  assert.ok(panel.indexOf('Bus 7') < panel.indexOf('Bus 12'), '7 vor 12 (natürliche Sortierung)');
+  // OSM-Haltestelle wird gezeichnet (blauer Ring)
+  const stopPx = await page.evaluate(() => window.stadtplaner.map.project([47.05, 8.3125]));
+  const ring = await page.evaluate(({ x, y }) => {
+    const canvas = document.querySelector('.smap-canvas');
+    const dpr = canvas.width / canvas.getBoundingClientRect().width;
+    const d = canvas.getContext('2d').getImageData(Math.round((x + 6) * dpr), Math.round(y * dpr), 1, 1).data;
+    return [d[0], d[1], d[2]];
+  }, stopPx);
+  assert.ok(ring[2] > ring[0] + 40 && ring[2] > ring[1] + 40, `blau: rgb(${ring})`);
+
+  // Linie 12 übernehmen: drei neue Haltestellen mit OSM-Kennung, Farbe und Nummer aus OSM
+  await page.click('.transit-adopt[data-id="9001"]');
+  await h.settle(300);
+  doc = await h.doc();
+  assert.equal(doc.busLines.length, 1);
+  const adopted = doc.busLines[0];
+  assert.ok(adopted.name === '12' && adopted.color === '#00aa00' && adopted.osmId === 9001 && adopted.stops.length === 3, JSON.stringify(adopted));
+  const osmStops = doc.features.filter((f) => f.kind === 'busstop' && f.osmId);
+  assert.equal(osmStops.length, 3);
+  assert.deepEqual(osmStops.map((f) => f.name), ['Dorfplatz', 'Schule', 'Kirche']);
+  assert.deepEqual(osmStops.map((f) => f.lines), [['12'], ['12'], ['12']]);
+  panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
+  assert.ok(/Bus 12: Dorfplatz – Kirche.*übernommen/.test(panel), panel);
+  assert.equal(await page.locator('.transit-adopt').count(), 1, 'nur Linie 7 noch übernehmbar');
+  await page.waitForFunction(() => { const r = window.stadtplaner.actions.busResults(); return r.length === 1 && r[0].stops === 3 && r[0].proposed && r[0].proposed.path; }, null, { timeout: 10000 });
+
+  // Linie 7 übernehmen: bekannte Haltestellen werden wiederverwendet, Nummer ergänzt
+  await page.click('.transit-adopt[data-id="9002"]');
+  await h.settle(300);
+  doc = await h.doc();
+  assert.equal(doc.busLines.length, 2);
+  assert.equal(doc.features.filter((f) => f.kind === 'busstop' && f.osmId).length, 3, 'keine Doppelten');
+  assert.deepEqual(doc.features.find((f) => f.osmId === 502).lines, ['12', '7']);
+  assert.equal(await page.locator('.transit-adopt').count(), 0);
+
+  // Beim Setzen von Haltestellen hängt ein Klick auf eine OSM-Haltestelle sie an (hier: bereits übernommene Haltestelle wiederverwenden)
+  await page.click('#bus-add');
+  await h.settle(200);
+  const sch = await at([47.05, 8.3125]);
+  await page.mouse.click(sch.x, sch.y);
+  await h.settle(300);
+  doc = await h.doc();
+  const line3 = doc.busLines[2];
+  assert.equal(line3.stops.length, 1);
+  assert.equal(doc.features.find((f) => f.id === line3.stops[0]).osmId, 503, 'übernommene Haltestelle angehängt, nicht neu gesetzt');
+  assert.equal(doc.features.filter((f) => f.kind === 'busstop').length, 6, 'keine neue Haltestelle');
+  await page.keyboard.press('Escape');
+  console.log('✓ ÖV aus OSM');
 
   await browser.close();
   if (errors.length) { console.log('FEHLER:', errors); process.exit(1); }

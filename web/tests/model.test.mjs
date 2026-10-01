@@ -8,6 +8,7 @@ import {
   ROAD_KINDS, defaultSection, normalizeSection, sectionWidth, sectionBands, sectionSummary, roadMedian, junctionTurns,
   normalizeRoutePairs, normalizeIsochrone,
   normalizeLines, normalizeBusLines, normalizeAccess, segmentAccess, createBusLine, BUS_COLORS, BUS_DWELL_DEFAULT,
+  adoptBusRoute, normalizeOsmId, MAX_BUS_LINES,
 } from '../js/model.js';
 
 function docWithRoad() {
@@ -307,7 +308,7 @@ test('Bus: Zugang je Strasse/Abschnitt, Liniennummern, Buslinien und Flächen-Fr
   line.stops.push(stopA.id, stopB.id);
   const lines = normalizeBusLines([{ id: 'kaputt', name: ' Linie 12 lang lang ', color: 'rot', stops: [stopA.id, 'fehlt', 7, stopB.id], dwell: 999 }, 'x', { dwell: 45.4 }], new Set([stopA.id, stopB.id]));
   assert.equal(lines.length, 2);
-  assert.deepEqual(lines[0], { id: 'kaputt', name: 'Linie 12 lan', color: BUS_COLORS[0], stops: [stopA.id, stopB.id], dwell: BUS_DWELL_DEFAULT });
+  assert.deepEqual(lines[0], { id: 'kaputt', name: 'Linie 12 lan', color: BUS_COLORS[0], stops: [stopA.id, stopB.id], dwell: BUS_DWELL_DEFAULT, osmId: null });
   assert.ok(lines[1].id.startsWith('b_') && lines[1].dwell === 45 && lines[1].color === BUS_COLORS[1]);
   assert.equal(normalizeBusLines(new Array(30).fill({})).length, 20);
   // Normalisierung über das Dokument: unbekannte Haltestellen fliegen raus, Zugang bleibt, Flächen-Freigabe bleibt
@@ -326,4 +327,42 @@ test('Bus: Zugang je Strasse/Abschnitt, Liniennummern, Buslinien und Flächen-Fr
   assert.deepEqual(createDocument().busLines, []);
   const gj = toGeoJSON(back);
   assert.equal(gj.features.find((f) => f.properties.id === stopA.id).properties.lines.join(','), '12,45');
+});
+
+test('OSM-Buslinie übernehmen: Haltestellen mit osmId wiederverwenden, Nummer, Farbe, Grenzen', () => {
+  assert.equal(normalizeOsmId(42), 42);
+  assert.equal(normalizeOsmId(42, 'signals'), null);
+  assert.equal(normalizeOsmId(-1), null);
+  assert.equal(normalizeOsmId('42'), null);
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const existing = createJunction({ layerId, at: [47, 8.01], kind: 'busstop', name: 'Post', lines: ['7'], osmId: 2 });
+  doc.features.push(existing);
+  assert.equal(createJunction({ layerId, at: [47, 8], kind: 'signals', osmId: 9 }).osmId, null, 'nur Haltestellen tragen eine OSM-Kennung');
+  const route = {
+    id: 100, ref: '12', name: 'Bus 12: Dorf – Post', colour: '#FF0000',
+    stops: [{ id: 1, name: 'Dorf', at: [47, 8] }, { id: 2, name: 'Post', at: [47, 8.01] }, { id: 2, name: 'Post', at: [47, 8.01] }, { id: 3, name: 'kaputt', at: [99, 8] }, { id: 4, name: 'Bahnhof', at: [47.01, 8.01] }],
+  };
+  const line = adoptBusRoute(doc, route, layerId);
+  assert.ok(line && line.name === '12' && line.color === '#ff0000' && line.osmId === 100, JSON.stringify(line));
+  const stops = doc.features.filter((f) => f.kind === 'busstop');
+  assert.equal(stops.length, 3, 'Post wiederverwendet, Dorf und Bahnhof neu, ungültige Position übersprungen');
+  assert.deepEqual(line.stops, [stops[1].id, existing.id, stops[2].id]);
+  assert.deepEqual(existing.lines, ['7', '12']);
+  assert.deepEqual(stops[1].lines, ['12']);
+  assert.equal(stops[1].osmId, 1);
+  assert.equal(stops[1].name, 'Dorf');
+  assert.equal(adoptBusRoute(doc, route, layerId), null, 'dieselbe Relation nicht zweimal');
+  assert.equal(adoptBusRoute(doc, { id: 101, ref: '7', stops: [{ id: 2, at: [47, 8.01] }] }, layerId), null, 'zu wenig Haltestellen');
+  const noRef = adoptBusRoute(doc, { id: 102, name: 'Ortsbus Musterhausen', stops: route.stops.slice(0, 2) }, layerId);
+  assert.ok(noRef && noRef.name === 'Ortsbus Must' && noRef.osmId === 102 && noRef.color === BUS_COLORS[1]);
+  assert.equal(doc.features.filter((f) => f.kind === 'busstop').length, 3, 'keine neuen Haltestellen für bekannte Knoten');
+  // Normalisierung und Serialisierung behalten die OSM-Bezüge
+  const back = deserialize(serialize(doc));
+  assert.equal(back.busLines[0].osmId, 100);
+  assert.equal(back.features.find((f) => f.osmId === 1).name, 'Dorf');
+  assert.equal(normalizeBusLines([{ osmId: 5 }, { osmId: 'x' }])[1].osmId, null);
+  assert.equal(toGeoJSON(back).features.find((f) => f.properties.id === existing.id).properties.osmId, 2);
+  for (let i = doc.busLines.length; i < MAX_BUS_LINES; i++) createBusLine(doc);
+  assert.equal(adoptBusRoute(doc, { id: 200, ref: '1', stops: route.stops.slice(0, 2) }, layerId), null, 'Grenze von 20 Linien');
 });

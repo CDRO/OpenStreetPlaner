@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { OsmRoadCache, roadKindFromHighway, cellsFor, routeBounds, CELL_DEG, MAX_CELLS } from '../js/osm.js';
+import { OsmRoadCache, OsmTransitCache, roadKindFromHighway, cellsFor, routeBounds, CELL_DEG, MAX_CELLS } from '../js/osm.js';
 
 test('roadKindFromHighway ordnet gängige Tags zu', () => {
   assert.equal(roadKindFromHighway('primary'), 'main');
@@ -59,4 +59,25 @@ test('OsmRoadCache meldet Fehler und zu grosse Bereiche', async () => {
   assert.equal(cache.lastError.message, 'kaputt');
   assert.equal(cache.ensureArea({ south: 40, west: 0, north: 50, east: 10 }), false);
   assert.ok(cache.lastError.message.includes('zu gross'));
+});
+
+test('OsmTransitCache sammelt Haltestellen und Linien je Zelle, sortiert Linien natürlich', async () => {
+  let n = 0;
+  const cache = new OsmTransitCache(async () => {
+    n++;
+    return {
+      stops: [{ id: 1, name: 'Dorf', at: [47, 8], lines: ['12'] }, { id: 2, name: 'Post', at: [47, 8.01] }, { id: 'x', at: [1, 1] }],
+      routes: [{ id: 100 + n, ref: n === 1 ? '12' : '7', name: 'Bus', stops: [{ id: 1, at: [47, 8] }, { id: 2, at: [47, 8.01] }] }, { id: 300, ref: 'A', stops: [] }, { id: 400, ref: 'A', stops: [{ id: 1, at: [47, 8] }, { id: 2, at: [47, 8.01] }] }],
+    };
+  }, { delayMs: 0 });
+  cache.ensureArea({ south: 47.001, west: 8.001, north: 47.002, east: 8.002 });
+  await cache.pending;
+  assert.equal(cache.stopList().length, 2, 'ungültige Haltestelle verworfen');
+  assert.equal(cache.ways.size, 2, 'Zähler zeigt Haltestellen');
+  assert.deepEqual(cache.routeList().map((r) => r.ref), ['12', 'A']);
+  cache.ensureArea({ south: 47.026, west: 8.026, north: 47.027, east: 8.027 });
+  await cache.pending;
+  assert.equal(n, 2);
+  assert.deepEqual(cache.routeList().map((r) => r.ref), ['7', '12', 'A'], '7 vor 12, Buchstaben zuletzt');
+  assert.equal(cache.stopList().length, 2, 'gleiche Knoten nicht doppelt');
 });

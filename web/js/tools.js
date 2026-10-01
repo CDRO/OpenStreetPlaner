@@ -625,8 +625,24 @@ export class ToolController {
       this.onStatus(t('Haltestelle {n} angehängt – weitere anklicken oder neue setzen, Esc beendet.', { n: line.stops.length }));
       return;
     }
-    const r = this.snap(e);
     const layerId = this.getActiveLayerId();
+    const osmStop = this.nearestOsmStop(e.point);
+    if (osmStop) {
+      this.store.commit('OSM-Haltestelle übernehmen', (d) => {
+        const l = d.busLines.find((x) => x.id === lineId);
+        let stop = d.features.find((f) => f.type === 'junction' && f.kind === 'busstop' && f.osmId === osmStop.id);
+        if (!stop) {
+          stop = createJunction({ layerId, at: osmStop.at, kind: 'busstop', name: osmStop.name || '', lines: l && l.name ? [l.name] : [], osmId: osmStop.id });
+          d.features.push(stop);
+        } else if (l && l.name && !stop.lines.includes(l.name)) {
+          stop.lines.push(l.name);
+        }
+        if (l && l.stops[l.stops.length - 1] !== stop.id) l.stops.push(stop.id);
+      });
+      this.onStatus(t('OSM-Haltestelle „{name}“ übernommen und angehängt – weitere anklicken oder neue setzen, Esc beendet.', { name: osmStop.name || osmStop.id }));
+      return;
+    }
+    const r = this.snap(e);
     this.store.commit('Haltestelle setzen', (d) => {
       const l = d.busLines.find((x) => x.id === lineId);
       const stop = createJunction({ layerId, at: r.latlng, kind: 'busstop', lines: l && l.name ? [l.name] : [] });
@@ -649,6 +665,18 @@ export class ToolController {
       if (d <= PICK_TOLERANCE && (!best || d < best.d)) best = { f, d };
     }
     return best ? best.f : null;
+  }
+
+  /** Geladene OSM-Haltestelle innerhalb der Klick-Toleranz (Pixel), sonst null. */
+  nearestOsmStop(point) {
+    const stops = this.getTransitStops ? this.getTransitStops() : [];
+    let best = null;
+    for (const s of stops) {
+      const p = this.map.project(s.at);
+      const d = Math.hypot(p.x - point.x, p.y - point.y);
+      if (d <= PICK_TOLERANCE + 2 && (!best || d < best.d)) best = { s, d };
+    }
+    return best ? best.s : null;
   }
 
   /** Nächste Klicks im Routen-Werkzeug setzen ein Paar (pairId), den Isochronen-Ursprung oder Haltestellen einer Buslinie. */

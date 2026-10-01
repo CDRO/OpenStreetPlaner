@@ -270,6 +270,7 @@ export function normalizeBusLines(raw, featureIds = null) {
       color: typeof l.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(l.color) ? l.color : BUS_COLORS[out.length % BUS_COLORS.length],
       stops,
       dwell: Number.isFinite(dwell) && dwell >= 0 && dwell <= 300 ? Math.round(dwell) : BUS_DWELL_DEFAULT,
+      osmId: normalizeOsmId(l.osmId),
     });
   }
   return out;
@@ -277,7 +278,7 @@ export function normalizeBusLines(raw, featureIds = null) {
 
 export function createBusLine(doc, name = '') {
   const lines = doc.busLines || (doc.busLines = []);
-  const line = { id: newId('b'), name: name || String(lines.length + 1), color: BUS_COLORS[lines.length % BUS_COLORS.length], stops: [], dwell: BUS_DWELL_DEFAULT };
+  const line = { id: newId('b'), name: name || String(lines.length + 1), color: BUS_COLORS[lines.length % BUS_COLORS.length], stops: [], dwell: BUS_DWELL_DEFAULT, osmId: null };
   lines.push(line);
   return line;
 }
@@ -490,8 +491,39 @@ export function extendRoad(doc, roadId, latlngs, atEnd = true) {
   }
 }
 
-export function createJunction({ layerId, at, kind = 'plain', name = '', turns = null, lines = [] }) {
-  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), lines: normalizeLines(lines), note: '' };
+export function createJunction({ layerId, at, kind = 'plain', name = '', turns = null, lines = [], osmId = null }) {
+  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), lines: normalizeLines(lines), osmId: normalizeOsmId(osmId, kind), note: '' };
+}
+
+/** OSM-Knoten einer Bushaltestelle (null = selbst gesetzt); andere Punkte haben keinen OSM-Bezug. */
+export function normalizeOsmId(v, kind = 'busstop') {
+  return kind === 'busstop' && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/**
+ * Übernimmt eine OSM-Buslinie (route=bus mit Haltestellenfolge) in den Entwurf: bestehende Haltestellen
+ * mit gleichem OSM-Knoten werden wiederverwendet, fehlende als Bushaltestellen angelegt. Liefert die Linie
+ * oder null, wenn die Linie schon übernommen ist oder die Grenze erreicht wäre.
+ */
+export function adoptBusRoute(doc, route, layerId) {
+  const lines = doc.busLines || (doc.busLines = []);
+  if (!route || !Array.isArray(route.stops) || route.stops.length < 2 || lines.length >= MAX_BUS_LINES) return null;
+  if (route.id && lines.some((l) => l.osmId === route.id)) return null;
+  const line = createBusLine(doc, String(route.ref || route.name || '').trim().slice(0, 12) || String(lines.length));
+  line.osmId = normalizeOsmId(route.id);
+  if (typeof route.colour === 'string' && /^#[0-9a-fA-F]{6}$/.test(route.colour)) line.color = route.colour.toLowerCase();
+  for (const s of route.stops.slice(0, MAX_BUS_STOPS)) {
+    if (!isLatLng(s.at)) continue;
+    let stop = s.id ? doc.features.find((f) => f.type === 'junction' && f.kind === 'busstop' && f.osmId === s.id) : null;
+    if (!stop) {
+      stop = createJunction({ layerId, at: s.at, kind: 'busstop', name: typeof s.name === 'string' ? s.name.slice(0, 60) : '', lines: [line.name], osmId: s.id });
+      doc.features.push(stop);
+    } else if (line.name && !stop.lines.includes(line.name)) {
+      stop.lines = normalizeLines([...stop.lines, line.name]);
+    }
+    if (line.stops[line.stops.length - 1] !== stop.id) line.stops.push(stop.id);
+  }
+  return line;
 }
 
 export function createZone({ layerId, nodes, kind = 'tempo30', name = '', busAllowed = false }) {
@@ -697,7 +729,8 @@ export function normalizeDocument(raw) {
       });
     } else if (f.type === 'junction') {
       if (!isLatLng(f.at)) throw new Error(`Kreuzung ${f.id} hat keine Position`);
-      doc.features.push({ ...base, type: 'junction', kind: idIn(JUNCTION_KINDS, f.kind, 'plain'), at: roundCoord(f.at), turns: normalizeTurns(f.turns), lines: normalizeLines(f.lines) });
+      const kind = idIn(JUNCTION_KINDS, f.kind, 'plain');
+      doc.features.push({ ...base, type: 'junction', kind, at: roundCoord(f.at), turns: normalizeTurns(f.turns), lines: normalizeLines(f.lines), osmId: normalizeOsmId(f.osmId, kind) });
     } else if (f.type === 'roundabout') {
       if (!isLatLng(f.center)) throw new Error(`Kreisel ${f.id} hat kein Zentrum`);
       const radius = Number.isFinite(f.radius) && f.radius > 0 ? Math.min(500, f.radius) : 15;
@@ -770,7 +803,7 @@ export function toGeoJSON(doc) {
     } else if (f.type === 'junction') {
       features.push({
         type: 'Feature',
-        properties: { ...common, type: 'junction', kind: f.kind, turns: f.turns || null, lines: f.lines || [] },
+        properties: { ...common, type: 'junction', kind: f.kind, turns: f.turns || null, lines: f.lines || [], osmId: f.osmId || null },
         geometry: { type: 'Point', coordinates: [f.at[1], f.at[0]] },
       });
     } else if (f.type === 'roundabout') {

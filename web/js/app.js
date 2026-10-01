@@ -6,10 +6,10 @@ import { Store } from './store.js';
 import { LocalState } from './local.js';
 import { api, setClientId } from './api.js';
 import {
-  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON,
+  cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
-import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, cellsFor, routeBounds } from './osm.js';
+import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
 import { buildGraphs, computeBusLines, computeIsochrone, routeOnGraph } from './routing.js';
@@ -154,6 +154,7 @@ async function main() {
   });
   const osm = new OsmRoadCache((b) => api.roads(b));
   const buildings = new OsmRoadCache((b) => api.buildings(b)); // gleiche Zellen-Logik, andere Daten
+  const transit = new OsmTransitCache((b) => api.transit(b)); // Haltestellen und Buslinien aus OSM
 
   const canEdit = () => !state.present && (!state.id || !!state.token);
 
@@ -180,6 +181,7 @@ async function main() {
     getActiveLayerId: () => state.activeLayerId,
     getDefaultRoadKind: () => state.defaultRoadKind,
     getOsmWay: (id) => osm.get(id),
+    getTransitStops: () => transit.stopList(),
     getDefaultZoneKind: () => state.defaultZoneKind,
     getComments: () => (settings.showComments ? state.comments : []),
     canEdit,
@@ -244,6 +246,7 @@ async function main() {
       return { id: l.id, name: l.name, color: l.color, path: r && r.proposed ? r.proposed.path : null };
     }),
     isochrone: store.doc.isochrone ? state.iso : null,
+    transit: transit.stops.size ? { stops: transit.stopList(), adopted: new Set(store.doc.features.filter((f) => f.type === 'junction' && f.osmId).map((f) => f.osmId)) } : null,
     routeTarget: tools.routeTarget,
     parcels: selectedParcelPolygons(),
     buildings: state.showExposure ? exposureForDrawing() : null,
@@ -317,6 +320,14 @@ async function main() {
     b.cells = cellsFor(b).length;
     b.tooLarge = b.cells > MAX_CELLS;
     return b;
+  }
+
+  /** Lädt Haltestellen und Linien für die Ansicht nach, wenn sie klein genug ist (ohne Meldung). */
+  function ensureTransit() {
+    if (map.getZoom() < 14) return;
+    const b = map.getBounds();
+    if (cellsFor(b).length > 6) return;
+    transit.ensureArea(b);
   }
 
   function ensureRouteNetwork() {
@@ -953,15 +964,43 @@ async function main() {
     busResults: () => state.busResults,
     addBusLine() {
       if (!actions.requireEdit()) return;
-      if ((store.doc.busLines || []).length >= 20) return ui.toast(t('Höchstens 20 Buslinien.'), 'error');
+      if ((store.doc.busLines || []).length >= MAX_BUS_LINES) return ui.toast(t('Höchstens 20 Buslinien.'), 'error');
       let id = null;
       store.commit('Buslinie hinzufügen', (d) => { id = createBusLine(d).id; });
       if (id) tools.captureRoute({ busLine: id });
+      ensureTransit();
       ui.refreshRoute();
     },
     captureBusStops(id) {
       if (!actions.requireEdit()) return;
       tools.captureRoute({ busLine: id });
+      ensureTransit();
+      ui.refreshRoute();
+    },
+    // Bestehende Haltestellen und Linien aus OSM
+    transitStatus() {
+      if (transit.pending) return t('ÖV wird geladen… ({n} Zellen offen)', { n: transit.remaining });
+      if (transit.lastError) return `${t('ÖV aus OSM')}: ${transit.lastError.message}`;
+      if (!transit.stops.size && !transit.routes.size) return t('Noch nichts geladen – „Für Ansicht laden“ holt Haltestellen und Buslinien aus OSM (ab Zoom 13).');
+      return t('{n} Haltestellen und {m} Linien aus OSM geladen. Beim Setzen von Haltestellen hängt ein Klick auf eine OSM-Haltestelle sie an die Linie.', { n: transit.stops.size, m: transit.routes.size });
+    },
+    transitRoutes: () => transit.routeList(),
+    loadTransit() {
+      if (map.getZoom() < 13) return ui.toast(t('ÖV aus OSM ab Zoom 13 – näher heranzoomen.'), 'error');
+      const b = map.getBounds();
+      const n = cellsFor(b).length;
+      if (n > MAX_CELLS) return ui.toast(t('Ansicht zu gross ({n} Zellen, erlaubt {max}) – näher heranzoomen.', { n, max: MAX_CELLS }), 'error', 5000);
+      transit.refreshArea(b);
+      ui.refreshRoute();
+    },
+    adoptBusRoute(osmId) {
+      if (!actions.requireEdit()) return;
+      const route = transit.routes.get(osmId);
+      if (!route) return;
+      if ((store.doc.busLines || []).length >= MAX_BUS_LINES) return ui.toast(t('Höchstens 20 Buslinien.'), 'error');
+      let line = null;
+      store.commit('Buslinie aus OSM übernehmen', (d) => { line = adoptBusRoute(d, route, state.activeLayerId); });
+      if (line) ui.toast(t('Linie {name} mit {n} Haltestellen übernommen.', { name: line.name, n: line.stops.length }));
       ui.refreshRoute();
     },
     patchBusLine(id, label, fn) {
@@ -1319,6 +1358,10 @@ async function main() {
   buildings.subscribe(() => {
     map.requestRender();
     ui.refreshAnalysis();
+  });
+  transit.subscribe(() => {
+    map.requestRender();
+    ui.refreshRoute();
   });
 
   map.on('moveend', () => {
