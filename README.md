@@ -99,7 +99,7 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
-| `ADDR` | `:8080` | Adresse, auf der der Server lauscht |
+| `ADDR` | `:8080` | Adresse, auf der der Server lauscht; ohne `ADDR` zählt `PORT` (PaaS wie Deploio setzen nur den Port) |
 | `DATA_DIR` | `/data` (Docker) bzw. `./data` | Entwürfe (`drafts/`) und Kachel-Cache (`tiles/`) |
 | `TILE_URL` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Kachel-Vorlage der Standardquelle `osm`, z. B. eigener Tile-Server |
 | `TILE_SOURCES` | leer | JSON-Liste weiterer oder ersetzender Kartenquellen: `[{"id":"…","label":"…","url":"…{z}/{x}/{y}… oder …{bbox}…","attribution":"…","maxZoom":19,"minZoom":0,"overlay":false}]`. `{bbox}` wird zur EPSG:3857-Box der Kachel (für WMS) |
@@ -287,6 +287,32 @@ verschoben wird; Gruppen mit nur einem Mitglied werden beim Normalisieren entfer
   Bereich um Start und Ziel plus Rand, höchstens 100 Zellen pro Anfrage. Der
   Server begrenzt weiterhin jede einzelne Abfrage auf 0.06°. Ohne Abbiege- und
   Verkehrsmodell sind die Zeiten Richtwerte für den Vergleich, keine Prognose.
+
+## Deployment auf Deploio
+
+Die App läuft als Docker-App auf [Deploio](https://deploio.ch) (PaaS von Nine). Im Repo liegen
+die [Deploio-Skills für Claude Code](https://github.com/ninech/deploio-skills) unter `.claude/`
+(Skills `deploio-deploy`, `deploio-manage`, `deploio-debug`, `deploio-provision`, `deploio-ci-cd`,
+Agent `deploio-cli`, Befehle `/deploy` und `/debug`, Schutz-Hook gegen `nctl delete` und
+`--replicas 0`). Der SessionStart-Hook `.claude/hooks/session-start.sh` lädt in Claude Code im
+Web die CLI `nctl` nach (GitHub-Release, sonst apt-Repository von nine.ch).
+
+Was Deploio braucht:
+
+| Punkt | Wert |
+|---|---|
+| Build | `Dockerfile` im Repo (`--dockerfile`), Port 8080 (`EXPOSE`); ohne `ADDR` lauscht der Server auf `PORT` |
+| Health-Probe | `GET /healthz` |
+| Umgebungsvariablen | `TRUST_PROXY=1` (hinter dem Deploio-Ingress), `USER_AGENT=Stadtplaner/… (+<deine URL>)`, `VAPID_SUBJECT=mailto:…`; optional `DATA_DIR=/data` (Standard im Image) |
+| Grösse | `micro` reicht (Go, eingebettete Oberfläche); `mini`, wenn der Kachel-Cache wachsen soll |
+| Zugangsdaten für `nctl` ohne Browser | API-Service-Account: `NCTL_API_CLIENT_ID`, `NCTL_API_CLIENT_SECRET`, `NCTL_ORGANIZATION`, dann `nctl auth login` |
+| Netzfreigaben (Claude Code im Web) | `github.com`/`objects.githubusercontent.com` (nctl-Download), `nineapis.ch`, `auth.nine.ch`, `git-info.deplo.io` |
+
+Wichtig: Deploio-Apps haben nur **flüchtigen Speicher** (2 GiB je App). `DATA_DIR` mit den
+Entwürfen, Versionen, Kommentaren und VAPID-Schlüsseln geht bei jedem Release und Neustart
+verloren. Für einen dauerhaften Betrieb braucht der Store ein S3-kompatibles Backend
+(Deploio-`bucket`) oder eine Datenbank; bis dahin eignet sich die Deploio-Instanz für Demos
+und Reviews, nicht als Ablage.
 
 ## Entwicklung und Tests
 

@@ -33,8 +33,19 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+// listenAddr: ADDR gewinnt; sonst PORT (PaaS wie Deploio setzen nur den Port); sonst :8080.
+func listenAddr() string {
+	if v := os.Getenv("ADDR"); v != "" {
+		return v
+	}
+	if p := os.Getenv("PORT"); p != "" {
+		return ":" + p
+	}
+	return ":8080"
+}
+
 func main() {
-	addr := flag.String("addr", env("ADDR", ":8080"), "Adresse, auf der der Server lauscht (env ADDR)")
+	addr := flag.String("addr", listenAddr(), "Adresse, auf der der Server lauscht (env ADDR, sonst PORT)")
 	dataDir := flag.String("data", env("DATA_DIR", "./data"), "Ordner für Entwürfe und Kachel-Cache (env DATA_DIR)")
 	tileURL := flag.String("tile-url", env("TILE_URL", osm.DefaultTileURL), "Kachel-Vorlage mit {z}/{x}/{y} (env TILE_URL)")
 	nominatimURL := flag.String("nominatim-url", env("NOMINATIM_URL", osm.DefaultNominatimURL), "Nominatim-Endpunkt (env NOMINATIM_URL)")
