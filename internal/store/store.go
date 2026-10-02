@@ -1,6 +1,7 @@
-// Package store legt Entwürfe als JSON-Dateien ab: ein Ordner pro Entwurf mit
-// Metadaten, aktuellem Stand und einer begrenzten Versionsgeschichte.
-// Bewusst ohne Datenbank: keine Abhängigkeiten, ein Volume genügt.
+// Package store legt Entwürfe als JSON-Objekte ab: je Entwurf Metadaten, aktueller Stand,
+// eine begrenzte Versionsgeschichte, Kommentare und Push-Abonnements. Die Ablage dahinter
+// ist austauschbar (internal/blob): ein Ordner auf der Platte oder ein S3-Bucket.
+// Bewusst ohne Datenbank und ohne Abhängigkeiten.
 package store
 
 import (
@@ -11,8 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -20,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"stadtplaner/internal/blob"
 	"stadtplaner/internal/model"
 )
 
@@ -65,17 +65,27 @@ type versionFile struct {
 }
 
 type Store struct {
-	dir         string
+	blobs       blob.Store
 	maxVersions int
 	mu          sync.RWMutex
 }
 
-func Open(dir string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Join(dir, "drafts"), 0o755); err != nil {
-		return nil, fmt.Errorf("Datenordner anlegen: %w", err)
-	}
-	return &Store{dir: dir, maxVersions: DefaultMaxVersions}, nil
+// New baut den Store auf einer beliebigen Ablage (Ordner oder S3).
+func New(b blob.Store) *Store {
+	return &Store{blobs: b, maxVersions: DefaultMaxVersions}
 }
+
+// Open legt den Store in einem Ordner an (Entwürfe unter dir/drafts).
+func Open(dir string) (*Store, error) {
+	d, err := blob.NewDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	return New(d), nil
+}
+
+// Blobs liefert die Ablage, damit andere Teile (z. B. VAPID-Schlüssel) dieselbe nutzen.
+func (s *Store) Blobs() blob.Store { return s.blobs }
 
 func (s *Store) SetMaxVersions(n int) {
 	if n > 0 {
@@ -110,22 +120,19 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Store) draftDir(id string) string { return filepath.Join(s.dir, "drafts", id) }
+// Schlüssel je Entwurf: drafts/<id>/meta.json, current.json, versions/<n>.json, comments.json, push.json
+func (s *Store) draftKey(id, name string) string { return "drafts/" + id + "/" + name }
 
-func writeJSONAtomic(path string, v any) error {
+func (s *Store) writeJSON(key string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return s.blobs.Put(key, data)
 }
 
-func readJSON(path string, v any) error {
-	data, err := os.ReadFile(path)
+func (s *Store) readJSON(key string, v any) error {
+	data, err := s.blobs.Get(key)
 	if err != nil {
 		return err
 	}
@@ -137,8 +144,8 @@ func (s *Store) readMeta(id string) (*Meta, error) {
 		return nil, ErrNotFound
 	}
 	var m Meta
-	if err := readJSON(filepath.Join(s.draftDir(id), "meta.json"), &m); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	if err := s.readJSON(s.draftKey(id, "meta.json"), &m); err != nil {
+		if errors.Is(err, blob.ErrNotExist) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -180,27 +187,23 @@ func (s *Store) Create(doc *model.Document, label string) (string, string, error
 
 // writeAll schreibt Version + aktuellen Stand + Metadaten (Aufrufer hält den Lock).
 func (s *Store) writeAll(m *Meta, doc *model.Document, label string, now time.Time) error {
-	dir := s.draftDir(m.ID)
-	if err := os.MkdirAll(filepath.Join(dir, "versions"), 0o755); err != nil {
-		return err
-	}
 	info := VersionInfo{N: m.NextSeq, At: now, Label: label, Stats: model.Compute(doc)}
 	m.NextSeq++
-	if err := writeJSONAtomic(filepath.Join(dir, "versions", strconv.Itoa(info.N)+".json"), versionFile{Info: info, Doc: doc}); err != nil {
+	if err := s.writeJSON(s.draftKey(m.ID, "versions/"+strconv.Itoa(info.N)+".json"), versionFile{Info: info, Doc: doc}); err != nil {
 		return err
 	}
 	m.Versions = append(m.Versions, info)
 	for len(m.Versions) > s.maxVersions {
 		old := m.Versions[0]
 		m.Versions = m.Versions[1:]
-		_ = os.Remove(filepath.Join(dir, "versions", strconv.Itoa(old.N)+".json"))
+		_ = s.blobs.Delete(s.draftKey(m.ID, "versions/"+strconv.Itoa(old.N)+".json"))
 	}
 	m.Name = doc.Name
 	m.UpdatedAt = now
-	if err := writeJSONAtomic(filepath.Join(dir, "current.json"), doc); err != nil {
+	if err := s.writeJSON(s.draftKey(m.ID, "current.json"), doc); err != nil {
 		return err
 	}
-	return writeJSONAtomic(filepath.Join(dir, "meta.json"), m)
+	return s.writeJSON(s.draftKey(m.ID, "meta.json"), m)
 }
 
 // Get liefert den aktuellen Stand samt Metadaten (ohne Token-Hash).
@@ -212,7 +215,7 @@ func (s *Store) Get(id string) (*model.Document, *Meta, error) {
 		return nil, nil, err
 	}
 	var doc model.Document
-	if err := readJSON(filepath.Join(s.draftDir(id), "current.json"), &doc); err != nil {
+	if err := s.readJSON(s.draftKey(id, "current.json"), &doc); err != nil {
 		return nil, nil, err
 	}
 	m.TokenHash = ""
@@ -271,7 +274,20 @@ func (s *Store) Delete(id, token string) error {
 	if err := s.checkToken(m, token); err != nil {
 		return err
 	}
-	return os.RemoveAll(s.draftDir(id))
+	// Metadaten zuerst: danach gilt der Entwurf als gelöscht, auch wenn Reste bleiben
+	if err := s.blobs.Delete(s.draftKey(id, "meta.json")); err != nil {
+		return err
+	}
+	keys, err := s.blobs.List("drafts/" + id + "/")
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if err := s.blobs.Delete(k); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Fork kopiert einen Entwurf in einen neuen mit eigenem Token.
@@ -318,8 +334,8 @@ func (s *Store) Version(id string, n int) (*model.Document, *VersionInfo, error)
 		return nil, nil, ErrNotFound
 	}
 	var vf versionFile
-	if err := readJSON(filepath.Join(s.draftDir(id), "versions", strconv.Itoa(n)+".json"), &vf); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	if err := s.readJSON(s.draftKey(id, "versions/"+strconv.Itoa(n)+".json"), &vf); err != nil {
+		if errors.Is(err, blob.ErrNotExist) {
 			return nil, nil, ErrNotFound
 		}
 		return nil, nil, err
@@ -356,12 +372,12 @@ type PushSub struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func (s *Store) commentsPath(id string) string { return filepath.Join(s.draftDir(id), "comments.json") }
+func (s *Store) commentsKey(id string) string { return s.draftKey(id, "comments.json") }
 
 func (s *Store) readComments(id string) ([]Comment, error) {
 	var list []Comment
-	if err := readJSON(s.commentsPath(id), &list); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	if err := s.readJSON(s.commentsKey(id), &list); err != nil {
+		if errors.Is(err, blob.ErrNotExist) {
 			return []Comment{}, nil
 		}
 		return nil, err
@@ -445,7 +461,7 @@ func (s *Store) AddComment(id string, c Comment) (Comment, string, *Comment, err
 	c.Resolved = false
 	c.TokenHash = hashToken(token)
 	list = append(list, c)
-	if err := writeJSONAtomic(s.commentsPath(id), list); err != nil {
+	if err := s.writeJSON(s.commentsKey(id), list); err != nil {
 		return Comment{}, "", nil, err
 	}
 	c.TokenHash = ""
@@ -494,7 +510,7 @@ func (s *Store) updateComment(id, cid, editToken, commentToken string, fn func(*
 		}
 		list = kept
 	}
-	return writeJSONAtomic(s.commentsPath(id), list)
+	return s.writeJSON(s.commentsKey(id), list)
 }
 
 // DeleteComment entfernt einen Kommentar (Besitzer oder Verfasser).
@@ -514,12 +530,12 @@ func (s *Store) ResolveComment(id, cid, editToken, commentToken string, resolved
 
 // --- Push-Abonnements ----------------------------------------------------------
 
-func (s *Store) pushPath(id string) string { return filepath.Join(s.draftDir(id), "push.json") }
+func (s *Store) pushKey(id string) string { return s.draftKey(id, "push.json") }
 
 func (s *Store) readPush(id string) ([]PushSub, error) {
 	var list []PushSub
-	if err := readJSON(s.pushPath(id), &list); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	if err := s.readJSON(s.pushKey(id), &list); err != nil {
+		if errors.Is(err, blob.ErrNotExist) {
 			return []PushSub{}, nil
 		}
 		return nil, err
@@ -565,7 +581,7 @@ func (s *Store) SetPushSub(id string, sub PushSub) error {
 	}
 	sub.CreatedAt = time.Now().UTC()
 	out = append(out, sub)
-	return writeJSONAtomic(s.pushPath(id), out)
+	return s.writeJSON(s.pushKey(id), out)
 }
 
 // DeletePushSub entfernt Abonnements nach Browser-Kennung oder Endpunkt (beides optional).
@@ -586,5 +602,5 @@ func (s *Store) DeletePushSub(id, clientID, endpoint string) error {
 		}
 		out = append(out, x)
 	}
-	return writeJSONAtomic(s.pushPath(id), out)
+	return s.writeJSON(s.pushKey(id), out)
 }

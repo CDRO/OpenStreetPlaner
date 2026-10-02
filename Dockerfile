@@ -4,6 +4,11 @@
 #
 #   docker build -t stadtplaner .
 #   docker run --rm -p 8080:8080 -v stadtplaner-data:/data stadtplaner
+#
+# Ohne dauerhaftes Volume (z. B. Deploio) die Entwürfe in einen S3-Bucket legen:
+#   docker run --rm -p 8080:8080 -e S3_BUCKET=… -e S3_ENDPOINT=https://cz41.objects.nineapis.ch \
+#     -e S3_ACCESS_KEY=… -e S3_SECRET_KEY=… stadtplaner
+# /data hält dann nur noch den Kachel-Cache.
 
 FROM golang:1.24-alpine AS build
 WORKDIR /src

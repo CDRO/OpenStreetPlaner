@@ -100,7 +100,12 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 | Variable | Standard | Bedeutung |
 |---|---|---|
 | `ADDR` | `:8080` | Adresse, auf der der Server lauscht; ohne `ADDR` zählt `PORT` (PaaS wie Deploio setzen nur den Port) |
-| `DATA_DIR` | `/data` (Docker) bzw. `./data` | Entwürfe (`drafts/`) und Kachel-Cache (`tiles/`) |
+| `DATA_DIR` | `/data` (Docker) bzw. `./data` | Entwürfe (`drafts/`), VAPID-Schlüssel und Kachel-Cache (`tiles/`); mit `S3_BUCKET` nur noch der Kachel-Cache |
+| `S3_BUCKET` | leer | Gesetzt: Entwürfe, Versionen, Kommentare, Push-Abonnements und VAPID-Schlüssel liegen in diesem S3-kompatiblen Bucket statt in `DATA_DIR` (z. B. Deploio/Nine Object Storage) |
+| `S3_ENDPOINT` | leer | Endpunkt des Buckets, z. B. `https://cz41.objects.nineapis.ch` (Pfad-Stil) |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | leer | Zugangsdaten des Bucket-Users; ersatzweise `AWS_ACCESS_KEY_ID` und `AWS_SECRET_ACCESS_KEY` |
+| `S3_REGION` | `us-east-1` | Region für die Signatur (bei Nine immer `us-east-1`); ersatzweise `AWS_REGION` |
+| `S3_PREFIX` | leer | Optionaler Schlüssel-Präfix im Bucket, z. B. `stadtplaner/`, wenn der Bucket geteilt wird |
 | `TILE_URL` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Kachel-Vorlage der Standardquelle `osm`, z. B. eigener Tile-Server |
 | `TILE_SOURCES` | leer | JSON-Liste weiterer oder ersetzender Kartenquellen: `[{"id":"…","label":"…","url":"…{z}/{x}/{y}… oder …{bbox}…","attribution":"…","maxZoom":19,"minZoom":0,"overlay":false}]`. `{bbox}` wird zur EPSG:3857-Box der Kachel (für WMS) |
 | `NOMINATIM_URL` | `https://nominatim.openstreetmap.org/search` | Geocoder |
@@ -169,9 +174,10 @@ Aufrufe sind pro Client-IP gedrosselt (`429` mit `Retry-After`).
 ```
 main.go                  Konfiguration, HTTP-Server, eingebettetes web/
 internal/model/          Entwurfsmodell, Validierung, Kennzahlen
-internal/store/          Datei-Store: drafts/<id>/{meta,current,versions/*}.json
+internal/blob/           Ablage: Ordner oder S3-Bucket (Signatur V4), blobtest/ = S3-Testserver
+internal/store/          Entwurfs-Store auf der Ablage: drafts/<id>/{meta,current,versions/*,comments,push}.json
 internal/osm/            Nominatim, Overpass, Kachel-Proxy (Drosselung, Caches)
-internal/push/           Web-Push: aes128gcm-Verschlüsselung, VAPID-JWT, Versand, Schlüsseldatei
+internal/push/           Web-Push: aes128gcm-Verschlüsselung, VAPID-JWT, Versand, Schlüsselpaar in der Ablage
 internal/server/         Routen, JSON-API, Sicherheits-Header, statische Dateien
 web/index.html           Seitengerüst
 web/css/app.css          Gestaltung
@@ -303,7 +309,7 @@ Was Deploio braucht:
 |---|---|
 | Build | `Dockerfile` im Repo (`--dockerfile`), Port 8080 (`EXPOSE`); ohne `ADDR` lauscht der Server auf `PORT` |
 | Health-Probe | `GET /healthz` |
-| Umgebungsvariablen | `TRUST_PROXY=1` (hinter dem Deploio-Ingress), `USER_AGENT=Stadtplaner/… (+<deine URL>)`, `VAPID_SUBJECT=mailto:…`; optional `DATA_DIR=/data` (Standard im Image) |
+| Umgebungsvariablen | `TRUST_PROXY=1` (hinter dem Deploio-Ingress), `USER_AGENT=Stadtplaner/… (+<deine URL>)`, `VAPID_SUBJECT=mailto:…`; Ablage im Bucket über `S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` (siehe unten) |
 | Grösse | `micro` reicht (Go, eingebettete Oberfläche); `mini`, wenn der Kachel-Cache wachsen soll |
 | Zugangsdaten für `nctl` ohne Browser | API-Service-Account: `NCTL_API_CLIENT_ID`, `NCTL_API_CLIENT_SECRET`, `NCTL_ORGANIZATION`, dann `nctl auth login` |
 | Netzfreigaben (Claude Code im Web) | `github.com`/`objects.githubusercontent.com` (nctl-Download), `nineapis.ch`, `auth.nine.ch`, `git-info.deplo.io` |
@@ -335,11 +341,34 @@ Soll jeder Push auf `main` ausrollen, genügt im Workflow zusätzlich `push: bra
 unter `on:`; die Revision ist dann `main`, und Deploio baut den jeweils aktuellen Stand.
 Wer den Entwurf einer Release zuerst testen will, nutzt den manuellen Start mit dem Tag.
 
-Wichtig: Deploio-Apps haben nur **flüchtigen Speicher** (2 GiB je App). `DATA_DIR` mit den
-Entwürfen, Versionen, Kommentaren und VAPID-Schlüsseln geht bei jedem Release und Neustart
-verloren. Für einen dauerhaften Betrieb braucht der Store ein S3-kompatibles Backend
-(Deploio-`bucket`) oder eine Datenbank; bis dahin eignet sich die Deploio-Instanz für Demos
-und Reviews, nicht als Ablage.
+### Dauerhafte Ablage im Deploio-Bucket
+
+Deploio-Apps haben nur flüchtigen Speicher (2 GiB je App): `DATA_DIR` geht bei jedem Release
+und Neustart verloren. Darum legt der Server Entwürfe, Versionen, Kommentare,
+Push-Abonnements und das VAPID-Schlüsselpaar in einen S3-kompatiblen Bucket, sobald
+`S3_BUCKET` gesetzt ist (`internal/blob`, Signatur V4 ohne SDK). Im Bucket liegen dieselben
+Schlüssel wie im Ordner (`drafts/<id>/meta.json`, `current.json`, `versions/<n>.json`,
+`comments.json`, `push.json`, `vapid.json`), ein Umzug zwischen Ordner und Bucket ist also ein
+Kopieren. Nur der Kachel-Cache bleibt auf der flüchtigen Platte.
+
+Einen bestehenden Bucket anbinden (Bucket und Bucket-User existieren, der User hat
+`readwrite`-Rechte auf den Bucket):
+
+```bash
+nctl get bucket <bucket> -o yaml            # Endpunkt (status.atProvider.endpoint)
+nctl get bucketuser <bucket-user> -o yaml   # Access Key und Secret Key
+nctl update app main \
+  --env="S3_BUCKET=<bucket>;S3_ENDPOINT=https://cz41.objects.nineapis.ch;S3_PREFIX=stadtplaner" \
+  --sensitive-env="S3_ACCESS_KEY=<access-key>;S3_SECRET_KEY=<secret-key>"
+```
+
+Neu anlegen geht mit `nctl create bucket <name> --location=nine-cz41`,
+`nctl create bucketuser <name>-user --location=nine-cz42` und
+`nctl update bucket <name> --permissions=<name>-user:readwrite`. Der Deploy-Workflow setzt die
+Variablen beim Anlegen der App, wenn im GitHub-Repo die Variablen `S3_BUCKET`, `S3_ENDPOINT`
+(optional `S3_PREFIX`) und die Secrets `S3_ACCESS_KEY`, `S3_SECRET_KEY` eingetragen sind, und
+gleicht sie bei jedem Lauf ab. Beim Start prüft der Server den Zugriff auf den Bucket und bricht
+mit klarer Meldung ab, wenn Endpunkt oder Schlüssel nicht stimmen.
 
 ## Entwicklung und Tests
 

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"stadtplaner/internal/blob"
 	"stadtplaner/internal/osm"
 	"stadtplaner/internal/push"
 	"stadtplaner/internal/server"
@@ -62,10 +63,28 @@ func main() {
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
-	st, err := store.Open(*dataDir)
-	if err != nil {
-		logger.Fatalf("Store: %v", err)
+	// Ablage der Entwürfe: S3-Bucket, wenn S3_BUCKET gesetzt ist (PaaS ohne dauerhafte Platte), sonst DATA_DIR
+	var blobs blob.Store
+	var storage string
+	if cfg, ok := blob.S3FromEnv(); ok {
+		s3, err := blob.NewS3(cfg)
+		if err != nil {
+			logger.Fatalf("Store: %v", err)
+		}
+		if _, err := s3.Get("vapid.json"); err != nil && !errors.Is(err, blob.ErrNotExist) {
+			logger.Fatalf("Store: Bucket %s unter %s nicht erreichbar: %v", cfg.Bucket, s3.Endpoint(), err)
+		}
+		blobs = s3
+		storage = "Bucket " + cfg.Bucket + " (" + s3.Endpoint() + ")"
+	} else {
+		d, err := blob.NewDir(*dataDir)
+		if err != nil {
+			logger.Fatalf("Store: %v", err)
+		}
+		blobs = d
+		storage = "Ordner " + *dataDir
 	}
+	st := store.New(blobs)
 	st.SetMaxVersions(*maxVersions)
 
 	client := osm.New(filepath.Join(*dataDir, "tiles"))
@@ -93,7 +112,7 @@ func main() {
 	}
 	srv.SetRateLimit(server.RateLimit{PerMinute: *writeRate, Burst: 20, TrustProxy: *trustProxy})
 	if *pushEnabled {
-		keys, err := push.LoadOrCreateKeys(filepath.Join(*dataDir, "vapid.json"))
+		keys, err := push.LoadOrCreateKeysFrom(blobs, "vapid.json")
 		if err != nil {
 			logger.Printf("Push deaktiviert, VAPID-Schlüssel: %v", err)
 		} else {
@@ -112,7 +131,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
-		logger.Printf("Stadtplaner läuft auf %s (Daten: %s)", *addr, *dataDir)
+		logger.Printf("Stadtplaner läuft auf %s (Entwürfe: %s, Kachel-Cache: %s)", *addr, storage, filepath.Join(*dataDir, "tiles"))
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatalf("HTTP: %v", err)
 		}

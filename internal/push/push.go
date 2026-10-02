@@ -27,6 +27,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"stadtplaner/internal/blob"
 )
 
 const (
@@ -72,6 +74,30 @@ func GenerateKeys() (Keys, error) {
 }
 
 // LoadOrCreateKeys liest das Schlüsselpaar aus path oder legt es neu an.
+// LoadOrCreateKeysFrom liest das VAPID-Schlüsselpaar aus der Ablage des Stores (Schlüssel key,
+// z. B. "vapid.json") oder erzeugt und speichert ein neues – so überlebt es auch auf einem
+// Bucket jeden Neustart.
+func LoadOrCreateKeysFrom(b blob.Store, key string) (Keys, error) {
+	var k Keys
+	data, err := b.Get(key)
+	if err == nil {
+		if err := json.Unmarshal(data, &k); err == nil && k.PrivateKey != "" && k.PublicKey != "" {
+			return k, nil
+		}
+	} else if !errors.Is(err, blob.ErrNotExist) {
+		return Keys{}, err
+	}
+	k, err = GenerateKeys()
+	if err != nil {
+		return Keys{}, err
+	}
+	data, _ = json.MarshalIndent(k, "", "  ")
+	if err := b.Put(key, data); err != nil {
+		return Keys{}, err
+	}
+	return k, nil
+}
+
 func LoadOrCreateKeys(path string) (Keys, error) {
 	var k Keys
 	data, err := os.ReadFile(path)

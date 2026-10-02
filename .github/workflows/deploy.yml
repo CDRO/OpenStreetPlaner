@@ -6,6 +6,8 @@
 #   Secrets:   NCTL_API_CLIENT_ID, NCTL_API_CLIENT_SECRET, NCTL_ORGANIZATION
 #   Variablen: DEPLOIO_PROJECT (Standard <org>-openstreetplaner), DEPLOIO_APP (Standard main),
 #              VAPID_SUBJECT (z. B. mailto:…, nur beim Anlegen der App verwendet)
+#   Bucket:    Variablen S3_BUCKET, S3_ENDPOINT, optional S3_PREFIX; Secrets S3_ACCESS_KEY, S3_SECRET_KEY
+#              (dauerhafte Ablage der Entwürfe; ohne Bucket bleibt sie flüchtig)
 # Beim ersten Lauf legt der Workflow die App an (Docker-Build, Port 8080, Health-Probe /healthz).
 name: Deploy to Deploio
 
@@ -33,6 +35,11 @@ jobs:
       DEPLOIO_PROJECT: ${{ vars.DEPLOIO_PROJECT }}
       DEPLOIO_APP: ${{ vars.DEPLOIO_APP }}
       VAPID_SUBJECT: ${{ vars.VAPID_SUBJECT }}
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      S3_ENDPOINT: ${{ vars.S3_ENDPOINT }}
+      S3_PREFIX: ${{ vars.S3_PREFIX }}
+      S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+      S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       REVISION: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.revision }}
     steps:
       - name: Install nctl
@@ -56,8 +63,17 @@ jobs:
 
       - name: Create app on first run, otherwise set the new revision
         run: |
+          # Bucket-Variablen (falls hinterlegt) bei jedem Lauf angleichen; Schlüssel als sensitive env
+          BUCKET_FLAGS=()
+          if [ -n "$S3_BUCKET" ] && [ -n "$S3_ENDPOINT" ] && [ -n "$S3_ACCESS_KEY" ] && [ -n "$S3_SECRET_KEY" ]; then
+            BUCKET_FLAGS+=("--env=S3_BUCKET=${S3_BUCKET};S3_ENDPOINT=${S3_ENDPOINT}${S3_PREFIX:+;S3_PREFIX=${S3_PREFIX}}")
+            BUCKET_FLAGS+=("--sensitive-env=S3_ACCESS_KEY=${S3_ACCESS_KEY};S3_SECRET_KEY=${S3_SECRET_KEY}")
+            echo "Ablage: Bucket $S3_BUCKET ($S3_ENDPOINT)"
+          else
+            echo "Hinweis: kein Bucket konfiguriert – Entwürfe liegen auf flüchtigem Speicher."
+          fi
           if nctl get app "$APP" >/dev/null 2>&1; then
-            nctl update app "$APP" --git-revision="$REVISION"
+            nctl update app "$APP" --git-revision="$REVISION" "${BUCKET_FLAGS[@]}"
           else
             ENV_FLAGS=(--env=TRUST_PROXY=1 "--env=USER_AGENT=Stadtplaner/1.0 (+https://github.com/${GITHUB_REPOSITORY})")
             if [ -n "$VAPID_SUBJECT" ]; then ENV_FLAGS+=("--env=VAPID_SUBJECT=${VAPID_SUBJECT}"); fi
@@ -68,7 +84,7 @@ jobs:
               --port=8080 \
               --size=micro \
               --health-probe-path=/healthz \
-              "${ENV_FLAGS[@]}"
+              "${ENV_FLAGS[@]}" "${BUCKET_FLAGS[@]}"
           fi
 
       - name: Wait for the release
