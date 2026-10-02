@@ -308,6 +308,33 @@ Was Deploio braucht:
 | Zugangsdaten für `nctl` ohne Browser | API-Service-Account: `NCTL_API_CLIENT_ID`, `NCTL_API_CLIENT_SECRET`, `NCTL_ORGANIZATION`, dann `nctl auth login` |
 | Netzfreigaben (Claude Code im Web) | `github.com`/`objects.githubusercontent.com` (nctl-Download), `nineapis.ch`, `auth.nine.ch`, `git-info.deplo.io` |
 
+### Automatisch ausrollen bei jeder Release
+
+Der Workflow `.github/workflows/deploy.yml` übergibt bei jeder **veröffentlichten GitHub-Release**
+(Tag auf `main`, z. B. `v2.2.0`) den Tag als Revision an die Deploio-App; Deploio baut das
+Dockerfile und rollt aus. Über „Run workflow“ lässt sich jede Revision (Tag, Branch, Commit)
+von Hand ausrollen. Beim ersten Lauf legt der Workflow die App an (Docker, Port 8080,
+Health-Probe `/healthz`, `micro`, `TRUST_PROXY=1`, `USER_AGENT`, optional `VAPID_SUBJECT`).
+
+Einmalige Einrichtung:
+
+1. Lokal `nctl` installieren und anmelden: `nctl auth login`, dann `nctl auth whoami` (Organisation merken).
+2. Projekt anlegen und wählen: `nctl create project <org>-openstreetplaner` und
+   `nctl auth set-project <org>-openstreetplaner`.
+3. Service-Account für den Workflow anlegen (projektgebunden):
+   `nctl create apiserviceaccount github-actions-deploy`, danach
+   `nctl get apiserviceaccount github-actions-deploy --print-client-id` und `--print-client-secret`.
+4. Im GitHub-Repo unter *Settings → Secrets and variables → Actions* eintragen:
+   Secrets `NCTL_API_CLIENT_ID`, `NCTL_API_CLIENT_SECRET`, `NCTL_ORGANIZATION`;
+   Variablen `DEPLOIO_PROJECT` (sonst `<org>-openstreetplaner`), `DEPLOIO_APP` (sonst `main`),
+   `VAPID_SUBJECT` (z. B. `mailto:…`).
+5. Release veröffentlichen (*Releases → Draft a new release*, Tag auf `main`) oder den
+   Workflow manuell starten. Die URL steht am Ende des Workflow-Logs (`nctl get app main`).
+
+Soll jeder Push auf `main` ausrollen, genügt im Workflow zusätzlich `push: branches: [main]`
+unter `on:`; die Revision ist dann `main`, und Deploio baut den jeweils aktuellen Stand.
+Wer den Entwurf einer Release zuerst testen will, nutzt den manuellen Start mit dem Tag.
+
 Wichtig: Deploio-Apps haben nur **flüchtigen Speicher** (2 GiB je App). `DATA_DIR` mit den
 Entwürfen, Versionen, Kommentaren und VAPID-Schlüsseln geht bei jedem Release und Neustart
 verloren. Für einen dauerhaften Betrieb braucht der Store ein S3-kompatibles Backend

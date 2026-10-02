@@ -1,0 +1,87 @@
+# Deployment auf Deploio (nine.ch PaaS): jede veröffentlichte GitHub-Release (Tag auf main)
+# wird als Revision an die Deploio-App übergeben; Deploio baut das Dockerfile und rollt aus.
+# Manuell über „Run workflow“ mit beliebiger Revision (Tag, Branch oder Commit).
+#
+# Voraussetzungen (einmalig, siehe README „Deployment auf Deploio“):
+#   Secrets:   NCTL_API_CLIENT_ID, NCTL_API_CLIENT_SECRET, NCTL_ORGANIZATION
+#   Variablen: DEPLOIO_PROJECT (Standard <org>-openstreetplaner), DEPLOIO_APP (Standard main),
+#              VAPID_SUBJECT (z. B. mailto:…, nur beim Anlegen der App verwendet)
+# Beim ersten Lauf legt der Workflow die App an (Docker-Build, Port 8080, Health-Probe /healthz).
+name: Deploy to Deploio
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Git-Revision (Tag, Branch oder Commit)"
+        required: false
+        default: "main"
+
+concurrency:
+  group: deploio-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      NCTL_API_CLIENT_ID: ${{ secrets.NCTL_API_CLIENT_ID }}
+      NCTL_API_CLIENT_SECRET: ${{ secrets.NCTL_API_CLIENT_SECRET }}
+      NCTL_ORGANIZATION: ${{ secrets.NCTL_ORGANIZATION }}
+      DEPLOIO_PROJECT: ${{ vars.DEPLOIO_PROJECT }}
+      DEPLOIO_APP: ${{ vars.DEPLOIO_APP }}
+      VAPID_SUBJECT: ${{ vars.VAPID_SUBJECT }}
+      REVISION: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.revision }}
+    steps:
+      - name: Install nctl
+        run: |
+          echo "deb [trusted=yes] https://repo.nine.ch/deb/ /" | sudo tee /etc/apt/sources.list.d/repo.nine.ch.list
+          sudo apt-get update -qq
+          sudo apt-get install -y nctl
+          nctl --version
+
+      - name: Authenticate
+        run: |
+          test -n "$NCTL_API_CLIENT_ID" && test -n "$NCTL_API_CLIENT_SECRET" && test -n "$NCTL_ORGANIZATION" \
+            || { echo "Secrets NCTL_API_CLIENT_ID, NCTL_API_CLIENT_SECRET, NCTL_ORGANIZATION fehlen."; exit 1; }
+          nctl auth login
+          PROJECT="${DEPLOIO_PROJECT:-${NCTL_ORGANIZATION}-openstreetplaner}"
+          APP="${DEPLOIO_APP:-main}"
+          nctl auth set-project "$PROJECT" --force
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "Projekt $PROJECT, App $APP, Revision $REVISION"
+
+      - name: Create app on first run, otherwise set the new revision
+        run: |
+          if nctl get app "$APP" >/dev/null 2>&1; then
+            nctl update app "$APP" --git-revision="$REVISION"
+          else
+            ENV_FLAGS=(--env=TRUST_PROXY=1 "--env=USER_AGENT=Stadtplaner/1.0 (+https://github.com/${GITHUB_REPOSITORY})")
+            if [ -n "$VAPID_SUBJECT" ]; then ENV_FLAGS+=("--env=VAPID_SUBJECT=${VAPID_SUBJECT}"); fi
+            nctl create app "$APP" \
+              --git-url="https://github.com/${GITHUB_REPOSITORY}.git" \
+              --git-revision="$REVISION" \
+              --dockerfile \
+              --port=8080 \
+              --size=micro \
+              --health-probe-path=/healthz \
+              "${ENV_FLAGS[@]}"
+          fi
+
+      - name: Wait for the release
+        run: |
+          for i in $(seq 1 60); do
+            PHASE=$(nctl get app "$APP" -o yaml | awk '/^status:/{s=1} s && /^ +phase:/{print $2; exit}')
+            echo "  phase: ${PHASE:-?} ($i/60)"
+            case "$PHASE" in
+              Running) break ;;
+              Failed|Error) echo "Build oder Release fehlgeschlagen."; nctl logs build -a "$APP" 2>/dev/null | tail -50; exit 1 ;;
+            esac
+            sleep 15
+          done
+          [ "$PHASE" = "Running" ] || { echo "Zeitüberschreitung (15 min)."; exit 1; }
+          nctl get releases 2>/dev/null | head -5 || true
+          nctl get app "$APP"
