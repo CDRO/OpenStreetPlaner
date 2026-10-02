@@ -12,7 +12,8 @@ self.addEventListener('install', (event) => {
       const res = await fetch('/api/shell', { cache: 'no-cache' });
       const manifest = res.ok ? await res.json() : { files: [] };
       const cache = await caches.open(SHELL_CACHE);
-      await cache.addAll(['/', ...(manifest.files || [])]);
+      // cache: 'reload' holt jede Datei frisch vom Server, nie aus dem HTTP-Cache des Browsers
+      await cache.addAll(['/', ...(manifest.files || [])].map((f) => new Request(f, { cache: 'reload' })));
     } catch {
       // ohne Netz keine Schale; der nächste Start versucht es erneut
     }

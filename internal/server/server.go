@@ -142,7 +142,16 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /tiles/{source}/{z}/{x}/{y}", s.tileFrom)
 	m.HandleFunc("GET /api/tiles/sources", s.tileSources)
 	m.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		// App-Dateien: immer beim Server nachfragen (no-cache), aber mit ETag aus der Schalen-Version,
+		// damit die Antwort nach einem Release sofort neu kommt und sonst ein 304 genügt. So muss
+		// nach einem Release niemand den Browser-Cache leeren.
+		etag := `"` + s.shellVersion + `"`
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("ETag", etag)
+		if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		s.static.ServeHTTP(w, r)
 	})
 	m.HandleFunc("GET /d/{id}", s.serveIndex)
@@ -775,6 +784,9 @@ func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
 	}
 	pts, err := s.osm.Profile(r.Context(), in.Coords)
 	if err != nil {
+		if !errors.Is(err, osm.ErrBadRequest) && !errors.Is(err, context.Canceled) {
+			s.logger.Printf("Höhenprofil fehlgeschlagen: %v", err)
+		}
 		writeError(w, err)
 		return
 	}
@@ -912,7 +924,13 @@ func (s *Server) writeTile(w http.ResponseWriter, r *http.Request, data []byte, 
 // --- Oberfläche ---------------------------------------------------------------
 
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
+	etag := `"` + s.shellVersion + `"`
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", etag)
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	_, _ = w.Write(s.index)
 }

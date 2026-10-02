@@ -372,17 +372,15 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
       const metas = r.segments.map((seg, i) => ({ draft: true, assumed: vehicle === 'bike' || vehicle === 'foot' || (!(seg && seg.maxspeed) && !r.maxspeed), noProfile: geometry && !profile, unsafe: draftUnsafe(r, i, vehicle) }));
       g.addPolylineSpeeds(r.nodes, speeds, r.oneway && vehicle !== 'foot' ? 1 : 0, grades, metas);
     }
+    // Enden neuer Strassen ans Netz hängen, auch ohne exaktes Einrasten: bis ATTACH_TOLERANCE m
+    // zur nächsten Strasse (OSM oder Entwurf) entsteht ein kurzer Verbinder.
+    for (const r of roads) {
+      if (r.status === 'remove' || r.nodes.length < 2) continue;
+      for (const end of [r.nodes[0], r.nodes[r.nodes.length - 1]]) attachLooseEnd(g, end);
+    }
+    // Kreisel verbinden alles, was ihren Ring berührt oder hindurchführt: eigene Strassen und OSM-Strassen
     for (const k of roundabouts) {
-      const c = project(k.center);
-      const scale = mercatorScale(k.center[0]);
-      let attached = false;
-      for (const n of draftNodes) {
-        const d = Math.hypot(n.p.x - c.x, n.p.y - c.y) / scale;
-        if (Math.abs(d - k.radius) <= 1.5) {
-          g.link(n.ll, k.center, ROUNDABOUT_SPEED, 0);
-          attached = true;
-        }
-      }
+      const attached = attachRoundabout(g, k);
       if (attached && geometry) g.addPenalty(k.center, NODE_DELAY.roundabout.mean, NODE_DELAY.roundabout.sd);
       if (attached) g.setJunction(k.center, 'roundabout', null);
     }
@@ -400,6 +398,87 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
     }
   }
   return g;
+}
+
+/** Toleranz (m), innerhalb der ein loses Strassenende an die nächste Strasse angeschlossen wird. */
+export const ATTACH_TOLERANCE = 10;
+
+/**
+ * Hängt ein Strassenende, das sonst eine Sackgasse wäre, an das nächste fremde Segment innerhalb
+ * ATTACH_TOLERANCE: der Lotpunkt wird Knoten (Segment geteilt) und mit dem Ende verbunden.
+ * Liefert true, wenn eine Verbindung entstand.
+ */
+export function attachLooseEnd(g, end, maxMeters = ATTACH_TOLERANCE) {
+  const key = keyOf(end);
+  const node = g.nodes.get(key);
+  if (!node) return false;
+  // Schon angeschlossen: mehr als ein Nachbar (eigene Strasse zählt einmal)
+  const neighbours = new Set(node.edges.map((e) => e.to));
+  for (const [k, n] of g.nodes) if (k !== key && n.edges.some((e) => e.to === key)) neighbours.add(k);
+  if (neighbours.size > 1) return false;
+  const p = project(end);
+  const scale = mercatorScale(end[0]);
+  const tol = maxMeters * scale;
+  let best = null;
+  for (const s of g.segments) {
+    const ka = keyOf(s.a);
+    const kb = keyOf(s.b);
+    if (ka === key || kb === key) continue;
+    const a = project(s.a);
+    const b = project(s.b);
+    if (p.x < Math.min(a.x, b.x) - tol || p.x > Math.max(a.x, b.x) + tol || p.y < Math.min(a.y, b.y) - tol || p.y > Math.max(a.y, b.y) + tol) continue;
+    const q = closestPointOnSegment(p, a, b);
+    if (q.dist <= tol && (!best || q.dist < best.dist)) best = { ...q, seg: s };
+  }
+  if (!best) return false;
+  const onLine = best.dist < 1e-9 * scale ? end : unproject(best);
+  const s = best.seg;
+  if (!g.nodes.has(keyOf(onLine))) {
+    g.link(s.a, onLine, s.speed, s.dir);
+    g.link(onLine, s.b, s.speed, s.dir);
+  }
+  if (keyOf(onLine) !== key) g.link(end, onLine, s.speed, 0);
+  return true;
+}
+
+/**
+ * Verbindet einen gezeichneten Kreisel mit allen Segmenten, die seinen Ring berühren oder
+ * hindurchführen (eigene wie OSM-Strassen): der dem Zentrum nächste Punkt des Segments wird
+ * Knoten und mit dem Zentrum verknüpft. Liefert true, wenn mindestens ein Anschluss entstand.
+ */
+export function attachRoundabout(g, k) {
+  const c = project(k.center);
+  const scale = mercatorScale(k.center[0]);
+  const reach = (k.radius + Math.max(3, k.radius * 0.3)) * scale;
+  const segs = g.segments.slice();
+  let attached = false;
+  const seen = new Set();
+  for (const s of segs) {
+    const a = project(s.a);
+    const b = project(s.b);
+    if (c.x < Math.min(a.x, b.x) - reach || c.x > Math.max(a.x, b.x) + reach || c.y < Math.min(a.y, b.y) - reach || c.y > Math.max(a.y, b.y) + reach) continue;
+    const q = closestPointOnSegment(c, a, b);
+    if (q.dist > reach) continue;
+    // Bevorzugt ein Endpunkt auf dem Ring, sonst der Lotpunkt (Durchfahrt)
+    let at = null;
+    for (const ll of [s.a, s.b]) {
+      const p = project(ll);
+      if (Math.abs(Math.hypot(p.x - c.x, p.y - c.y) - k.radius * scale) <= Math.max(1.5, k.radius * 0.3) * scale) at = ll;
+    }
+    if (!at) {
+      at = unproject(q);
+      if (!g.nodes.has(keyOf(at))) {
+        g.link(s.a, at, s.speed, s.dir);
+        g.link(at, s.b, s.speed, s.dir);
+      }
+    }
+    const key = keyOf(at);
+    if (seen.has(key) || key === keyOf(k.center)) continue;
+    seen.add(key);
+    g.link(at, k.center, ROUNDABOUT_SPEED, 0);
+    attached = true;
+  }
+  return attached;
 }
 
 /** Nächster Punkt auf dem Netz zu ll; verknüpft ihn als temporären Knoten. */

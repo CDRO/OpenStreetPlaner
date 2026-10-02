@@ -230,6 +230,9 @@ details.box summary { cursor: pointer; font-weight: 600; }
 .race-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
 .race-glyph { font-size: 15px; }
 .group-row { margin: 4px 0 8px; color: var(--muted); }
+.tool-options:empty { display: none; }
+.tool-options { margin: 4px 0 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-soft); }
+.tool-options .field.inline { display: flex; align-items: center; gap: 8px; }
 .group-badge { display: inline-block; font-weight: 700; color: var(--accent); }
 .present-panel .race { padding: 6px 8px; }
 

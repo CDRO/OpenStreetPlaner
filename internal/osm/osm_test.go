@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -176,7 +177,8 @@ func TestProfile(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		_ = r.ParseForm()
-		if !strings.Contains(r.Form.Get("geom"), `"coordinates":[[8,47],[8.001,47.001]]`) || r.Form.Get("sr") != "4326" {
+		// Landeskoordinaten LV95 (sr 2056), nicht WGS84 – sonst antwortet swisstopo mit 400
+		if !strings.Contains(r.Form.Get("geom"), `"coordinates":[[2642695.43,1205590.52],[2642770.68,1205702.23]]`) || r.Form.Get("sr") != "2056" {
 			t.Errorf("Anfrage: %v", r.Form)
 		}
 		_, _ = w.Write([]byte(`[{"dist":0,"alts":{"COMB":500.5,"DTM2":500.4}},{"dist":70,"alts":{"DTM25":510}},{"dist":140,"alts":{}}]`))
@@ -402,5 +404,33 @@ func TestTimetable(t *testing.T) {
 	c.TimetableURL = ""
 	if _, err := c.Timetable(context.Background(), [2]float64{47.05, 8.3}, [2]float64{47.06, 8.31}, ""); err == nil {
 		t.Fatal("abgeschalteter Dienst muss einen Fehler liefern")
+	}
+}
+
+func TestWGS84ToLV95(t *testing.T) {
+	// Beispiel aus der swisstopo-Dokumentation der Näherungsformeln
+	e, n := WGS84ToLV95(46.0441305, 8.7304972) // 46°02'38.87" N, 8°43'49.79" E
+	if math.Abs(e-2699999.76) > 0.5 || math.Abs(n-1099999.97) > 0.5 {
+		t.Fatalf("LV95: %.2f %.2f", e, n)
+	}
+	e, n = WGS84ToLV95(46.9524056, 7.4395833) // Bern, alte Sternwarte: Nullpunkt der Formel
+	if math.Abs(e-2600072.37) > 0.5 || math.Abs(n-1200147.07) > 0.5 {
+		t.Fatalf("Bern: %.2f %.2f", e, n)
+	}
+}
+
+func TestUpstreamErrorExcerpt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error": {"message": "Please provide a valid number for the spatial reference system model 21781 or 2056", "code": 400}}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	c := New(t.TempDir())
+	c.ProfileURL = srv.URL
+	_, err := c.Profile(context.Background(), [][2]float64{{47, 8}, {47.001, 8.001}})
+	if err == nil || !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "spatial reference") {
+		t.Fatalf("Fehlertext ohne Erklärung des Dienstes: %v", err)
+	}
+	if got := bodyExcerpt([]byte("  viel \n Text  hier "), 8); got != "viel Tex…" {
+		t.Fatalf("Kurzfassung: %q", got)
 	}
 }

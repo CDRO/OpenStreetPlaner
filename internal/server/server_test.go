@@ -636,3 +636,34 @@ func TestShellManifestAndWorker(t *testing.T) {
 		t.Fatalf("Version nicht im Service Worker eingesetzt")
 	}
 }
+
+// Nach einem Release darf niemand den Browser-Cache leeren müssen: App-Dateien und Startseite
+// werden immer beim Server nachgefragt (no-cache) und tragen ein ETag aus der Schalen-Version.
+func TestShellRevalidation(t *testing.T) {
+	srv, _ := newTestServer(t)
+	get := func(path, etag string) *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res
+	}
+	for _, path := range []string{"/static/js/app.js", "/"} {
+		res := get(path, "")
+		etag := res.Header.Get("ETag")
+		if res.StatusCode != http.StatusOK || res.Header.Get("Cache-Control") != "no-cache" || etag == "" {
+			t.Fatalf("%s: %d %q %q", path, res.StatusCode, res.Header.Get("Cache-Control"), etag)
+		}
+		if res := get(path, etag); res.StatusCode != http.StatusNotModified {
+			t.Fatalf("%s mit passendem ETag: %d", path, res.StatusCode)
+		}
+		if res := get(path, `"alt"`); res.StatusCode != http.StatusOK {
+			t.Fatalf("%s mit fremdem ETag: %d", path, res.StatusCode)
+		}
+	}
+}

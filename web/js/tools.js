@@ -22,7 +22,7 @@ export const TOOLS = [
   { id: 'junction', label: 'Kreuzung / Punkt', key: 'K', hint: 'Klicken platziert eine Kreuzung oder Punkt-Massnahme (Ampel, Stop, Fussgängerstreifen, Bushaltestelle), am besten auf einen Strassenpunkt.' },
   { id: 'zone', label: 'Zone / Fläche', key: 'F', hint: 'Klicken setzt Eckpunkte. Doppelklick, Enter oder Rechtsklick schliesst die Fläche (mindestens drei Punkte), Esc bricht ab.' },
   { id: 'roundabout', label: 'Kreisel', key: 'R', hint: 'Klicken setzt das Zentrum, Maus bewegen wählt den Radius, erneut klicken bestätigt.' },
-  { id: 'adopt', label: 'OSM übernehmen', key: 'O', hint: 'Bestehende OSM-Strasse anklicken, um sie als bearbeitbare Strasse in die aktive Ebene zu kopieren (ab Zoom 16).' },
+  { id: 'adopt', label: 'OSM übernehmen', key: 'O', hint: 'Bestehende OSM-Strasse anklicken: sie wird als bearbeitbare Kopie in die aktive Ebene übernommen (ab Zoom 16, OSM-Strassen werden eingeblendet). Shift+Klick übernimmt sie als Rückbau.' },
   { id: 'route', label: 'Route', key: 'T', hint: 'Klicken setzt den Start (A), ein zweiter Klick das Ziel (B). Weitere Klicks beginnen neu, Esc löscht die Route.' },
   { id: 'measure', label: 'Messen', key: 'M', hint: 'Klicken setzt Messpunkte: Länge je Abschnitt und gesamt, ab drei Punkten auch die Fläche. Doppelklick oder Enter beendet, Esc löscht die Messung.' },
   { id: 'comment', label: 'Kommentar', key: 'C', hint: 'Auf die Karte klicken, um dort einen Kommentar zu hinterlassen. Geht auch ohne Bearbeitungsrecht.' },
@@ -54,6 +54,8 @@ export class ToolController {
     this.measure = null; // { points, cursor, done }
     this.box = null; // Rahmenauswahl: { start, end } in Pixeln
     this.groupDrag = null; // ganze Auswahl verschieben: { ids, start, startPx, dx, dy, moved }
+    this.adoptStatus = 'existing'; // Werkzeug „OSM übernehmen“: Status der Kopie (existing | remove)
+    this.osmHover = null; // OSM-Strasse unter dem Zeiger im Werkzeug „OSM übernehmen“: { way }
     this.touch = false; // letzter Zeiger war Finger/Stift: grössere Griffe
 
     const map = this.map;
@@ -87,6 +89,7 @@ export class ToolController {
     this.cancel();
     this.tool = id;
     if (id !== 'select') this.setSelection(null);
+    this.setOsmHover(null);
     this.applyCursor();
     this.onToolChange(id);
     this.onStatus(this.toolInfo().hint);
@@ -292,9 +295,13 @@ export class ToolController {
           this.setSnap(this.snap(e));
         }
         break;
-      case 'adopt':
-        this.setSnap(this.snap(e, (ref) => ref.source === 'osm'));
+      case 'adopt': {
+        const r = this.snap(e, (ref) => ref.source === 'osm');
+        this.setSnap(r);
+        const way = r && r.snap && r.snap.ref ? this.getOsmWay(r.snap.ref.wayId) : null;
+        this.setOsmHover(way ? { way } : null);
         break;
+      }
       default:
         this.selectHover(e);
     }
@@ -397,7 +404,12 @@ export class ToolController {
     const hit = f && this.canEdit() ? hitHandle(this.map, f, e.point, this.handleTol()) : null;
     if (hit && hit.kind === 'vertex') return this.deleteVertex(hit.index);
     const picked = this.pick(e);
-    if (!picked) return undefined;
+    if (!picked) {
+      // Keine eigene Strasse getroffen: OSM-Strasse unter dem Zeiger anbieten (übernehmen / Rückbau)
+      const way = this.osmWayAt(e);
+      if (way && this.onMenu) this.onMenu({ point: e.point, latlng: e.latlng, featureId: null, segIndex: null, ids: [], osmWay: way });
+      return undefined;
+    }
     if (!this.isSelected(picked.featureId)) this.setSelection(picked);
     else if (!this.selection || this.selection.featureId !== picked.featureId) this.setSelection(picked, { keepMulti: true });
     else if (picked.segIndex !== null && this.selection.segIndex !== picked.segIndex) this.setSelection(picked, { keepMulti: true });
@@ -923,25 +935,72 @@ export class ToolController {
 
   // --- OSM übernehmen ---------------------------------------------------------
 
-  adoptClick(e) {
+  /** Geladene OSM-Strasse innerhalb der Klick-Toleranz (mindestens 16 px), sonst null. */
+  osmWayAt(e) {
     const settings = this.getSettings();
     const r = snapLatLng(e.latlng, this.getSnapIndex(), this.map.getZoom(), Math.max(settings.snapTolerance, 16), (ref) => ref.source === 'osm');
-    if (!r.snap) {
+    return r.snap && r.snap.ref ? this.getOsmWay(r.snap.ref.wayId) : null;
+  }
+
+  setOsmHover(h) {
+    const prev = this.osmHover ? this.osmHover.way.id : null;
+    const next = h ? h.way.id : null;
+    this.osmHover = h;
+    if (prev === next) return;
+    if (h) {
+      const tags = h.way.tags || {};
+      const name = tags.name || tags.ref || t('ohne Namen');
+      const speed = tags.maxspeed ? ` · ${tags.maxspeed}` : '';
+      const status = this.adoptStatus === 'remove' ? t('Rückbau') : t('Bestehend');
+      this.onStatus(t('OSM: {name} ({type}{speed}) – Klick übernimmt als {status}, Shift+Klick als Rückbau.', { name, type: tags.highway || 'way', speed, status }));
+    } else if (this.tool === 'adopt') {
+      this.onStatus(this.toolInfo().hint);
+    }
+    this.onSceneChange();
+  }
+
+  adoptClick(e) {
+    const way = this.osmWayAt(e);
+    if (!way) {
       this.toast(t('Keine OSM-Strasse in der Nähe. Näher heranzoomen (ab Zoom 16) und auf eine Strasse klicken.'));
       return;
     }
-    const way = this.getOsmWay(r.snap.ref.wayId);
-    if (!way) return;
-    const layerId = this.getActiveLayerId();
+    const shift = !!(e.originalEvent && e.originalEvent.shiftKey) || this.modifiers.Shift;
+    this.adoptWay(way, shift ? 'remove' : this.adoptStatus);
+  }
+
+  /**
+   * OSM-Strasse als Kopie übernehmen: status 'existing' (bearbeiten) oder 'remove' (Rückbau).
+   * Ist der Way schon übernommen, wird die Kopie ausgewählt statt verdoppelt (bei Rückbau: Status gesetzt).
+   */
+  adoptWay(way, status = 'existing') {
+    if (!this.canEdit()) return null;
     const tags = way.tags || {};
+    const name = tags.name || tags.ref || t('Strasse');
+    const existing = this.store.doc.features.find((f) => f.type === 'road' && f.osmId === way.id);
+    if (existing) {
+      if (status === 'remove' && existing.status !== 'remove') {
+        this.store.commit('Status ändern', (doc) => {
+          const r = getFeature(doc, existing.id);
+          if (r) r.status = 'remove';
+        });
+        this.toast(t('„{name}“ ist als Rückbau markiert.', { name }));
+      } else {
+        this.toast(t('„{name}“ ist schon übernommen – ausgewählt.', { name }));
+      }
+      this.setSelection({ featureId: existing.id, segIndex: null });
+      return existing.id;
+    }
+    const layerId = this.getActiveLayerId();
     const level = tags.tunnel && tags.tunnel !== 'no' ? 'tunnel' : (tags.bridge && tags.bridge !== 'no' ? 'bridge' : 'ground');
-    this.store.commit('OSM-Strasse übernehmen', (doc) => {
+    let id = null;
+    this.store.commit(status === 'remove' ? 'OSM-Strasse als Rückbau übernehmen' : 'OSM-Strasse übernehmen', (doc) => {
       const road = createRoad({
         layerId,
         nodes: way.geometry,
         kind: roadKindFromHighway(tags.highway),
         name: tags.name || tags.ref || '',
-        status: 'existing',
+        status,
         level,
         oneway: tags.oneway === 'yes' || tags.oneway === '1',
         maxspeed: parseMaxspeed(tags.maxspeed),
@@ -949,8 +1008,11 @@ export class ToolController {
       });
       road.note = tags.highway ? `OSM highway=${tags.highway}, way ${way.id}` : `OSM way ${way.id}`;
       doc.features.push(road);
+      id = road.id;
     });
-    this.toast(t('„{name}“ übernommen. Im Auswahl-Werkzeug bearbeiten.', { name: tags.name || t('Strasse') }));
+    this.setSelection({ featureId: id, segIndex: null });
+    this.toast(status === 'remove' ? t('„{name}“ als Rückbau übernommen.', { name }) : t('„{name}“ übernommen und ausgewählt – Eigenschaften rechts, weitere Strassen anklicken.', { name }));
+    return id;
   }
 }
 

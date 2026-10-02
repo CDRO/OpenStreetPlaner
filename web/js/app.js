@@ -29,6 +29,7 @@ import { exposure as computeExposure } from './buildings.js';
 import { costConfidence, staticConfidence, travelTimeConfidence } from './confidence.js';
 import { parkingBalance } from './parking.js';
 import { compareVariants } from './variants.js';
+import { mergeFeatures, mergeKind } from './merge.js';
 import { currentSubscription, permissionState, pushSupported, registerWorker, subscribe as pushSubscribe, unsubscribe as pushUnsubscribe } from './push.js';
 
 const POLL_INTERVAL_MS = 45000;
@@ -88,6 +89,7 @@ async function main() {
     variants: null, // Variantenvergleich (auf Knopfdruck)
     vehicle: 'car', // Verkehrsmittel für die nächste Hauptroute
     race: null, // Fahrt-Animation { kind, id, mode, speed, status, t, runners, duration, results, stale }
+    adoptActive: false, // Werkzeug „OSM übernehmen“ aktiv: OSM-Strassen im Einrast-Index
     phaseView: null, // Ansicht „bis Etappe“ (ID) oder null = Endzustand
     iso: null,
     routeTimer: null,
@@ -182,7 +184,8 @@ async function main() {
 
   const getSnapIndex = () => {
     if (state.snapDirty || !state.snapIndex) {
-      state.snapIndex = buildSnapIndex(store.doc, { osmWays: osm.list(), includeOsm: settings.snapOsm });
+      // OSM-Strassen im Index, wenn Einrasten an OSM aktiv ist oder das Werkzeug „OSM übernehmen“ sie braucht
+      state.snapIndex = buildSnapIndex(store.doc, { osmWays: osm.list(), includeOsm: settings.snapOsm || state.adoptActive });
       state.pickIndex = buildSnapIndex(store.doc, { includeOsm: false });
       state.snapDirty = false;
     }
@@ -213,10 +216,14 @@ async function main() {
       ui.refreshProperties();
       if (sel) ui.showTab('draw'); // Eigenschaften liegen im Zeichnen-Tab
     },
-    onToolChange: () => {
+    onToolChange: (id) => {
+      state.adoptActive = id === 'adopt';
+      state.snapDirty = true; // Index je nach Werkzeug mit oder ohne OSM-Strassen
       if (!ui) return;
       ui.refreshTools();
       ui.refreshDrawActions();
+      ensureOsm(); // „OSM übernehmen“ braucht das Netz der Ansicht
+      updateOsmStatus();
     },
     onStatus: (text) => ui && ui.setStatus(text),
     onSceneChange: () => {
@@ -262,7 +269,8 @@ async function main() {
     handleRadius: tools.touch ? 9 : 6,
     ghostIds: state.phaseView ? new Set(store.doc.features.filter((f) => !featureInPhase(store.doc, f, state.phaseView)).map((f) => f.id)) : null,
     osmWays: osm.list(),
-    showOsm: settings.showOsm,
+    showOsm: settings.showOsm || tools.tool === 'adopt',
+    osmHover: tools.osmHover ? tools.osmHover.way : null,
     preview: tools.preview,
     snap: tools.snapPoint,
     showHandles: tools.tool === 'select' && canEdit(),
@@ -941,6 +949,25 @@ async function main() {
         tools.setSelection({ featureId: ids[0], segIndex: null });
         ui.toast(tn(tools.multi.size, 'Gruppe mit {n} Element.', 'Gruppe mit {n} Elementen.'), 'ok');
       }
+    },
+    /** Flächen vereinigen oder Strassen verbinden; die erste bleibt und wird ausgewählt. */
+    mergeFeatures(ids) {
+      if (!actions.requireEdit()) return;
+      const kind = mergeKind(store.doc, ids);
+      if (!kind) return ui.toast(t('Nur Flächen mit Flächen oder Strassen mit Strassen lassen sich zusammenführen.'), 'error');
+      let result = null;
+      let error = null;
+      store.commit(kind === 'zone' ? 'Flächen vereinigen' : 'Strassen verbinden', (d) => {
+        try {
+          result = mergeFeatures(d, ids);
+        } catch (e) {
+          error = e;
+        }
+      });
+      if (error) return ui.toast(t(error.message), 'error', 6000);
+      tools.setSelection({ featureId: result.id, segIndex: null });
+      ui.toast(kind === 'zone' ? t('Flächen vereinigt.') : t('Strassen verbunden.'), 'ok');
+      return undefined;
     },
     ungroupFeatures(ids) {
       if (!actions.requireEdit()) return;
@@ -1775,13 +1802,13 @@ async function main() {
   }
 
   function ensureOsm() {
-    if (!settings.snapOsm && !settings.showOsm) return;
+    if (!settings.snapOsm && !settings.showOsm && tools.tool !== 'adopt') return;
     osm.ensure(map.getBounds(), map.getZoom());
   }
 
   function updateOsmStatus(info) {
     const zoom = map.getZoom();
-    if (!settings.snapOsm && !settings.showOsm) return ui.setOsmStatus('');
+    if (!settings.snapOsm && !settings.showOsm && tools.tool !== 'adopt') return ui.setOsmStatus('');
     if (zoom < OSM_MIN_ZOOM) return ui.setOsmStatus(t('OSM-Strassen ab Zoom {z}', { z: OSM_MIN_ZOOM }), 'muted');
     if (info && info.status === 'loading') return ui.setOsmStatus(t('Lade OSM-Strassen… ({n} Zellen)', { n: info.remaining || osm.remaining }), 'muted');
     if (info && info.status === 'error') return ui.setOsmStatus(`${t('OSM-Strassen')}: ${info.error.message}`, 'error');
@@ -1865,6 +1892,21 @@ async function main() {
   /** Kontextmenü für das Element unter dem Zeiger bzw. die ganze Auswahl. */
   function showMenuFor(info) {
     const doc = store.doc;
+    const rect = map.container.getBoundingClientRect();
+    if (info.osmWay) {
+      // Rechtsklick auf eine OSM-Strasse: übernehmen oder als Rückbau übernehmen
+      const tags = info.osmWay.tags || {};
+      const name = tags.name || tags.ref || t('ohne Namen');
+      const items = [{ header: `OSM: ${name} (${tags.highway || 'way'})` }];
+      if (canEdit()) {
+        items.push({ label: t('OSM-Strasse übernehmen'), action: () => tools.adoptWay(info.osmWay, 'existing') });
+        items.push({ label: t('OSM-Strasse als Rückbau übernehmen'), action: () => tools.adoptWay(info.osmWay, 'remove') });
+      } else {
+        items.push({ label: t('Nur Ansicht'), disabled: true });
+      }
+      ui.showContextMenu(items, { x: rect.left + info.point.x, y: rect.top + info.point.y });
+      return;
+    }
     const ids = info.ids;
     const feats = ids.map((id) => getFeature(doc, id)).filter(Boolean);
     const f = getFeature(doc, info.featureId);
@@ -1894,6 +1936,8 @@ async function main() {
         items.push({ separator: true }, { header: t('Zugang') });
         for (const a of ROAD_ACCESS) items.push({ label: t(a.label), checked: (f.access || 'all') === a.id, action: () => actions.patchFeature(f.id, 'Zugang ändern', (x) => { x.access = a.id; }) });
       }
+      const mk = multi ? mergeKind(doc, ids) : null;
+      if (mk) items.push({ separator: true }, { label: mk === 'zone' ? t('Flächen vereinigen') : t('Strassen verbinden'), action: () => actions.mergeFeatures(ids) });
       const groups = new Set(feats.map((x) => x.group).filter(Boolean));
       if (multi || groups.size) {
         items.push({ separator: true }, { header: t('Gruppe') });
@@ -1908,7 +1952,6 @@ async function main() {
       }
       items.push({ separator: true }, { label: t('Löschen'), danger: true, action: () => tools.deleteSelection() });
     }
-    const rect = map.container.getBoundingClientRect();
     ui.showContextMenu(items, { x: rect.left + info.point.x, y: rect.top + info.point.y });
   }
 
@@ -1974,7 +2017,18 @@ async function main() {
   if (state.id) loadComments({ quiet: true });
   initPush();
   initTileSources();
-  registerWorker(); // Offline-Schale: App-Dateien werden gecacht, die Arbeitskopie bleibt nutzbar
+  // Offline-Schale: App-Dateien werden gecacht, die Arbeitskopie bleibt nutzbar. Nach einem Release übernimmt
+  // der neue Worker sofort; die Seite lädt neu (ohne ungesicherte Änderungen von selbst, sonst mit Hinweis).
+  registerWorker({
+    onUpdate: () => {
+      if (!actions.isDirty() || state.present) {
+        if (!state.present) saveWorking();
+        location.reload();
+        return;
+      }
+      ui.showBanner(t('Neue Version des Stadtplaners ist da. Die Arbeitskopie bleibt erhalten – jetzt neu laden?'), t('Neu laden'), () => { saveWorking(); location.reload(); });
+    },
+  });
   schedulePoll();
   window.addEventListener('hashchange', () => {
     const m = /#comment=([0-9a-z]+)/.exec(location.hash);

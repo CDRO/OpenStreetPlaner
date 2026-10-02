@@ -22,7 +22,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6, ghostIds = null, race = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6, ghostIds = null, race = null, osmHover = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -51,6 +51,15 @@ export function drawScene(ctx, map, s) {
     ctx.restore();
   }
 
+  // OSM-Strasse unter dem Zeiger im Werkzeug „OSM übernehmen“
+  if (osmHover && osmHover.geometry) {
+    const pts = osmHover.geometry.map(P);
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    stroke(ctx, pts, '#ff6d00', 10);
+    stroke(ctx, pts, '#ffffff', 4);
+    ctx.restore();
+  }
   // Bestehende Haltestellen aus OSM (blau; übernommene erscheinen als eigene Haltestellen)
   if (transit && zoom >= 13) drawOsmStops(ctx, P, transit, zoom);
 

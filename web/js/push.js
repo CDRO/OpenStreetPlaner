@@ -4,10 +4,29 @@ export function pushSupported() {
   return typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
 }
 
-export async function registerWorker() {
+let watchingUpdates = false;
+
+/**
+ * Registriert den Service Worker. onUpdate wird gerufen, wenn nach einem Release ein neuer Worker die
+ * Seite übernommen hat (die laufende Seite nutzt dann noch die alten Dateien und sollte neu laden).
+ * Lange offene Tabs prüfen alle 30 Minuten und beim Zurückkehren, ob es eine neue Version gibt.
+ */
+export async function registerWorker({ onUpdate = null } = {}) {
   if (!('serviceWorker' in navigator)) return null;
   try {
-    return await navigator.serviceWorker.register('/sw.js');
+    const reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' });
+    if (!watchingUpdates) {
+      watchingUpdates = true;
+      let hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadController && onUpdate) onUpdate();
+        hadController = true;
+      });
+      const check = () => reg.update().catch(() => {});
+      globalThis.setInterval(check, 30 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+    }
+    return reg;
   } catch {
     return null;
   }

@@ -14,6 +14,7 @@ import { segmentGrades } from './speedmodel.js';
 import { TOOLS, formatLength } from './tools.js';
 import { formatDuration } from './routing.js';
 import { RACE_SPEEDS, formatClock } from './race.js';
+import { mergeKind } from './merge.js';
 import { LANGUAGES, getLanguage, locale, t, tn } from './i18n.js';
 import { confidenceLabel, confidenceText, staticConfidence, transitRouteConfidence } from './confidence.js';
 
@@ -1014,6 +1015,7 @@ export class UI {
     const roads = feats.filter((f) => f.type === 'road');
     const statuses = new Set(roads.map((f) => f.status));
     const groups = new Set(feats.map((f) => f.group).filter(Boolean));
+    const merge = mergeKind(store.doc, ids);
     const grouped = groups.size > 0;
     const sameGroup = groups.size === 1 && feats.every((f) => f.group);
     box.innerHTML = `
@@ -1025,6 +1027,7 @@ export class UI {
       <div class="btn-row">
         <button type="button" id="multi-group" class="btn small" ${dis || sameGroup ? 'disabled' : ''} title="${t('Gruppierte Elemente werden immer zusammen ausgewählt, verschoben und gelöscht')}">⧉ ${t('Gruppieren')}</button>
         <button type="button" id="multi-ungroup" class="btn small" ${dis || !grouped ? 'disabled' : ''}>${t('Gruppe auflösen')}</button>
+        ${merge ? `<button type="button" id="multi-merge" class="btn small" ${dis} title="${merge === 'zone' ? t('Flächen, die sich berühren oder überlappen, zu einer Fläche vereinigen (Eigenschaften der ersten bleiben)') : t('Strassen, deren Enden zusammenliegen (bis 10 m), zu einer Strasse verbinden (Eigenschaften der ersten bleiben)')}">${merge === 'zone' ? t('Flächen vereinigen') : t('Strassen verbinden')}</button>` : ''}
       </div>
       <div class="btn-row">
         <button type="button" id="multi-zoom" class="btn small">${t('Hinzoomen')}</button>
@@ -1038,6 +1041,8 @@ export class UI {
     if (mp) mp.onchange = (e) => actions.setFeaturesPhase(ids, e.target.value || null);
     this.$('multi-group').onclick = () => actions.groupFeatures(ids);
     this.$('multi-ungroup').onclick = () => actions.ungroupFeatures(ids);
+    const mergeBtn = this.$('multi-merge');
+    if (mergeBtn) mergeBtn.onclick = () => actions.mergeFeatures(ids);
     this.$('multi-zoom').onclick = () => actions.zoomToFeatures(ids);
     this.$('multi-clear').onclick = () => tools.setSelection(null);
     this.$('multi-delete').onclick = () => tools.deleteSelection();
@@ -1129,6 +1134,19 @@ export class UI {
     const editable = actions.canEdit();
     grid.innerHTML = TOOLS.map((tool) => `<button type="button" class="tool${tools.tool === tool.id ? ' active' : ''}" data-tool="${tool.id}" title="${esc(t(tool.hint))} (${t('Taste')} ${tool.key})" ${!editable && tool.id !== 'select' ? 'disabled' : ''}><span class="tool-key">${tool.key}</span>${esc(t(tool.label))}</button>`).join('');
     grid.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => tools.setTool(b.dataset.tool)));
+    const opts = this.$('tool-options');
+    if (opts) {
+      opts.innerHTML = tools.tool === 'adopt' ? `
+        <label class="field inline">${t('Übernehmen als')}
+          <select id="adopt-status">
+            <option value="existing" ${tools.adoptStatus !== 'remove' ? 'selected' : ''}>${t('Bestehend (bearbeiten)')}</option>
+            <option value="remove" ${tools.adoptStatus === 'remove' ? 'selected' : ''}>${t('Rückbau (entfernen)')}</option>
+          </select>
+        </label>
+        <p class="muted small">${t('OSM-Strassen der Ansicht werden eingeblendet; die Strasse unter dem Zeiger leuchtet orange. Bereits übernommene Strassen werden ausgewählt statt verdoppelt.')}</p>` : '';
+      const sel = this.$('adopt-status');
+      if (sel) sel.onchange = () => { tools.adoptStatus = sel.value; };
+    }
     const multi = this.$('multi-mode');
     if (multi) {
       multi.checked = tools.multiMode;

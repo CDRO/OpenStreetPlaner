@@ -182,9 +182,46 @@ func (c *Client) do(req *http.Request) ([]byte, string, error) {
 		return nil, "", err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("Upstream antwortet mit %d", res.StatusCode)
+		// Bei 4xx erklärt der Dienst meist, was falsch ist – kurz mitgeben, damit es in Meldung und Log steht
+		msg := fmt.Sprintf("Upstream antwortet mit %d", res.StatusCode)
+		if res.StatusCode >= 400 && res.StatusCode < 500 {
+			if excerpt := bodyExcerpt(body, 200); excerpt != "" {
+				msg += ": " + excerpt
+			}
+		}
+		return nil, "", errors.New(msg)
 	}
 	return body, res.Header.Get("Content-Type"), nil
+}
+
+// bodyExcerpt macht aus einer Fehlerantwort eine einzeilige Kurzfassung (JSON-Feld message/error, sonst Text).
+func bodyExcerpt(body []byte, max int) string {
+	var obj map[string]any
+	text := ""
+	if json.Unmarshal(body, &obj) == nil {
+		for _, k := range []string{"message", "error", "detail", "msg"} {
+			if v, ok := obj[k]; ok {
+				if sv, ok := v.(string); ok {
+					text = sv
+				} else if mv, ok := v.(map[string]any); ok {
+					if sv, ok := mv["message"].(string); ok {
+						text = sv
+					}
+				}
+				if text != "" {
+					break
+				}
+			}
+		}
+	}
+	if text == "" {
+		text = string(body)
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > max {
+		text = text[:max] + "…"
+	}
+	return text
 }
 
 // Search fragt Nominatim ab (max. eine Anfrage pro Sekunde, Ergebnisse gecacht).

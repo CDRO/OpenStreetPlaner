@@ -504,3 +504,33 @@ test('Velo und zu Fuss: eigene Netze, pauschales Tempo, keine Einbahnen zu Fuss,
   const many = computeRoutesMany({ osmWays: ways, doc, pairs: [{ id: 'a', from: [47, 8], to: [47, 8.01], vehicle: 'foot' }, { id: 'b', from: [47, 8], to: [47, 8.01] }] });
   assert.ok(many[0].current.time > many[1].current.time * 5, 'zu Fuss deutlich länger als Auto');
 });
+
+test('Lose Enden neuer Strassen hängen bis 10 m am Netz, Kreisel verbinden auch OSM-Strassen', () => {
+  // OSM: Ost-West-Strasse (y=47.00) und parallele Strasse im Norden (y=47.01), verbunden nur im Westen
+  const ways = [
+    { id: 1, tags: { highway: 'residential', maxspeed: '30' }, geometry: [[47, 8], [47, 8.01], [47, 8.02]] },
+    { id: 2, tags: { highway: 'residential', maxspeed: '30' }, geometry: [[47.01, 8], [47.01, 8.01], [47.01, 8.02]] },
+    { id: 3, tags: { highway: 'residential', maxspeed: '30' }, geometry: [[47, 8], [47.01, 8]] },
+  ];
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  // Neue Querverbindung im Osten, Enden 4–5 m neben den OSM-Strassen (nicht eingerastet)
+  doc.features.push(createRoad({ layerId, nodes: [[47.00004, 8.02], [47.00996, 8.02]], kind: 'main', maxspeed: 50 }));
+  const r = computeRoutes({ osmWays: ways, doc, from: [47, 8.02], to: [47.01, 8.02] });
+  assert.ok(r.current.path && r.current.dist > 2500, `heute aussen herum: ${r.current.dist}`);
+  assert.ok(r.proposed.path && r.proposed.dist < 1200, `neu über die Querverbindung: ${r.proposed.dist}`);
+  // Zu weit weg (40 m): kein Anschluss
+  const far = createDocument();
+  far.features.push(createRoad({ layerId: far.layers[0].id, nodes: [[47.00036, 8.02], [47.00964, 8.02]], kind: 'main', maxspeed: 50 }));
+  const rf = computeRoutes({ osmWays: ways, doc: far, from: [47, 8.02], to: [47.01, 8.02] });
+  assert.ok(rf.proposed.dist > 2500, 'ohne Anschluss bleibt der Umweg');
+  // Kreisel auf OSM-Strasse 1 bei (47, 8.01): neue Strasse endet am Ring, OSM-Strasse führt hindurch
+  const rb = createDocument();
+  const lid = rb.layers[0].id;
+  rb.features.push(createRoundabout({ layerId: lid, center: [47, 8.01], radius: 15 }));
+  const ring = [47 + 15 / 111320, 8.01]; // Punkt auf dem Ring (Norden)
+  rb.features.push(createRoad({ layerId: lid, nodes: [ring, [47.01, 8.01]], kind: 'main', maxspeed: 50 }));
+  const rr = computeRoutes({ osmWays: ways, doc: rb, from: [47, 8.005], to: [47.01, 8.01] });
+  assert.ok(rr.current.dist > 2200, `heute aussen herum: ${rr.current.dist}`);
+  assert.ok(rr.proposed.path && rr.proposed.dist < 1600, `Kreisel verbindet OSM und Entwurf: ${rr.proposed.dist} vs ${rr.current.dist}`);
+});
