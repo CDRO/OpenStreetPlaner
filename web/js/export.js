@@ -99,7 +99,7 @@ export async function renderExport(map, doc, opts = {}) {
     view = { center: map.getCenter(), zoom: map.getZoom() };
   }
   const full = { ...view, width: mapCss.width, height: mapCss.height, pixelRatio: size.pixelRatio };
-  await map.prefetchTiles(full);
+  await map.prefetchTiles(full, 20000, opts.onProgress || null);
   const rendered = map.renderOffscreen(full);
   const mpp = map.withView(full, () => map.metersPerPixel());
   return { canvas: composeExport(rendered, { dpr: size.pixelRatio, mpp, doc, routes: opts.routes, link: opts.link, scale: requestedScale, paperLabel: `${(PAPER[opts.paper] || PAPER.a4).label} ${opts.orientation === 'portrait' ? 'hoch' : 'quer'}` }), size };

@@ -380,3 +380,30 @@ func TestPhases(t *testing.T) {
 		t.Fatalf("Grenze: %d", len(d.Phases))
 	}
 }
+
+func TestGroups(t *testing.T) {
+	d := sample()
+	n := len(d.Features)
+	if n < 2 {
+		t.Fatalf("Beispiel braucht mindestens zwei Elemente, hat %d", n)
+	}
+	d.Features[0].Group = "g_1"
+	d.Features[1].Group = "g_1"
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Features[0].Group != "g_1" || d.Features[1].Group != "g_1" {
+		t.Fatalf("Gruppe bleibt: %q %q", d.Features[0].Group, d.Features[1].Group)
+	}
+	d.Features[1].Group = "andere"
+	_ = Normalize(d)
+	if d.Features[0].Group != "" || d.Features[1].Group != "" {
+		t.Fatalf("Einzelmitglieder werden frei: %q %q", d.Features[0].Group, d.Features[1].Group)
+	}
+	d.Features[0].Group = "kaputt id"
+	d.Features[1].Group = "kaputt id"
+	_ = Normalize(d)
+	if d.Features[0].Group != "" {
+		t.Fatalf("ungültige Gruppen-ID wird verworfen: %q", d.Features[0].Group)
+	}
+}

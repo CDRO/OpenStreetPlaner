@@ -73,6 +73,8 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await page.waitForSelector('#exp-load');
   await page.click('#exp-load');
   await page.waitForFunction(() => window.stadtplaner.buildings.ways.size === 3);
+  // Zellen melden nun auch einzeln Fortschritt; erst warten, bis alle geladen sind
+  await page.waitForFunction(() => !window.stadtplaner.buildings.pending);
   await page.waitForSelector('#exp-show');
   const panel = await page.textContent('#analysis-panel');
   assert.ok(panel.includes('3 Gebäude geladen'));

@@ -81,3 +81,22 @@ test('OsmTransitCache sammelt Haltestellen und Linien je Zelle, sortiert Linien 
   assert.deepEqual(cache.routeList().map((r) => r.ref), ['7', '12', 'A'], '7 vor 12, Buchstaben zuletzt');
   assert.equal(cache.stopList().length, 2, 'gleiche Knoten nicht doppelt');
 });
+
+test('OsmRoadCache meldet Fortschritt je Zelle (done/total) für die Fortschrittsanzeige', async () => {
+  const cache = new OsmRoadCache(async () => [], { delayMs: 0, concurrency: 1 });
+  const seen = [];
+  cache.subscribe((s) => seen.push(s));
+  assert.equal(cache.ensureArea({ south: 47.024, west: 8.024, north: 47.026, east: 8.026 }), true, 'vier Zellen');
+  assert.equal(cache.batchTotal, 4);
+  await cache.pending;
+  const loading = seen.filter((s) => s.status === 'loading');
+  assert.ok(loading.length >= 4);
+  assert.ok(loading.every((s) => s.total === 4 && s.done >= 0 && s.done <= 4));
+  assert.equal(loading[loading.length - 1].done, 3, 'letzte Meldung vor dem Ende: drei fertig');
+  assert.equal(seen[seen.length - 1].status, 'ready');
+  // Neuer Ladevorgang beginnt bei 0/n
+  cache.ensureArea({ south: 47.051, west: 8.051, north: 47.052, east: 8.052 });
+  assert.equal(cache.batchTotal, 1);
+  assert.equal(cache.batchDone, 0);
+  await cache.pending;
+});

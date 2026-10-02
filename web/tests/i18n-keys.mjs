@@ -33,6 +33,9 @@ export function extractKeys(root) {
       if (block) for (const m of block[1].matchAll(/:\s*'([^']+)'/g)) add(m[1]);
     }
     if (name === 'routing.js') for (const m of src.matchAll(/'((?:Start|Ziel|Keine Verbindung|Der Ursprung)[^']*)'/g)) add(m[1]);
+    // Beschriftungs-Tabellen (RACE_LABELS, RACE_MODE_LABELS …) und Fortschrittsmeldungen trackProgress(id, 'Label', …)
+    for (const m of src.matchAll(/const [A-Z_]*_LABELS = \{([^}]*)\}/g)) for (const v of m[1].matchAll(/:\s*'((?:[^'\\]|\\.)*)'/g)) add(v[1]);
+    for (const m of src.matchAll(/trackProgress\('[a-z]+', '((?:[^'\\]|\\.)*)'/g)) add(m[1]);
     if (name === 'app.js') for (const m of src.matchAll(/\{ road: '([^']+)', junction: '([^']+)', roundabout: '([^']+)'(?:, zone: '([^']+)')? \}/g)) m.slice(1).forEach(add);
     if (name === 'ui.js') for (const m of src.matchAll(/\['(?:left|straight|right|uturn)', '([^']+)'\]/g)) add(m[1]);
   }

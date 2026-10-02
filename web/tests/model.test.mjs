@@ -440,3 +440,53 @@ test('Fahrplan-Abgleich einer Buslinie wird geprüft und gespeichert', () => {
   line.schedule = { seconds: 900, trips: 3, at: 'x', from: 'A', to: 'B' };
   assert.deepEqual(deserialize(serialize(doc)).busLines[0].schedule, line.schedule);
 });
+
+test('Gruppen: gruppieren, erweitern, auflösen, Einzelmitglieder verschwinden', async () => {
+  const { groupFeatures, ungroupFeatures, groupMembers, expandGroups, pruneGroups, removeFeature } = await import('../js/model.js');
+  const doc = createDocument();
+  const layerId = doc.layers[0].id;
+  const a = createJunction({ layerId, at: [47, 8] });
+  const b = createJunction({ layerId, at: [47, 8.001] });
+  const c = createJunction({ layerId, at: [47, 8.002] });
+  const d = createRoad({ layerId, nodes: [[47, 8], [47, 8.001]] });
+  doc.features.push(a, b, c, d);
+  assert.equal(a.group, null);
+  assert.equal(groupFeatures(doc, [a.id]), null, 'eine Gruppe braucht zwei Elemente');
+  const gid = groupFeatures(doc, [a.id, b.id]);
+  assert.ok(gid && a.group === gid && b.group === gid && c.group === null);
+  assert.deepEqual(groupMembers(doc, gid).sort(), [a.id, b.id].sort());
+  assert.deepEqual(expandGroups(doc, [b.id, d.id]), [b.id, a.id, d.id], 'Reihenfolge: genannt, dann Mitglieder');
+  // Gruppe erweitern: bestehende Gruppe nimmt c auf
+  assert.equal(groupFeatures(doc, [c.id, a.id]), gid);
+  assert.equal(c.group, gid);
+  // Zwei Gruppen verschmelzen
+  const e = createJunction({ layerId, at: [47, 8.003] });
+  doc.features.push(e);
+  const g2 = groupFeatures(doc, [d.id, e.id]);
+  assert.ok(g2 && g2 !== gid);
+  const merged = groupFeatures(doc, [a.id, e.id]);
+  assert.ok(doc.features.every((f) => f.group === merged));
+  // Löschen bis nur eines übrig: Gruppe verschwindet
+  for (const id of [b.id, c.id, d.id]) removeFeature(doc, id);
+  assert.equal(a.group, merged);
+  removeFeature(doc, e.id);
+  assert.equal(a.group, null, 'Einzelmitglied ist frei');
+  // Auflösen
+  doc.features.push(b, c);
+  groupFeatures(doc, [a.id, b.id, c.id]);
+  assert.equal(ungroupFeatures(doc, [c.id]), 1);
+  assert.ok(doc.features.every((f) => f.group === null));
+  // Normalisierung: ungültige und einsame Gruppen werden bereinigt, gültige bleiben
+  a.group = 'g_x';
+  b.group = 'g_x';
+  c.group = 'allein';
+  const round = normalizeDocument(JSON.parse(serialize(doc)));
+  const byId = (id) => round.features.find((f) => f.id === id);
+  assert.equal(byId(a.id).group, 'g_x');
+  assert.equal(byId(b.id).group, 'g_x');
+  assert.equal(byId(c.id).group, null);
+  const geo = toGeoJSON(round);
+  assert.equal(geo.features.find((f) => f.properties.id === a.id).properties.group, 'g_x');
+  pruneGroups(round);
+  assert.equal(byId(a.id).group, 'g_x');
+});

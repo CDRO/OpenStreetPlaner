@@ -13,6 +13,7 @@ import { haversine, pathLength } from './geometry.js';
 import { segmentGrades } from './speedmodel.js';
 import { TOOLS, formatLength } from './tools.js';
 import { formatDuration } from './routing.js';
+import { RACE_SPEEDS, formatClock } from './race.js';
 import { LANGUAGES, getLanguage, locale, t, tn } from './i18n.js';
 import { confidenceLabel, confidenceText, staticConfidence, transitRouteConfidence } from './confidence.js';
 
@@ -58,6 +59,7 @@ function scheduleRow(line, cur, actions, editable) {
     text = `<span class="badge ${cls}" title="${esc(`${sc.from} → ${sc.to}`)}">${t('Fahrplan')} ${formatDuration(sc.seconds)}</span> <span class="muted small">${tn(sc.trips, '{n} Fahrt', '{n} Fahrten')}${dev === null ? '' : ` · ${t('Modell heute')} ${dev > 0 ? '+' : ''}${dev} %`}</span>`;
   }
   return `<div class="schedule-row">${text}
+    <button type="button" class="btn small bus-race" data-id="${esc(line.id)}" title="${t('Die Linie heute und neu im Zeitraffer abfahren')}">${t('Abfahren')}</button>
     <button type="button" class="btn small bus-timetable" data-id="${esc(line.id)}" ${dis || busy ? 'disabled' : ''}>${busy ? t('Abgleich läuft…') : t('Fahrplan abgleichen')}</button>
     ${sc && cur && line.stops.length > 2 ? `<button type="button" class="btn small bus-calibrate" data-id="${esc(line.id)}" title="${t('Haltezeit so setzen, dass das Modell heute die Fahrplanzeit trifft')}" ${dis}>${t('Haltezeit kalibrieren')}</button>` : ''}
   </div>`;
@@ -115,6 +117,67 @@ function pairsSection(doc, actions, tools, geometry) {
     <p class="muted small">${t('Feste Verbindungen wie Schule, Bahnhof oder Nachbardorf: heute gegen neu{typ}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte.', { typ: geometry ? t(' (typische Zeit)') : '' })}</p>
     ${pairs.length ? `<table class="route-table pairs"><thead><tr><th>#</th><th>${t('Name')}</th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th><th></th></tr></thead><tbody>${rows}${total}</tbody></table>${confidenceBlock(actions.confidence('pairs'))}` : ''}
     <div class="btn-row"><button type="button" id="pair-add" class="btn small" ${dis}>${t('+ Paar hinzufügen')}</button>${capturing ? `<span class="muted small">${t('Start und Ziel auf der Karte anklicken (Esc bricht ab).')}</span>` : ''}</div>`;
+}
+
+/**
+ * Fahrt-Animation: Start-Knopf, Modus (heute/neu/beide), Zeitraffer, Zeitleiste mit Fortschritt je Fahrzeug
+ * und Rang bei Ankunft. compact: ohne Erklärtext (Präsentationsmodus).
+ */
+const RACE_MODE_LABELS = { both: 'Heute und neu', current: 'Nur heute', proposed: 'Nur neu' };
+function raceBlock(race, actions, { compact = false, canStart = true } = {}) {
+  const conf = actions.confidence('route');
+  const dot = conf ? confidenceDot(conf) : '';
+  const modeSelect = (current) => `<select class="race-mode" title="${t('Welche Netze fahren mit')}">${Object.entries(RACE_MODE_LABELS).map(([id, label]) => `<option value="${id}" ${current === id ? 'selected' : ''}>${t(label)}</option>`).join('')}</select>`;
+  if (!race) {
+    if (!canStart) return '';
+    return `
+      <div class="race idle">
+        <div class="btn-row">
+          <button type="button" class="btn small race-start" title="${t('Auto, Bus, Velo und Fussgänger fahren die Strecke im Zeitraffer ab')}">▶ ${t('Abfahren')}</button>
+          ${modeSelect('both')}
+          ${dot}
+        </div>
+        ${compact ? '' : `<p class="muted small">${t('Zeigt, wie die Strecke im Modell abgefahren wird – heute gegen neu, parallel je Verkehrsmittel. Kein realer Verkehr.')}</p>`}
+      </div>`;
+  }
+  const scene = actions.raceScene();
+  const runners = scene ? scene.runners : [];
+  const variantLabel = { current: t('Heute'), proposed: t('Neu') };
+  const variantColor = { current: '#1b6ac9', proposed: '#2a9d3f' };
+  const rows = runners.map((r) => `
+      <tr data-runner="${esc(r.id)}">
+        <td><span class="race-glyph">${r.glyph}</span> ${esc(t(r.label))}</td>
+        <td><span class="dot" style="background:${variantColor[r.variant]}"></span>${variantLabel[r.variant]}</td>
+        <td class="race-bar-cell"><span class="race-bar"><i style="width:${Math.round(r.progress * 100)}%;background:${r.color}"></i></span></td>
+        <td class="race-rank num">${r.finished ? `${r.rank}. · ${formatDuration(r.total)}` : formatDuration(r.total)}</td>
+      </tr>`).join('');
+  const toggleLabel = race.status === 'running' ? t('Pause') : race.status === 'done' ? t('Nochmals') : t('Weiter');
+  return `
+    <div class="race active" data-status="${esc(race.status)}">
+      <div class="race-head">
+        <strong>${t('Abfahren')}</strong>
+        ${race.title ? `<span class="muted small">${esc(race.title)}</span>` : ''}
+        ${dot}
+        ${race.status === 'loading' ? `<span class="muted small">${t('Berechne…')}</span>` : ''}
+      </div>
+      <div class="btn-row">
+        ${race.kind === 'route' ? modeSelect(race.mode) : ''}
+        <span class="race-speeds">${RACE_SPEEDS.map((sp) => `<button type="button" class="btn small race-speed ${race.speed === sp ? 'active' : ''}" data-speed="${sp}" title="${t('Zeitraffer')}">${sp}×</button>`).join('')}</span>
+      </div>
+      ${runners.length ? `
+      <div class="race-timeline">
+        <input type="range" class="race-seek" min="0" max="${Math.ceil(race.duration)}" step="1" value="${Math.floor(race.t)}" aria-label="${t('Modellzeit')}">
+        <span class="race-clock">${formatClock(race.t)} / ${formatClock(race.duration)}</span>
+      </div>
+      <table class="route-table race-table"><tbody>${rows}</tbody></table>` : race.status === 'empty' ? `<p class="muted small">${t('Keine fahrbare Strecke für die Animation (Strassennetz geladen?).')}</p>` : ''}
+      <div class="btn-row">
+        <button type="button" class="btn small primary race-toggle" ${runners.length ? '' : 'disabled'}>${toggleLabel}</button>
+        <button type="button" class="btn small race-restart">${race.stale ? t('Neu berechnen') : t('Neu starten')}</button>
+        <button type="button" class="btn small race-stop">${t('Schliessen')}</button>
+      </div>
+      ${race.stale ? `<p class="muted small">${t('Der Entwurf hat sich geändert – „Neu berechnen“ fährt die aktuelle Strecke.')}</p>` : ''}
+      ${compact ? '' : `<p class="muted small">${t('Positionen folgen der Zeitachse des Routen-Rechners (Tempolimits, Wartezeiten, Haltezeiten) – kein realer Verkehr.')}</p>`}
+    </div>`;
 }
 
 /** Buslinien: Haltestellen in Reihenfolge, Fahrzeit heute/neu über das Bus-Netz. */
@@ -826,12 +889,73 @@ export class UI {
       ${legend.length ? `<ul class="legend">${legend.join('')}</ul>` : ''}
       ${doc.layers.length > 1 ? `<details><summary>${t('Ebenen')} (${doc.layers.length})</summary><ul class="legend">${layers}</ul></details>` : ''}
       ${route}
+      <div id="present-race" class="race-box">${raceBlock(actions.race(), actions, { compact: true, canStart: !!(doc.route && routes) })}</div>
       <div class="btn-row">
         <button type="button" id="present-edit" class="btn small">${t('Zum Editor')}</button>
         <button type="button" id="present-export" class="btn small">PNG / PDF</button>
       </div>`;
     this.$('present-edit').onclick = () => actions.exitPresent();
     this.$('present-export').onclick = () => this.openExport();
+    this.wireRace(this.$('present-race'));
+  }
+
+  // --- Fahrt-Animation ----------------------------------------------------------------
+
+  /** Zeichnet die Rennen-Blöcke neu (Routen-Tab und Präsentation), ohne die ganzen Panels zu bauen. */
+  refreshRace() {
+    const { actions, store } = this.ctx;
+    const race = actions.race();
+    const routes = actions.routes();
+    const box = this.$('race-box');
+    if (box) {
+      box.innerHTML = raceBlock(race, actions, { canStart: !!(store.doc.route && routes) });
+      this.wireRace(box);
+    }
+    const pbox = this.$('present-race');
+    if (pbox && actions.isPresent()) {
+      pbox.innerHTML = raceBlock(race, actions, { compact: true, canStart: !!(store.doc.route && routes) });
+      this.wireRace(pbox);
+    }
+  }
+
+  wireRace(box) {
+    if (!box) return;
+    const { actions } = this.ctx;
+    const start = box.querySelector('.race-start');
+    if (start) start.onclick = () => actions.startRace({ kind: 'route', mode: box.querySelector('.race-mode') ? box.querySelector('.race-mode').value : null });
+    const mode = box.querySelector('.race-mode');
+    if (mode) mode.onchange = () => { if (actions.race()) actions.raceSetMode(mode.value); };
+    box.querySelectorAll('.race-speed').forEach((b) => { b.onclick = () => actions.raceSetSpeed(Number(b.dataset.speed)); });
+    const toggle = box.querySelector('.race-toggle');
+    if (toggle) toggle.onclick = () => actions.raceToggle();
+    const restart = box.querySelector('.race-restart');
+    if (restart) restart.onclick = () => actions.raceRestart();
+    const stop = box.querySelector('.race-stop');
+    if (stop) stop.onclick = () => actions.stopRace();
+    const seek = box.querySelector('.race-seek');
+    if (seek) seek.oninput = () => actions.raceSeek(Number(seek.value));
+  }
+
+  /** Uhr und Balken je Bild nachführen (ohne das Markup neu zu bauen). */
+  updateRaceClock() {
+    const { actions } = this.ctx;
+    const race = actions.race();
+    const scene = race ? actions.raceScene() : null;
+    if (!scene) return;
+    document.querySelectorAll('.race.active').forEach((box) => {
+      const clock = box.querySelector('.race-clock');
+      if (clock) clock.textContent = `${formatClock(race.t)} / ${formatClock(race.duration)}`;
+      const seek = box.querySelector('.race-seek');
+      if (seek && document.activeElement !== seek) seek.value = String(Math.floor(race.t));
+      for (const r of scene.runners) {
+        const row = box.querySelector(`tr[data-runner="${r.id}"]`);
+        if (!row) continue;
+        const bar = row.querySelector('.race-bar i');
+        if (bar) bar.style.width = `${Math.round(r.progress * 100)}%`;
+        const rank = row.querySelector('.race-rank');
+        if (rank) rank.textContent = r.finished ? `${r.rank}. · ${formatDuration(r.total)}` : formatDuration(r.total);
+      }
+    });
   }
 
   /** Speicherkonflikt: jemand anderes hat inzwischen gespeichert. Liefert 'overwrite' | 'reload' | 'cancel'. */
@@ -889,12 +1013,19 @@ export class UI {
     const layerIds = new Set(feats.map((f) => f.layerId));
     const roads = feats.filter((f) => f.type === 'road');
     const statuses = new Set(roads.map((f) => f.status));
+    const groups = new Set(feats.map((f) => f.group).filter(Boolean));
+    const grouped = groups.size > 0;
+    const sameGroup = groups.size === 1 && feats.every((f) => f.group);
     box.innerHTML = `
       <h3>${t('Eigenschaften')} <span class="muted">(${tn(feats.length, '{n} Element', '{n} Elemente')})</span></h3>
       <p class="muted small">${esc(summary)}. ${t('Ziehen auf einem ausgewählten Element verschiebt alle; Shift+Klick ergänzt oder entfernt; Entf löscht.')}</p>
       <label class="field">${t('Ebene')}<select id="multi-layer" ${dis}><option value="">${layerIds.size > 1 ? t('(verschieden)') : ''}</option>${store.doc.layers.map((l) => `<option value="${l.id}" ${layerIds.size === 1 && layerIds.has(l.id) ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
       ${(store.doc.phases || []).length ? `<label class="field">${t('Etappe')}<select id="multi-phase" ${dis}><option value="">${new Set(feats.map((f) => f.phase || '')).size > 1 ? t('(verschieden)') : t('Alle Etappen')}</option>${store.doc.phases.map((ph, i) => `<option value="${esc(ph.id)}" ${feats.every((f) => f.phase === ph.id) ? 'selected' : ''}>${esc(phaseLabel(ph, i))}</option>`).join('')}</select></label>` : ''}
       ${roads.length ? `<label class="field">${t('Status')} (${tn(roads.length, '{n} Strasse', '{n} Strassen')})<select id="multi-status" ${dis}><option value="">${statuses.size > 1 ? t('(verschieden)') : ''}</option>${STATUSES.map((st) => `<option value="${st.id}" ${statuses.size === 1 && statuses.has(st.id) ? 'selected' : ''}>${esc(t(st.label))}</option>`).join('')}</select></label>` : ''}
+      <div class="btn-row">
+        <button type="button" id="multi-group" class="btn small" ${dis || sameGroup ? 'disabled' : ''} title="${t('Gruppierte Elemente werden immer zusammen ausgewählt, verschoben und gelöscht')}">⧉ ${t('Gruppieren')}</button>
+        <button type="button" id="multi-ungroup" class="btn small" ${dis || !grouped ? 'disabled' : ''}>${t('Gruppe auflösen')}</button>
+      </div>
       <div class="btn-row">
         <button type="button" id="multi-zoom" class="btn small">${t('Hinzoomen')}</button>
         <button type="button" id="multi-clear" class="btn small">${t('Auswahl aufheben')}</button>
@@ -905,6 +1036,8 @@ export class UI {
     if (st) st.onchange = (e) => { if (e.target.value) actions.setFeaturesStatus(roads.map((f) => f.id), e.target.value); };
     const mp = this.$('multi-phase');
     if (mp) mp.onchange = (e) => actions.setFeaturesPhase(ids, e.target.value || null);
+    this.$('multi-group').onclick = () => actions.groupFeatures(ids);
+    this.$('multi-ungroup').onclick = () => actions.ungroupFeatures(ids);
     this.$('multi-zoom').onclick = () => actions.zoomToFeatures(ids);
     this.$('multi-clear').onclick = () => tools.setSelection(null);
     this.$('multi-delete').onclick = () => tools.deleteSelection();
@@ -925,7 +1058,8 @@ export class UI {
       const layer = getLayer(store.doc, f.layerId) || {};
       const label = t(featureLabel(f));
       const extra = f.type === 'road' ? `${formatLength(pathLength(f.nodes))} · ${t(STATUSES.find((st) => st.id === f.status)?.label || f.status)}` : f.type === 'roundabout' ? `r = ${f.radius} m` : f.type === 'zone' ? tn(f.nodes.length, '{n} Eckpunkt', '{n} Eckpunkte') : (f.lines && f.lines.length ? f.lines.join(' ') : '');
-      return { f, layer, label, type: typeName[f.type] || f.type, extra, text: `${label} ${typeName[f.type] || ''} ${layer.name || ''} ${extra} ${f.note || ''}`.toLowerCase() };
+      const extraG = f.group ? `${extra ? `${extra} · ` : ''}⧉ ${t('Gruppe')}` : extra;
+      return { f, layer, label, type: typeName[f.type] || f.type, extra: extraG, text: `${label} ${typeName[f.type] || ''} ${layer.name || ''} ${extraG} ${f.note || ''}`.toLowerCase() };
     }).filter((r) => !q || r.text.includes(q));
     const count = this.$('elements-count');
     if (count) count.textContent = q ? `${rows.length}/${store.doc.features.length}` : `${store.doc.features.length}`;
@@ -1061,7 +1195,7 @@ export class UI {
     const box = this.$('properties');
     const sel = tools.selection;
     const f = sel ? getFeature(store.doc, sel.featureId) : null;
-    if (tools.multi.size > 1) return this.refreshMultiProperties(box);
+    if (tools.multi.size > 1 && !tools.isGroupSelection()) return this.refreshMultiProperties(box);
     if (!f) {
       box.innerHTML = `<h3>${t('Eigenschaften')}</h3><p class="muted">${t('Kein Element ausgewählt. Mit dem Werkzeug „Auswählen“ ein Element anklicken.')}</p>`;
       return;
@@ -1143,6 +1277,7 @@ export class UI {
       <label class="field">${t('Name')}<input type="text" id="prop-name" value="${esc(f.name)}" placeholder="${t('z. B. Hauptstrasse neu')}" ${dis}></label>
       <label class="field">${t('Ebene')}<select id="prop-layer" ${dis}>${options(layerOpts, f.layerId)}</select></label>
       ${(store.doc.phases || []).length ? `<label class="field">${t('Etappe')}<select id="prop-phase" ${dis}><option value="">${t('Alle Etappen')}</option>${store.doc.phases.map((ph, i) => `<option value="${esc(ph.id)}" ${f.phase === ph.id ? 'selected' : ''}>${esc(phaseLabel(ph, i))}</option>`).join('')}</select></label>` : ''}
+      ${f.group ? `<p class="group-row small"><span class="group-badge" title="${t('Gruppe')}">⧉</span> ${tn(tools.multi.size, 'Gruppe mit {n} Element – wird zusammen verschoben und gelöscht.', 'Gruppe mit {n} Elementen – wird zusammen verschoben und gelöscht.')} <button type="button" id="prop-ungroup" class="linkish" ${dis}>${t('Gruppe auflösen')}</button></p>` : ''}
       ${specific}
       <label class="field">${t('Notiz')}<textarea id="prop-note" rows="2" placeholder="${t('Begründung, Hinweise…')}" ${dis}>${esc(f.note)}</textarea></label>
       <div class="btn-row">
@@ -1168,6 +1303,8 @@ export class UI {
     this.$('prop-layer').onchange = (e) => patch('Ebene wechseln', (x) => { x.layerId = e.target.value; });
     const phaseSel = this.$('prop-phase');
     if (phaseSel) phaseSel.onchange = (e) => actions.setFeaturesPhase([f.id], e.target.value || null);
+    const ungroup = this.$('prop-ungroup');
+    if (ungroup) ungroup.onclick = () => actions.ungroupFeatures([f.id]);
     this.$('prop-note').onchange = (e) => patch('Notiz ändern', (x) => { x.note = e.target.value; });
     this.$('prop-delete').onclick = () => tools.deleteSelection();
     this.$('prop-zoom').onclick = () => actions.zoomToFeature(f.id);
@@ -1243,6 +1380,7 @@ export class UI {
     el.querySelectorAll('.bus-color').forEach((inp) => { inp.onchange = () => actions.patchBusLine(inp.dataset.id, 'Linienfarbe ändern', (l) => { l.color = inp.value; }); });
     el.querySelectorAll('.bus-dwell').forEach((inp) => { inp.onchange = () => actions.patchBusLine(inp.dataset.id, 'Haltezeit ändern', (l) => { l.dwell = Math.max(0, Math.min(300, Math.round(Number(inp.value) || 0))); }); });
     el.querySelectorAll('.bus-capture').forEach((b) => { b.onclick = () => actions.captureBusStops(b.dataset.id); });
+    el.querySelectorAll('.bus-race').forEach((b) => { b.onclick = () => actions.startRace({ kind: 'bus', id: b.dataset.id }); });
     el.querySelectorAll('.bus-del').forEach((b) => { b.onclick = () => actions.removeBusLine(b.dataset.id); });
     el.querySelectorAll('.stop-del').forEach((b) => { b.onclick = () => actions.patchBusLine(b.dataset.id, 'Haltestelle aus Linie entfernen', (l) => { l.stops.splice(Number(b.dataset.i), 1); }); });
     el.querySelectorAll('.stop-up').forEach((b) => {
@@ -1571,6 +1709,60 @@ export class UI {
     el.className = kind;
   }
 
+  // --- Fortschritt länger laufender Arbeiten (Statusleiste) ---------------------------------
+
+  /**
+   * Meldet eine laufende Arbeit: label, optional done/total (sonst unbestimmt). Mehrere Arbeiten
+   * laufen parallel; die Leiste zeigt die zuletzt gemeldete und zählt die übrigen.
+   */
+  progress(id, { label = '', done = null, total = null } = {}) {
+    if (!this.jobs) this.jobs = new Map();
+    const prev = this.jobs.get(id);
+    this.jobs.delete(id); // ans Ende: zuletzt gemeldete Arbeit steht vorne
+    this.jobs.set(id, { label: label || (prev ? prev.label : ''), done, total });
+    clearTimeout(this.progressDoneTimer);
+    this.renderProgress();
+  }
+
+  /** Arbeit beendet; eine kurze Meldung bleibt ein paar Sekunden in der Statusleiste stehen. */
+  progressDone(id, message = '', kind = 'ok') {
+    if (!this.jobs) this.jobs = new Map();
+    this.jobs.delete(id);
+    this.renderProgress(message ? { text: message, kind } : null);
+  }
+
+  progressBusy(id = null) {
+    if (!this.jobs) return false;
+    return id ? this.jobs.has(id) : this.jobs.size > 0;
+  }
+
+  renderProgress(done = null) {
+    const el = this.$('status-progress');
+    if (!el) return;
+    const label = el.querySelector('.progress-label');
+    const bar = el.querySelector('.progress-bar i');
+    const jobs = this.jobs ? Array.from(this.jobs.values()) : [];
+    clearTimeout(this.progressDoneTimer);
+    if (jobs.length) {
+      const job = jobs[jobs.length - 1];
+      const det = Number.isFinite(job.total) && job.total > 0;
+      label.textContent = `${job.label}${det ? ` ${Math.min(job.done || 0, job.total)}/${job.total}` : ''}${jobs.length > 1 ? ` (+${jobs.length - 1})` : ''}`;
+      bar.style.width = det ? `${Math.round((Math.min(job.done || 0, job.total) / job.total) * 100)}%` : '';
+      el.className = `progress ${det ? '' : 'indeterminate'}`;
+      el.hidden = false;
+      return;
+    }
+    if (done && done.text) {
+      label.textContent = done.text;
+      bar.style.width = '';
+      el.className = `progress done ${done.kind || 'ok'}`;
+      el.hidden = false;
+      this.progressDoneTimer = setTimeout(() => { if (!this.jobs || !this.jobs.size) el.hidden = true; }, 4000);
+      return;
+    }
+    el.hidden = true;
+  }
+
   setTooltip(t) {
     const el = this.$('tooltip');
     if (!t || !t.text) {
@@ -1880,9 +2072,11 @@ export class UI {
         ${routes.current && routes.current.error ? `<p class="muted small">${t('Heute')}: ${esc(t(routes.current.error))}</p>` : ''}
         ${routes.proposed && routes.proposed.error ? `<p class="muted small">${t('Neu')}: ${esc(t(routes.proposed.error))}</p>` : ''}`;
     }
+    const race = actions.race();
     el.innerHTML = `
       <p class="muted small">${t('Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.')} ${t('Velo (17 km/h, Wege und Velostreifen) und zu Fuss (4.8 km/h, auch Treppen und Fusswege, ohne Einbahnen) mit Anteil unsicherer Strecke: schnelle Strassen ohne Velostreifen bzw. Trottoir.')}</p>
       ${body}
+      <div id="race-box" class="race-box">${raceBlock(race, actions, { canStart: !!(q && routes) })}</div>
       <label class="check"><input type="checkbox" id="route-model" ${geometry ? 'checked' : ''}> ${t('Fahrzeit aus der Strassenführung (Kurvenradien, Steigung aus Höhenprofil, Wartezeiten mit Streuung)')}</label>
       <div class="btn-row">
         <label class="field inline">${t('Verkehrsmittel')}<select id="route-vehicle">${VEHICLES.map((v) => `<option value="${v.id}" ${actions.routeVehicle() === v.id ? 'selected' : ''}>${esc(t(v.label))}</option>`).join('')}</select></label>
@@ -1899,6 +2093,7 @@ export class UI {
     this.wirePairs();
     this.wireBus();
     this.wireIsochrone();
+    this.wireRace(this.$('race-box'));
     this.$('route-tool').onclick = () => tools.setTool('route');
     this.$('route-vehicle').onchange = (e) => actions.setRouteVehicle(e.target.value);
     this.$('route-model').onchange = (e) => actions.updateSettings({ speedModel: e.target.checked ? 'geometry' : 'limit' });

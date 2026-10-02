@@ -229,7 +229,7 @@ export class SlippyMap {
   }
 
   /** Lädt alle Kacheln einer Ansicht vor (löst auf, wenn geladen, fehlerhaft oder nach timeout). */
-  prefetchTiles(view, timeoutMs = 20000) {
+  prefetchTiles(view, timeoutMs = 20000, onProgress = null) {
     const tiles = this.withView(view, () => {
       const list = [];
       for (const layer of this.layers) {
@@ -238,6 +238,11 @@ export class SlippyMap {
       }
       return list;
     });
+    if (onProgress) {
+      let n = 0;
+      onProgress(0, tiles.length);
+      for (const t of tiles) t.done.then(() => onProgress(++n, tiles.length), () => onProgress(++n, tiles.length));
+    }
     const all = Promise.all(tiles.map((t) => t.done));
     return Promise.race([all, new Promise((r) => setTimeout(r, timeoutMs))]).then(() => tiles.filter((t) => t.ok).length);
   }

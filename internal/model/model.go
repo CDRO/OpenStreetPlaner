@@ -196,6 +196,7 @@ type Feature struct {
 	Name    string `json:"name"`
 	Note    string `json:"note"`
 	Phase   string `json:"phase,omitempty"` // Etappe (ID aus Document.Phases), leer = alle
+	Group   string `json:"group,omitempty"` // Gruppe: Elemente mit derselben ID werden zusammen ausgewählt und verschoben
 	// Strasse
 	Kind     string    `json:"kind,omitempty"`
 	Status   string    `json:"status,omitempty"`
@@ -415,6 +416,7 @@ func Normalize(d *Document) error {
 		d.Features = []Feature{}
 	}
 	featureIDs := make(map[string]bool, len(d.Features))
+	groupSize := map[string]int{}
 	// Etappen: IDs, Namen und Jahr prüfen
 	if len(d.Phases) > MaxPhases {
 		d.Phases = d.Phases[:MaxPhases]
@@ -439,6 +441,10 @@ func Normalize(d *Document) error {
 		if f.Phase != "" && !phaseIDs[f.Phase] {
 			f.Phase = ""
 		}
+		if f.Group != "" && !idPattern.MatchString(f.Group) {
+			f.Group = ""
+		}
+		groupSize[f.Group]++
 		if featureIDs[f.ID] {
 			return invalid("Element-ID %q doppelt", f.ID)
 		}
@@ -702,6 +708,12 @@ func Normalize(d *Document) error {
 		d.Costs = clean
 		if len(d.Costs) == 0 {
 			d.Costs = nil
+		}
+	}
+	// Gruppen mit nur einem Mitglied haben keinen Zweck
+	for i := range d.Features {
+		if g := d.Features[i].Group; g != "" && groupSize[g] < 2 {
+			d.Features[i].Group = ""
 		}
 	}
 	return nil

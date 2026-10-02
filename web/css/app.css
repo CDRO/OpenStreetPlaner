@@ -202,6 +202,36 @@ details.box summary { cursor: pointer; font-weight: 600; }
 .statusbar .ok { color: var(--ok); }
 .statusbar .error { color: var(--danger); }
 #status-coords { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Fortschritt länger laufender Arbeiten */
+.progress { display: inline-flex; align-items: center; gap: 8px; max-width: 360px; overflow: hidden; }
+.progress[hidden] { display: none; }
+.progress .progress-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress .progress-bar { position: relative; width: 96px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; flex: 0 0 auto; }
+.progress .progress-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.progress.indeterminate .progress-bar i { position: absolute; width: 40%; animation: progress-slide 1.2s ease-in-out infinite; }
+@keyframes progress-slide { from { left: -40%; } to { left: 100%; } }
+.progress.done { color: var(--ok); }
+.progress.done.error { color: var(--danger); }
+.progress.done .progress-bar { display: none; }
+@media (prefers-reduced-motion: reduce) { .progress.indeterminate .progress-bar i { animation: none; width: 100%; opacity: .5; } }
+
+/* Fahrt-Animation („Abfahren“) */
+.race { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-soft); }
+.race .btn-row { margin: 4px 0; align-items: center; }
+.race-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.race-speeds { display: inline-flex; gap: 2px; }
+.race-speed.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.race-timeline { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.race-timeline input[type="range"] { flex: 1; min-width: 60px; }
+.race-clock { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: nowrap; }
+.race-table td { padding: 3px 4px; }
+.race-table td.race-bar-cell { width: 36%; }
+.race-bar { display: block; height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.race-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
+.race-glyph { font-size: 15px; }
+.group-row { margin: 4px 0 8px; color: var(--muted); }
+.group-badge { display: inline-block; font-weight: 700; color: var(--accent); }
+.present-panel .race { padding: 6px 8px; }
 
 /* Modal & Toasts */
 .modal { position: fixed; inset: 0; background: rgba(20,30,40,.45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 16px; }

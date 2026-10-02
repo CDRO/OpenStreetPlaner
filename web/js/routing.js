@@ -515,17 +515,23 @@ export function search(g, fromKey, { toKey = null, maxCost = Infinity } = {}) {
   return { best, endState, nodeCost };
 }
 
-/** Schnellste Route (nach Zeit). Liefert { path: [[lat,lng]], dist, time, sd, p15, p85 } oder null. */
+/** Schnellste Route (nach Zeit). Liefert { path: [[lat,lng]], times: [s], dist, time, sd, p15, p85 } oder null. */
 export function shortestPath(g, fromKey, toKey) {
   if (!g.nodes.has(fromKey) || !g.nodes.has(toKey)) return null;
   const { best, endState } = search(g, fromKey, { toKey });
   if (!endState) return null;
   const end = best.get(endState);
   const path = [];
-  for (let st = endState; st; st = best.get(st).from) path.push(g.nodes.get(best.get(st).node).latlng);
+  const times = []; // Zeitachse: Sekunden ab Start je Pfadpunkt (für die Fahrt-Animation)
+  for (let st = endState; st; st = best.get(st).from) {
+    const b = best.get(st);
+    path.push(g.nodes.get(b.node).latlng);
+    times.push(b.cost);
+  }
   path.reverse();
+  times.reverse();
   const band = summarize(end.cost, end.variance);
-  return { path, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85, quality: { dist: end.dist, assumedDist: end.assumedDist, draftDist: end.draftDist, noProfileDist: end.noProfileDist, unsafeDist: end.unsafeDist, model: g.model, vehicle: g.vehicle } };
+  return { path, times, dist: end.dist, time: end.cost, sd: band.sd, p15: band.p15, p85: band.p85, quality: { dist: end.dist, assumedDist: end.assumedDist, draftDist: end.draftDist, noProfileDist: end.noProfileDist, unsafeDist: end.unsafeDist, model: g.model, vehicle: g.vehicle } };
 }
 
 /** Fahrzeit (s) zu jedem erreichbaren Knoten bis maxSeconds: Map Knoten-Key -> Sekunden. */
@@ -689,9 +695,11 @@ export function computeBusLines({ osmWays, doc, model = 'limit', graphs = null }
       let time = 0;
       let dist = 0;
       const path = [];
+      const times = []; // Zeitachse je Pfadpunkt; an Zwischenhalten steht der Punkt doppelt (Ankunft, Abfahrt nach der Haltezeit)
       const legs = [];
       const quality = { dist: 0, assumedDist: 0, draftDist: 0, noProfileDist: 0, model: g[mode].model };
       let error = null;
+      let dwells = 0;
       for (let i = 1; i < stops.length; i++) {
         const r = routeOnGraph(g[mode], stops[i - 1], stops[i]);
         if (r.error) {
@@ -699,14 +707,26 @@ export function computeBusLines({ osmWays, doc, model = 'limit', graphs = null }
           legs.push({ error: r.error });
           continue;
         }
+        if (i > 1 && path.length) {
+          // Zwischenhalt: Haltezeit als Pause an derselben Stelle
+          time += dwell;
+          dwells++;
+          path.push(path[path.length - 1]);
+          times.push(time);
+        }
+        const offset = time;
         time += r.time;
         dist += r.dist;
         legs.push({ time: r.time, dist: r.dist });
         if (r.quality) for (const k of ['dist', 'assumedDist', 'draftDist', 'noProfileDist']) quality[k] += r.quality[k];
-        for (const p of r.path) if (!path.length || path[path.length - 1][0] !== p[0] || path[path.length - 1][1] !== p[1]) path.push(p);
+        r.path.forEach((p, k) => {
+          if (path.length && path[path.length - 1][0] === p[0] && path[path.length - 1][1] === p[1]) return;
+          path.push(p);
+          times.push(offset + r.times[k]);
+        });
       }
-      time += dwell * Math.max(0, stops.length - 2);
-      entry[mode] = error ? { error, time, dist, path, legs, quality } : { time, dist, path, legs, quality };
+      time += dwell * Math.max(0, stops.length - 2 - dwells); // Haltezeiten fehlender Abschnitte zählen trotzdem
+      entry[mode] = error ? { error, time, dist, path, times, legs, quality } : { time, dist, path, times, legs, quality };
     }
     out.push(entry);
   }
@@ -719,7 +739,8 @@ export function routeOnGraph(g, from, to) {
   const b = attachPoint(g, to);
   if (!a || !b) return { error: !a ? 'Start liegt nicht in der Nähe einer befahrbaren Strasse.' : 'Ziel liegt nicht in der Nähe einer befahrbaren Strasse.' };
   const r = shortestPath(g, a.key, b.key);
-  return r ? { ...r, path: [from, ...r.path, to] } : { error: 'Keine Verbindung im Netz gefunden (Strassennetz für den ganzen Bereich geladen?).' };
+  // Start und Ziel hängen ohne Zeit am Netz (Anbindung bis 300 m zählt nicht zur Fahrzeit)
+  return r ? { ...r, path: [from, ...r.path, to], times: [0, ...r.times, r.time] } : { error: 'Keine Verbindung im Netz gefunden (Strassennetz für den ganzen Bereich geladen?).' };
 }
 
 /** Mehrere Start-Ziel-Paare auf denselben Netzen: [{ id, current, proposed }]. */
@@ -739,6 +760,24 @@ export function computeRoutesMany({ osmWays, doc, pairs, model = 'limit' }) {
 export function computeRoutes({ osmWays, doc, from, to, model = 'limit', vehicle = 'car' }) {
   const graphs = buildGraphs({ osmWays, doc, model, vehicle: VEHICLE_IDS.includes(vehicle) ? vehicle : 'car' });
   return { current: routeOnGraph(graphs.current, from, to), proposed: routeOnGraph(graphs.proposed, from, to), error: null, model };
+}
+
+/**
+ * Rennen: dieselbe Strecke je Verkehrsmittel (Auto, Bus, Velo, zu Fuss) auf beiden Netzen.
+ * Liefert { car: { current, proposed }, bus: …, bike: …, foot: … }; jedes Ergebnis wie routeOnGraph (mit times).
+ */
+export function computeRace({ osmWays = [], doc, from, to, model = 'limit', vehicles = VEHICLE_IDS }) {
+  const out = {};
+  for (const v of vehicles) {
+    if (!VEHICLE_IDS.includes(v)) continue;
+    try {
+      const g = buildGraphs({ osmWays, doc, model, vehicle: v });
+      out[v] = { current: routeOnGraph(g.current, from, to), proposed: routeOnGraph(g.proposed, from, to) };
+    } catch (e) {
+      out[v] = { current: { error: e.message }, proposed: { error: e.message } };
+    }
+  }
+  return out;
 }
 
 export function formatDuration(seconds) {

@@ -6,6 +6,7 @@ import {
   applySnapSplits, createJunction, createRoad, createRoundabout, createZone, extendRoad, featureLabel, getFeature, getLayer,
   insertZoneNode, moveFeatureNode, pointInPolygon, removeFeature, removeRoadNode, removeZoneNode, ringArea,
   splitRoadSegment, roundCoord, shiftLatLng, translateFeatures, featuresInBounds,
+  expandGroups,
 } from './model.js';
 import { snapLatLng, excludeFeature } from './snap.js';
 import { haversine, pathLength, project as mercator } from './geometry.js';
@@ -97,10 +98,28 @@ export class ToolController {
   }
 
   setSelection(sel, { keepMulti = false } = {}) {
-    if (!keepMulti) this.multi.clear();
+    if (!keepMulti) {
+      this.multi.clear();
+      // Gruppen: ein Mitglied auswählen heisst, die ganze Gruppe auswählen (zusammen verschieben, löschen)
+      if (sel) {
+        const members = expandGroups(this.store.doc, [sel.featureId]);
+        if (members.length > 1) this.multi = new Set(members);
+      }
+    }
     this.selection = sel;
     this.onSelectionChange(sel);
     this.onSceneChange();
+  }
+
+  /** Besteht die Mehrfachauswahl genau aus der Gruppe des primären Elements? Dann zeigt die Oberfläche dessen Eigenschaften. */
+  isGroupSelection() {
+    if (!this.selection || this.multi.size < 2) return false;
+    const f = getFeature(this.store.doc, this.selection.featureId);
+    if (!f || !f.group) return false;
+    const members = new Set(expandGroups(this.store.doc, [f.id]));
+    if (members.size !== this.multi.size) return false;
+    for (const id of this.multi) if (!members.has(id)) return false;
+    return true;
   }
 
   selectedFeature() {
@@ -125,14 +144,15 @@ export class ToolController {
   /** Element zur Mehrfachauswahl hinzufügen oder entfernen. */
   toggleSelected(hit) {
     if (!this.multi.size && this.selection) this.multi.add(this.selection.featureId);
+    const members = expandGroups(this.store.doc, [hit.featureId]); // Gruppen wandern als Ganzes
     if (this.multi.has(hit.featureId)) {
-      this.multi.delete(hit.featureId);
+      for (const id of members) this.multi.delete(id);
       const next = this.multi.size ? { featureId: Array.from(this.multi)[0], segIndex: null } : null;
       if (this.multi.size === 1) this.multi.clear();
       this.setSelection(next, { keepMulti: true });
       return;
     }
-    this.multi.add(hit.featureId);
+    for (const id of members) this.multi.add(id);
     if (this.multi.size === 1) this.multi.clear();
     this.setSelection(hit, { keepMulti: true });
   }
@@ -360,7 +380,7 @@ export class ToolController {
     if (Math.abs(end.x - box.start.x) < 4 || Math.abs(end.y - box.start.y) < 4) return;
     const a = this.map.unproject(box.start);
     const b = this.map.unproject(end);
-    const ids = featuresInBounds(this.store.doc, { south: a[0], north: b[0], west: a[1], east: b[1] });
+    const ids = expandGroups(this.store.doc, featuresInBounds(this.store.doc, { south: a[0], north: b[0], west: a[1], east: b[1] }));
     if (!ids.length) return;
     const all = new Set([...this.selectedIds(), ...ids]);
     this.multi = new Set(all.size > 1 ? all : []);

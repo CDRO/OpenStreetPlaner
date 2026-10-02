@@ -49,6 +49,9 @@ go run . -data ./data
 | Kontextmenü | Rechtsklick oder Langdruck auf ein Element: Hinzoomen, Eigenschaften, Ebene, Status, Führung des Abschnitts (ebenerdig/Brücke/Tunnel), Zugang, Löschen – für die ganze Auswahl, wenn mehrere gewählt sind. Rechtsklick auf einen Griff löscht wie bisher den Punkt |
 | Elementliste | Box „Elemente“ im Zeichnen-Tab: alle Elemente mit Typ, Ebene, Länge oder Status, Filter nach Name, Typ oder Ebene; Klick wählt aus und zoomt hin, Shift+Klick ergänzt die Auswahl |
 | Touch | Mit dem Finger sind Griffe und Trefferflächen grösser (16 statt 9 Pixel), Langdruck öffnet das Kontextmenü, die Seitenleiste ist ein Bottom-Sheet |
+| Abfahren (Fahrt-Animation) | Routen-Tab und Präsentationsmodus, Knopf „Abfahren“: Auto, Bus, Velo und Fussgänger fahren die Hauptroute gleichzeitig ab – heute (blauer Rand) gegen neu (grüner Rand) – im Zeitraffer 1×/10×/30×/100× (Vorgabe so, dass das Rennen etwa eine Minute dauert). Die Positionen folgen der Zeitachse des Routen-Rechners (Fahrzeit je Pfadpunkt aus Tempolimits, Wartezeiten an Kreuzungen, Abbiegezeiten), nicht dem realen Verkehr; Spur der letzten 90 s, Fahrzeuge als Kreis mit Symbol, Rang bei Ankunft. Zeitleiste zum Springen, Pause, Modus „nur heute / nur neu / beide“, Zuversicht-Punkt der Route daneben; bei Änderungen am Entwurf „Neu berechnen“. Buslinien haben einen eigenen Knopf „Abfahren“: der Bus heute gegen neu mit Pausen an den Zwischenhalten (Haltezeit). Rechnet im Web Worker |
+| Gruppen | Mehrere Elemente gruppieren (Mehrfachauswahl → „Gruppieren“ oder Rechtsklick): wer ein Mitglied anklickt, wählt die ganze Gruppe – Ziehen verschiebt alle zusammen, Entf löscht alle, die Eigenschaften zeigen weiterhin das angeklickte Element mit Hinweis und „Gruppe auflösen“. Shift+Klick und Rahmen nehmen Gruppen als Ganzes auf; Gruppen mit nur einem Mitglied lösen sich auf. In der Elementliste mit ⧉ markiert, im GeoJSON als `group` |
+| Fortschritt und Status | Länger laufende Arbeiten melden sich in der Statusleiste mit Balken: Laden von Strassennetz, Gebäuden, Haltestellen und Parkplätzen zellenweise (geladen/gesamt), Routen-Berechnung im Worker (ab 300 ms), Parzellen, Höhenprofil, Fahrplan-Abgleich, Variantenvergleich, Export (Kacheln vorladen) und die Vorbereitung der Fahrt-Animation; nach Abschluss steht einige Sekunden eine Meldung („Strassennetz geladen: 412 Strassen.“). Laufen mehrere Arbeiten, zählt die Leiste die übrigen; Fehler kommen weiterhin als Toast |
 | Variantenvergleich | Analyse-Tab: „Varianten vergleichen“ rechnet jede Ebene allein sichtbar: Elemente, neue Länge, Kosten, Fahrzeit-Differenz der Hauptroute und Summe der Paare, Parzellen, Gebäude entlang neuer Strassen, Warnungen; Tabelle im Bericht |
 | Parkplatzbilanz | Analyse-Tab: neu aus Parkstreifen im Querschnitt (6 m je Platz) und Parkflächen (25 m² je Platz), entfallen aus OSM-Parkstreifen (`parking:*`, `parking:lane:*`) an übernommenen Strassen ohne Parkstreifen im Querschnitt oder bei Rückbau und aus OSM-Parkplätzen (`amenity=parking`, `capacity` oder Fläche), die neue Strassen oder Flächen berühren; Positionen mit Sprung zum Element, Zeile im Bericht |
 | Etappierung | Ebenen-Tab: bis zehn Etappen mit Name und Jahr; Etappe je Element in den Eigenschaften, in der Mehrfachauswahl oder per Rechtsklick. Ansicht „bis Etappe“ zeigt den Zustand nach dieser Etappe: spätere Elemente grau gestrichelt, Routen, Paare, Buslinien und Erreichbarkeit im Netz dieses Zustands. Analyse-Tab und Bericht: Elemente, Kosten und Fahrzeit kumuliert je Etappe |
@@ -243,7 +246,9 @@ Anfrage des Routen-Rechners. `busLines` sind bis zu 20 Linien mit je bis zu
 einer Bushaltestelle ist der OSM-Knoten, `osmId` einer Linie die OSM-Relation,
 aus der sie übernommen wurde (optional; verhindert Doppelte beim Übernehmen).
 `phases` sind bis zu zehn Etappen (Name, Jahr optional); jedes Element kann mit
-`phase` auf eine Etappe verweisen (fehlend = gehört zu jedem Zustand).
+`phase` auf eine Etappe verweisen (fehlend = gehört zu jedem Zustand). `group`
+(optional, ID) fasst Elemente zu einer Gruppe zusammen, die zusammen ausgewählt und
+verschoben wird; Gruppen mit nur einem Mitglied werden beim Normalisieren entfernt.
 
 ### Routen-Rechner: Annahmen
 
@@ -258,6 +263,10 @@ aus der sie übernommen wurde (optional; verhindert Doppelte beim Übernehmen).
   Fläche liegt; Fussgängerzonen sperren ihn (für Busse mit Freigabe 20 km/h).
 - Busschleusen (Zugang „Nur Bus“) fehlen im Auto-Netz; im Bus-Netz gelten sie
   mit höchstens 30 km/h. Buslinien addieren je Zwischenhalt die Haltezeit.
+- Jede Route trägt eine Zeitachse (`times`, Sekunden ab Start je Pfadpunkt) aus den
+  Kosten der Suche; die Fahrt-Animation interpoliert darauf linear. Bei Buslinien steht
+  jeder Zwischenhalt doppelt im Pfad (Ankunft, Abfahrt nach der Haltezeit), damit der
+  Bus dort anhält.
 - Routen, Paare, Erreichbarkeit und Buslinien werden in einem Web Worker
   gerechnet (Modul-Worker `routing.worker.js`), damit die Oberfläche bei
   grossen Netzen flüssig bleibt; veraltete Ergebnisse werden verworfen. Ohne

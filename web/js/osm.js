@@ -64,7 +64,7 @@ export function routeBounds(from, to, { factor = 0.3, minMeters = 400 } = {}) {
 
 /**
  * Hält geladene Strassen im Speicher. loader(bounds) -> Promise<Way[]>.
- * Zustandsmeldungen über subscribe(): { status: 'loading', remaining } |
+ * Zustandsmeldungen über subscribe(): { status: 'loading', remaining, done, total } |
  * { status: 'ready', count } | { status: 'error', error }.
  */
 export class OsmRoadCache {
@@ -81,6 +81,8 @@ export class OsmRoadCache {
     this.lastError = null;
     this.pending = null; // Promise, bis die Warteschlange leer ist
     this.resolvePending = null;
+    this.batchTotal = 0; // Zellen des laufenden Ladevorgangs (für die Fortschrittsanzeige)
+    this.batchDone = 0;
   }
 
   subscribe(fn) {
@@ -120,7 +122,14 @@ export class OsmRoadCache {
       this.queue.push(cell);
       added++;
     }
-    if (added) this.pump();
+    if (added) {
+      if (!this.pending) {
+        this.batchTotal = 0;
+        this.batchDone = 0;
+      }
+      this.batchTotal += added;
+      this.pump();
+    }
     return true;
   }
 
@@ -143,7 +152,7 @@ export class OsmRoadCache {
       const cell = this.queue.shift();
       this.active++;
       this.inFlight.add(cell.key);
-      this.emit({ status: 'loading', remaining: this.remaining });
+      this.emit({ status: 'loading', remaining: this.remaining, done: this.batchDone, total: this.batchTotal });
       this.loadCell(cell);
     }
   }
@@ -166,6 +175,8 @@ export class OsmRoadCache {
     } finally {
       this.inFlight.delete(cell.key);
       this.active--;
+      this.batchDone++;
+      if (this.queue.length || this.active) this.emit({ status: 'loading', remaining: this.remaining, done: this.batchDone, total: this.batchTotal });
       if (this.queue.length) {
         await new Promise((r) => setTimeout(r, this.delayMs));
         this.pump();

@@ -22,7 +22,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6, ghostIds = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6, ghostIds = null, race = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -198,6 +198,7 @@ export function drawScene(ctx, map, s) {
   }
   drawRoutePairs(ctx, P, doc.routePairs || [], pairs, routeDraft, routeTarget);
   drawRoutes(ctx, P, doc.route, routes, routeDraft && !routeDraft.pairId ? routeDraft : null);
+  if (race) drawRace(ctx, P, race);
   if (doc.isochrone && doc.isochrone.from) {
     const c = P(doc.isochrone.from);
     circle(ctx, c, 10, { stroke: '#fff', width: 2, fill: '#7b3fbf' });
@@ -650,6 +651,44 @@ function drawRoutes(ctx, P, query, routes, routeDraft) {
   if (query && query.from && query.to) {
     marker(query.from, 'A');
     marker(query.to, 'B');
+  }
+}
+
+/**
+ * Fahrt-Animation: Strecken je Teilnehmer dünn in der Fahrzeugfarbe (neu gestrichelt), die Spur der letzten
+ * Minuten kräftig, dann das Fahrzeug als Kreis mit Symbol; Rand blau = heute, grün = neu. Angekommene zeigen den Rang.
+ */
+export const RACE_VARIANT_COLORS = { current: '#1b6ac9', proposed: '#2a9d3f' };
+function drawRace(ctx, P, race) {
+  const runners = race.runners || [];
+  for (const r of runners) {
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.setLineDash(r.variant === 'proposed' ? [6, 5] : []);
+    stroke(ctx, r.path.map(P), r.color, 2.5);
+    ctx.restore();
+  }
+  for (const r of runners) {
+    if (!r.trail || r.trail.length < 2) continue;
+    const pts = r.trail.map(P);
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    stroke(ctx, pts, '#ffffff', 7);
+    stroke(ctx, pts, r.color, 4);
+    ctx.restore();
+  }
+  // Fahrzeuge: fertige zuerst, damit die noch fahrenden obenauf liegen
+  const ordered = runners.slice().sort((a, b) => Number(b.finished) - Number(a.finished));
+  for (const r of ordered) {
+    if (!r.position) continue;
+    const c = P(r.position);
+    const edge = RACE_VARIANT_COLORS[r.variant] || '#1f2933';
+    circle(ctx, c, 14, { stroke: edge, width: 3, fill: r.finished ? '#f1f3f5' : '#ffffff' });
+    text(ctx, r.glyph, c.x, c.y + 1, { font: '15px system-ui, "Apple Color Emoji", "Segoe UI Emoji", sans-serif', align: 'center', baseline: 'middle' });
+    if (r.finished && r.rank) {
+      circle(ctx, { x: c.x + 11, y: c.y - 11 }, 8, { stroke: '#fff', width: 1.5, fill: r.rank === 1 ? '#e0b400' : '#1f2933' });
+      text(ctx, String(r.rank), c.x + 11, c.y - 10.5, { font: 'bold 10px system-ui, sans-serif', color: '#fff', align: 'center', baseline: 'middle' });
+    }
   }
 }
 

@@ -7,12 +7,14 @@ import { LocalState } from './local.js';
 import { api, setClientId } from './api.js';
 import {
   cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES, featureLabel, STATUSES, LEVELS, ROAD_ACCESS, docForPhase, createPhase, removePhase, phaseLabel, featureInPhase, VEHICLES,
+  groupFeatures, ungroupFeatures,
 } from './model.js';
 import { buildSnapIndex } from './snap.js';
 import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
-import { computeAll, computeRoutes, formatDuration } from './routing.js';
+import { computeAll, computeRace, computeRoutes, formatDuration } from './routing.js';
+import { RACE_MODES, RACE_SPEEDS, buildRunners, raceDuration, raceSnapshot, suggestedSpeed } from './race.js';
 import { toDXF } from './dxf.js';
 import { smoothRoad, simplifyRoad } from './smooth.js';
 import { nodesKey, newId } from './model.js';
@@ -85,6 +87,7 @@ async function main() {
     busResults: [],
     variants: null, // Variantenvergleich (auf Knopfdruck)
     vehicle: 'car', // Verkehrsmittel für die nächste Hauptroute
+    race: null, // Fahrt-Animation { kind, id, mode, speed, status, t, runners, duration, results, stale }
     phaseView: null, // Ansicht „bis Etappe“ (ID) oder null = Endzustand
     iso: null,
     routeTimer: null,
@@ -276,6 +279,7 @@ async function main() {
     buildings: state.showExposure ? exposureForDrawing() : null,
     diff: state.showDiff && state.diff ? state.diff.result : null,
     routeDraft: tools.routeDraft,
+    race: raceScene(),
     comments: settings.showComments ? state.comments : [],
     activeCommentId: state.activeCommentId,
     commentDraft: tools.commentDraft,
@@ -301,6 +305,7 @@ async function main() {
   let worker = null;
   let workerBroken = false;
   let jobCounter = 0;
+  const raceJobs = new Map(); // laufende Rennen-Berechnungen im Worker: id -> { job, resolve }
   function routingWorker() {
     if (workerBroken || typeof globalThis.Worker === 'undefined') return null;
     if (worker) return worker;
@@ -311,7 +316,14 @@ async function main() {
       return null;
     }
     worker.onmessage = (e) => {
-      const { id, result, error } = e.data || {};
+      const { id, kind, result, error } = e.data || {};
+      if (kind === 'race') {
+        const pending = raceJobs.get(id);
+        if (!pending) return;
+        raceJobs.delete(id);
+        pending.resolve(error ? computeRace(pending.job) : result);
+        return;
+      }
       if (id !== state.routeJob) return; // veraltet
       if (error) applyRouteResults(computeAll(state.routeJobPayload));
       else applyRouteResults(result);
@@ -322,8 +334,29 @@ async function main() {
       try { worker.terminate(); } catch { /* egal */ }
       worker = null;
       if (state.routeJobPayload) applyRouteResults(computeAll(state.routeJobPayload));
+      for (const [id, pending] of raceJobs) {
+        raceJobs.delete(id);
+        pending.resolve(computeRace(pending.job));
+      }
     };
     return worker;
+  }
+
+  /** Strecke je Verkehrsmittel für die Fahrt-Animation, im Worker wenn möglich. */
+  function runRaceJob(job) {
+    const w = routingWorker();
+    if (!w) return Promise.resolve(computeRace(job));
+    return new Promise((resolve) => {
+      const id = ++jobCounter;
+      raceJobs.set(id, { job, resolve });
+      try {
+        w.postMessage({ id, kind: 'race', job });
+      } catch {
+        raceJobs.delete(id);
+        workerBroken = true;
+        resolve(computeRace(job));
+      }
+    });
   }
 
   function applyRouteResults(res) {
@@ -332,8 +365,10 @@ async function main() {
     state.pairResults = res.pairResults || [];
     state.iso = res.iso;
     state.routeJobPayload = null;
+    clearTimeout(state.routeProgressTimer);
     map.requestRender();
     if (ui) {
+      ui.progressDone('route');
       ui.refreshRoute();
       ui.refreshPresent();
     }
@@ -348,6 +383,9 @@ async function main() {
       if (!w) return applyRouteResults(computeAll(job));
       state.routeJob = ++jobCounter;
       state.routeJobPayload = job;
+      // Fortschritt erst zeigen, wenn die Rechnung spürbar dauert
+      clearTimeout(state.routeProgressTimer);
+      state.routeProgressTimer = setTimeout(() => { if (state.routeJobPayload && ui) ui.progress('route', { label: t('Routen werden berechnet…') }); }, 300);
       try {
         w.postMessage({ id: state.routeJob, job });
       } catch {
@@ -356,6 +394,57 @@ async function main() {
       }
       return undefined;
     }, 120);
+  }
+
+  // --- Fahrt-Animation („Abfahren“) ---------------------------------------------------
+  /** Startet die Uhr; die Fahrzeuge folgen der Zeitachse des Routen-Rechners im Zeitraffer. */
+  function launchRace(race, results, { title = '' } = {}) {
+    const runners = buildRunners(results, { mode: race.mode });
+    const duration = raceDuration(runners);
+    Object.assign(race, { results, runners, duration, title, t: 0, stale: false, status: runners.length ? 'running' : 'empty', lastTick: null, frame: null });
+    if (!race.speed) race.speed = suggestedSpeed(duration);
+    if (runners.length) {
+      // Alle Strecken ins Bild
+      const lats = [];
+      const lngs = [];
+      for (const r of runners) for (const p of r.path) { lats.push(p[0]); lngs.push(p[1]); }
+      const b = { south: Math.min(...lats), north: Math.max(...lats), west: Math.min(...lngs), east: Math.max(...lngs) };
+      const view = map.getBounds();
+      const inside = b.south >= view.south && b.north <= view.north && b.west >= view.west && b.east <= view.east;
+      if (!inside) map.fitBounds(b, { padding: 60, maxZoom: 17 });
+      race.frame = requestAnimationFrame(raceTick);
+    }
+    ui.refreshRace();
+    map.requestRender();
+  }
+
+  function raceTick(now) {
+    const r = state.race;
+    if (!r || r.status !== 'running') return;
+    if (r.lastTick !== null) r.t = Math.min(r.duration, r.t + ((now - r.lastTick) / 1000) * r.speed);
+    r.lastTick = now;
+    if (r.t >= r.duration) r.status = 'done';
+    map.requestRender();
+    if (r.status === 'running') {
+      ui.updateRaceClock();
+      r.frame = requestAnimationFrame(raceTick);
+    } else {
+      r.frame = null;
+      ui.refreshRace();
+    }
+  }
+
+  function stopRaceClock() {
+    const r = state.race;
+    if (r && r.frame) cancelAnimationFrame(r.frame);
+    if (r) r.frame = null;
+  }
+
+  /** Momentaufnahme fürs Zeichnen (Positionen, Spuren, Ränge) oder null. */
+  function raceScene() {
+    const r = state.race;
+    if (!r || !r.runners || !r.runners.length) return null;
+    return { runners: raceSnapshot(r.runners, r.t), mode: r.mode, status: r.status };
   }
 
   /** Bereich um den Isochronen-Ursprung: höchste Minutenzahl bei rund 50 km/h, Luftlinie etwa 70 % davon. */
@@ -560,7 +649,7 @@ async function main() {
       if (!actions.requireEdit()) return;
       const road = getFeature(store.doc, roadId);
       if (!road || road.type !== 'road') return;
-      ui.toast(t('Parzellen werden abgefragt…'));
+      ui.progress('parcels', { label: t('Parzellen werden abgefragt…') });
       try {
         const res = await api.parcels(road.nodes);
         for (const p of res.parcels || []) {
@@ -571,8 +660,9 @@ async function main() {
           const r = getFeature(d, roadId);
           if (r) r.parcels = summary;
         });
-        ui.toast(summary.items.length ? tn(summary.items.length, '{n} Parzelle berührt.', '{n} Parzellen berührt.') : t('Keine Parzellen gefunden (amtliche Vermessung deckt nur die Schweiz ab).'), 'ok', 5000);
+        ui.progressDone('parcels', summary.items.length ? tn(summary.items.length, '{n} Parzelle berührt.', '{n} Parzellen berührt.') : t('Keine Parzellen gefunden (amtliche Vermessung deckt nur die Schweiz ab).'));
       } catch (e) {
+        ui.progressDone('parcels');
         ui.toast(`${t('Parzellen')}: ${e.message}`, 'error', 7000);
       }
     },
@@ -598,8 +688,18 @@ async function main() {
     },
     // --- Variantenvergleich, Parkplatzbilanz, Etappen -------------------------------------
     compareVariants() {
-      state.variants = compareVariants({ doc: store.doc, osmWays: osm.list(), model: settings.speedModel, buildings: buildings.list(), radiusM: settings.exposureRadius });
-      ui.refreshAnalysis();
+      ui.progress('variants', { label: t('Varianten werden verglichen…') });
+      // Rechnet im Hauptfaden: erst die Fortschrittsanzeige zeichnen lassen
+      setTimeout(() => {
+        try {
+          state.variants = compareVariants({ doc: store.doc, osmWays: osm.list(), model: settings.speedModel, buildings: buildings.list(), radiusM: settings.exposureRadius });
+          ui.progressDone('variants', t('Variantenvergleich fertig.'));
+        } catch (e) {
+          ui.progressDone('variants');
+          ui.toast(`${t('Variantenvergleich')}: ${e.message}`, 'error', 6000);
+        }
+        ui.refreshAnalysis();
+      }, 30);
     },
     variants: () => state.variants,
     parkingStatus() {
@@ -681,11 +781,19 @@ async function main() {
         download(`${safeFilename(store.doc.name)}.dxf`, toDXF(store.doc), 'application/dxf');
         return;
       }
-      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure(), confidence: confidence ? actions.confidences() : null, variants: state.variants, parking: actions.parkingBalance(), phases: actions.phaseTable() };
+      const onProgress = (done, total) => ui.progress('export', { label: t('Export: Kacheln laden…'), done, total });
+      const opts = { mode, paper, orientation, dpi, scale, routes: actions.routes(), pairs: state.pairResults, busLines: state.busResults, isochrone: state.iso, link: state.id ? `${location.origin}/d/${state.id}` : '', comments: state.comments, checks: actions.runChecks(), exposure: actions.exposure(), confidence: confidence ? actions.confidences() : null, variants: state.variants, parking: actions.parkingBalance(), phases: actions.phaseTable(), onProgress };
+      ui.progress('export', { label: t('Export wird vorbereitet…') });
       let blob;
-      if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
-      else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
-      else blob = await exportPng(map, store.doc, opts);
+      try {
+        if (format === 'pdf' && report) blob = await exportReport(map, store.doc, opts);
+        else if (format === 'pdf') blob = await exportPdf(map, store.doc, opts);
+        else blob = await exportPng(map, store.doc, opts);
+      } catch (e) {
+        ui.progressDone('export');
+        throw e;
+      }
+      ui.progressDone('export', t('{format} erstellt.', { format: format.toUpperCase() }));
       download(`${safeFilename(store.doc.name)}${report ? '-bericht' : ''}.${format}`, blob);
     },
     isPresent: () => state.present,
@@ -768,7 +876,7 @@ async function main() {
       if (!actions.requireEdit()) return;
       const road = getFeature(store.doc, id);
       if (!road || road.type !== 'road') return;
-      ui.toast(t('Höhenprofil wird geladen…'));
+      ui.progress('profile', { label: t('Höhenprofil wird geladen…') });
       try {
         const res = await api.profile(road.nodes);
         const key = nodesKey(road.nodes);
@@ -776,8 +884,9 @@ async function main() {
           const r = getFeature(d, id);
           if (r) r.profile = { points: res.points, key };
         });
-        ui.toast(t('Höhenprofil geladen.'), 'ok');
+        ui.progressDone('profile', t('Höhenprofil geladen.'));
       } catch (e) {
+        ui.progressDone('profile');
         ui.toast(`${t('Höhenprofil')}: ${e.message}`, 'error', 7000);
       }
     },
@@ -822,6 +931,21 @@ async function main() {
       if (add) tools.toggleSelected({ featureId: id, segIndex: null });
       else tools.setSelection({ featureId: id, segIndex: null });
       if (zoom) actions.zoomToFeature(id);
+    },
+    /** Gruppieren: die Elemente werden fortan zusammen ausgewählt, verschoben und gelöscht. */
+    groupFeatures(ids) {
+      if (!actions.requireEdit() || ids.length < 2) return;
+      let gid = null;
+      store.commit('Elemente gruppieren', (d) => { gid = groupFeatures(d, ids); });
+      if (gid) {
+        tools.setSelection({ featureId: ids[0], segIndex: null });
+        ui.toast(tn(tools.multi.size, 'Gruppe mit {n} Element.', 'Gruppe mit {n} Elementen.'), 'ok');
+      }
+    },
+    ungroupFeatures(ids) {
+      if (!actions.requireEdit()) return;
+      store.commit('Gruppe auflösen', (d) => ungroupFeatures(d, ids));
+      if (tools.selection) tools.setSelection({ featureId: tools.selection.featureId, segIndex: tools.selection.segIndex });
     },
     /** Auf mehrere Elemente zoomen (Umriss aller Punkte). */
     zoomToFeatures(ids) {
@@ -1188,6 +1312,7 @@ async function main() {
       const stops = line ? line.stops.map((sid) => getFeature(store.doc, sid)).filter((f) => f && f.at) : [];
       if (stops.length < 2) return ui.toast(t('Mindestens zwei Haltestellen für den Fahrplan-Abgleich.'), 'error');
       state.timetableBusy = id;
+      ui.progress('timetable', { label: t('Fahrplan wird abgefragt…') });
       ui.refreshRoute();
       try {
         const tt = await api.timetable(stops[0].at, stops[stops.length - 1].at, line.name);
@@ -1197,6 +1322,7 @@ async function main() {
         ui.toast(`${t('Fahrplan-Abgleich')}: ${e.message}`, 'error', 6000);
       } finally {
         state.timetableBusy = null;
+        ui.progressDone('timetable');
         ui.refreshRoute();
       }
       return undefined;
@@ -1283,6 +1409,93 @@ async function main() {
         const p = (d.routePairs || []).find((x) => x.id === id);
         if (p) p.vehicle = VEHICLES.some((x) => x.id === v) ? v : 'car';
       });
+    },
+    race: () => state.race,
+    raceScene,
+    /** Fahrt-Animation starten: Hauptroute je Verkehrsmittel oder eine Buslinie (heute gegen neu). */
+    async startRace({ kind = 'route', id = null, mode = null } = {}) {
+      const prev = state.race;
+      stopRaceClock();
+      const m = RACE_MODES.includes(mode) ? mode : prev && prev.kind === kind ? prev.mode : 'both';
+      const speed = prev && RACE_SPEEDS.includes(prev.speed) ? prev.speed : null;
+      if (kind === 'bus') {
+        const line = (store.doc.busLines || []).find((l) => l.id === id);
+        const r = state.busResults.find((x) => x.id === id);
+        if (!line || !r) {
+          ui.toast(t('Für diese Linie liegt noch keine Fahrzeit vor (mindestens zwei Haltestellen, Netz geladen).'), 'error', 5000);
+          return;
+        }
+        state.race = { kind, id, mode: m, speed, status: 'loading', t: 0, runners: [], duration: 0, results: null, stale: false };
+        launchRace(state.race, { bus: { current: r.current, proposed: r.proposed } }, { title: `${t('Linie')} ${line.name}` });
+        return;
+      }
+      const q = store.doc.route;
+      if (!q) {
+        ui.toast(t('Zuerst Start und Ziel der Route setzen.'), 'error');
+        return;
+      }
+      const race = { kind: 'route', id: null, mode: m, speed, status: 'loading', t: 0, runners: [], duration: 0, results: null, stale: false };
+      state.race = race;
+      ui.refreshRace();
+      ui.progress('race', { label: t('Fahrt wird vorbereitet…') });
+      const job = { osmWays: osm.list(), doc: effectiveDoc(), model: settings.speedModel, from: q.from, to: q.to };
+      const results = await runRaceJob(job);
+      if (state.race !== race) return; // inzwischen abgebrochen oder neu gestartet
+      ui.progressDone('race');
+      launchRace(race, results);
+      if (race.status === 'empty') ui.toast(t('Keine fahrbare Strecke für die Animation (Strassennetz geladen?).'), 'error', 5000);
+    },
+    raceSetMode(mode) {
+      const r = state.race;
+      if (!r || !RACE_MODES.includes(mode)) return;
+      stopRaceClock();
+      r.mode = mode;
+      if (r.results) launchRace(r, r.results, { title: r.title });
+    },
+    raceSetSpeed(speed) {
+      const r = state.race;
+      if (!r || !RACE_SPEEDS.includes(speed)) return;
+      r.speed = speed;
+      ui.refreshRace();
+    },
+    /** Pause oder weiter; am Ende startet die Fahrt von vorn. */
+    raceToggle() {
+      const r = state.race;
+      if (!r || !r.runners.length) return;
+      if (r.status === 'running') {
+        stopRaceClock();
+        r.status = 'paused';
+      } else {
+        if (r.status === 'done') r.t = 0;
+        r.status = 'running';
+        r.lastTick = null;
+        r.frame = requestAnimationFrame(raceTick);
+      }
+      ui.refreshRace();
+      map.requestRender();
+    },
+    raceRestart() {
+      const r = state.race;
+      if (!r) return;
+      if (r.stale || !r.results) return actions.startRace({ kind: r.kind, id: r.id, mode: r.mode });
+      stopRaceClock();
+      launchRace(r, r.results, { title: r.title });
+      return undefined;
+    },
+    /** Zur Modellzeit springen (Sekunden), z. B. von der Zeitleiste. */
+    raceSeek(seconds) {
+      const r = state.race;
+      if (!r || !r.runners.length) return;
+      r.t = Math.min(r.duration, Math.max(0, Number(seconds) || 0));
+      if (r.status === 'done' && r.t < r.duration) r.status = 'paused';
+      ui.updateRaceClock();
+      map.requestRender();
+    },
+    stopRace() {
+      stopRaceClock();
+      state.race = null;
+      ui.refreshRace();
+      map.requestRender();
     },
     swapRoute() {
       const q = store.doc.route;
@@ -1592,6 +1805,11 @@ async function main() {
       if (tools.hover && !getFeature(d, tools.hover.featureId)) tools.setHover(null);
       if (!getLayer(d, state.activeLayerId)) state.activeLayerId = d.layers[0].id;
       if (state.phaseView && !(d.phases || []).some((ph) => ph.id === state.phaseView)) state.phaseView = null;
+      if (state.race && !state.race.stale) {
+        // Strecke oder Netz haben sich geändert: die laufende Fahrt bleibt, „Neu starten“ rechnet neu
+        state.race.stale = true;
+        ui.refreshRace();
+      }
       map.requestRender();
       ui.refreshAll();
       ensureRouteNetwork();
@@ -1600,22 +1818,40 @@ async function main() {
     scheduleAutosave();
   });
 
+  /** Fortschritt eines Zellen-Speichers in der Statusleiste: Zellen geladen/gesamt, danach eine kurze Meldung. */
+  function trackProgress(id, label, done) {
+    return (info) => {
+      if (info.status === 'loading') ui.progress(id, { label: t(label), done: info.done, total: info.total });
+      else if (info.status === 'ready') ui.progressDone(id, done(info));
+      else if (info.status === 'error') ui.progressDone(id, `${t(label).replace(/…$/, '')}: ${info.error && info.error.message ? info.error.message : t('fehlgeschlagen')}`, 'error');
+    };
+  }
+  const osmProgress = trackProgress('osm', 'Strassennetz laden…', (info) => t('Strassennetz geladen: {n} Strassen.', { n: info.count }));
+  const buildingsProgress = trackProgress('buildings', 'Gebäude laden…', (info) => t('{n} Gebäude geladen.', { n: info.count }));
+  const transitProgress = trackProgress('transit', 'Haltestellen laden…', (info) => t('{n} Haltestellen aus OSM geladen.', { n: info.count }));
+  const parkingProgress = trackProgress('parking', 'Parkplätze laden…', (info) => t('{n} OSM-Parkplätze geladen.', { n: info.count }));
   osm.subscribe((info) => {
     state.snapDirty = true;
     map.requestRender();
     updateOsmStatus(info);
+    osmProgress(info);
     if (info.status !== 'loading') recomputeRoutes();
     ui.refreshRoute();
   });
-  buildings.subscribe(() => {
+  buildings.subscribe((info) => {
+    buildingsProgress(info);
     map.requestRender();
     ui.refreshAnalysis();
   });
-  transit.subscribe(() => {
+  transit.subscribe((info) => {
+    transitProgress(info);
     map.requestRender();
     ui.refreshRoute();
   });
-  parking.subscribe(() => ui.refreshAnalysis());
+  parking.subscribe((info) => {
+    parkingProgress(info);
+    ui.refreshAnalysis();
+  });
 
   map.on('moveend', () => {
     scheduleAutosave();
@@ -1657,6 +1893,12 @@ async function main() {
       if (!multi && f.type === 'road') {
         items.push({ separator: true }, { header: t('Zugang') });
         for (const a of ROAD_ACCESS) items.push({ label: t(a.label), checked: (f.access || 'all') === a.id, action: () => actions.patchFeature(f.id, 'Zugang ändern', (x) => { x.access = a.id; }) });
+      }
+      const groups = new Set(feats.map((x) => x.group).filter(Boolean));
+      if (multi || groups.size) {
+        items.push({ separator: true }, { header: t('Gruppe') });
+        if (multi && !(groups.size === 1 && feats.every((x) => x.group))) items.push({ label: t('Gruppieren'), action: () => actions.groupFeatures(ids) });
+        if (groups.size) items.push({ label: t('Gruppe auflösen'), action: () => actions.ungroupFeatures(ids) });
       }
       if ((doc.phases || []).length) {
         items.push({ separator: true }, { header: t('Etappe') });

@@ -476,6 +476,7 @@ export function createRoad({ layerId, nodes, kind = 'main', name = '', status = 
     parcels: null,
     note: '',
     phase: null,
+    group: null,
   };
 }
 
@@ -515,7 +516,7 @@ export function extendRoad(doc, roadId, latlngs, atEnd = true) {
 }
 
 export function createJunction({ layerId, at, kind = 'plain', name = '', turns = null, lines = [], osmId = null }) {
-  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), lines: normalizeLines(lines), osmId: normalizeOsmId(osmId, kind), note: '', phase: null };
+  return { id: newId('j'), type: 'junction', layerId, name, kind, at: roundCoord(at), turns: normalizeTurns(turns), lines: normalizeLines(lines), osmId: normalizeOsmId(osmId, kind), note: '', phase: null, group: null };
 }
 
 /** OSM-Knoten einer Bushaltestelle (null = selbst gesetzt); andere Punkte haben keinen OSM-Bezug. */
@@ -550,7 +551,7 @@ export function adoptBusRoute(doc, route, layerId) {
 }
 
 export function createZone({ layerId, nodes, kind = 'tempo30', name = '', busAllowed = false }) {
-  return { id: newId('z'), type: 'zone', layerId, name, kind, nodes: nodes.map(roundCoord), busAllowed: busAllowed === true, note: '', phase: null };
+  return { id: newId('z'), type: 'zone', layerId, name, kind, nodes: nodes.map(roundCoord), busAllowed: busAllowed === true, note: '', phase: null, group: null };
 }
 
 export function insertZoneNode(doc, zoneId, afterIndex, latlng) {
@@ -585,6 +586,7 @@ export function createRoundabout({ layerId, center, radius = 15, name = '' }) {
     radius: Math.round(radius * 10) / 10,
     note: '',
     phase: null,
+    group: null,
   };
 }
 
@@ -594,6 +596,7 @@ export function getFeature(doc, id) {
 
 export function removeFeature(doc, id) {
   doc.features = doc.features.filter((f) => f.id !== id);
+  pruneGroups(doc);
 }
 
 /** Punkt um einen Versatz in Mercator-Einheiten verschieben (Form bleibt überall gleich). */
@@ -611,6 +614,54 @@ export function translateFeatures(doc, ids, dx, dy) {
     else if (f.type === 'junction') f.at = shiftLatLng(f.at, dx, dy);
     else if (f.type === 'roundabout') f.center = shiftLatLng(f.center, dx, dy);
   }
+}
+
+// --- Gruppen: Elemente, die immer zusammen ausgewählt und verschoben werden ---------------------
+
+/** IDs aller Elemente einer Gruppe. */
+export function groupMembers(doc, groupId) {
+  if (!groupId) return [];
+  return doc.features.filter((f) => f.group === groupId).map((f) => f.id);
+}
+
+/** Erweitert eine ID-Liste um alle Gruppenmitglieder der genannten Elemente (Reihenfolge bleibt, keine Doppelten). */
+export function expandGroups(doc, ids) {
+  const out = [];
+  const seen = new Set();
+  const push = (id) => { if (!seen.has(id)) { seen.add(id); out.push(id); } };
+  for (const id of ids) {
+    push(id);
+    const f = getFeature(doc, id);
+    if (f && f.group) for (const m of groupMembers(doc, f.group)) push(m);
+  }
+  return out;
+}
+
+/**
+ * Fasst Elemente zu einer Gruppe zusammen; bestehende Gruppen der Mitglieder gehen darin auf.
+ * Liefert die Gruppen-ID oder null bei weniger als zwei Elementen.
+ */
+export function groupFeatures(doc, ids) {
+  const all = expandGroups(doc, ids).map((id) => getFeature(doc, id)).filter(Boolean);
+  if (all.length < 2) return null;
+  const existing = all.map((f) => f.group).filter(Boolean);
+  const gid = existing.length ? existing[0] : newId('g');
+  for (const f of all) f.group = gid;
+  return gid;
+}
+
+/** Löst die Gruppen der genannten Elemente ganz auf (alle Mitglieder werden frei). */
+export function ungroupFeatures(doc, ids) {
+  const gids = new Set(ids.map((id) => getFeature(doc, id)).filter((f) => f && f.group).map((f) => f.group));
+  for (const f of doc.features) if (gids.has(f.group)) f.group = null;
+  return gids.size;
+}
+
+/** Entfernt Gruppen mit nur noch einem Mitglied (nach Löschen). */
+export function pruneGroups(doc) {
+  const count = new Map();
+  for (const f of doc.features) if (f.group) count.set(f.group, (count.get(f.group) || 0) + 1);
+  for (const f of doc.features) if (f.group && count.get(f.group) < 2) f.group = null;
 }
 
 /** IDs der Elemente sichtbarer Ebenen, von denen ein Punkt im Rechteck liegt (Rahmenauswahl). */
@@ -758,7 +809,7 @@ export function normalizeDocument(raw) {
   for (const f of features) {
     if (!f || typeof f !== 'object' || typeof f.id !== 'string') throw new Error('Ungültiges Element');
     const layerId = layerIds.has(f.layerId) ? f.layerId : doc.layers[0].id;
-    const base = { id: f.id, layerId, name: typeof f.name === 'string' ? f.name : '', note: typeof f.note === 'string' ? f.note : '', phase: typeof f.phase === 'string' && phaseIds.has(f.phase) ? f.phase : null };
+    const base = { id: f.id, layerId, name: typeof f.name === 'string' ? f.name : '', note: typeof f.note === 'string' ? f.note : '', phase: typeof f.phase === 'string' && phaseIds.has(f.phase) ? f.phase : null, group: typeof f.group === 'string' && f.group ? f.group.slice(0, 48) : null };
     if (f.type === 'road') {
       if (!Array.isArray(f.nodes) || f.nodes.length < 2 || !f.nodes.every(isLatLng)) {
         throw new Error(`Strasse ${f.id} hat ungültige Punkte`);
@@ -804,6 +855,7 @@ export function normalizeDocument(raw) {
     }
   }
   doc.busLines = normalizeBusLines(raw.busLines, new Set(doc.features.filter((f) => f.type === 'junction').map((f) => f.id)));
+  pruneGroups(doc); // Gruppen mit nur einem Mitglied haben keinen Zweck
   return doc;
 }
 
@@ -847,7 +899,7 @@ export function toGeoJSON(doc) {
   const features = [];
   const layerName = (id) => (getLayer(doc, id) || {}).name || '';
   for (const f of doc.features) {
-    const common = { id: f.id, name: f.name, layer: layerName(f.layerId), note: f.note || '', phase: f.phase ? ((doc.phases || []).find((ph) => ph.id === f.phase) || {}).name || f.phase : null };
+    const common = { id: f.id, name: f.name, layer: layerName(f.layerId), note: f.note || '', phase: f.phase ? ((doc.phases || []).find((ph) => ph.id === f.phase) || {}).name || f.phase : null, group: f.group || null };
     if (f.type === 'road') {
       f.segments.forEach((seg, i) => {
         features.push({
