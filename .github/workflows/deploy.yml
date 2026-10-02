@@ -72,9 +72,15 @@ jobs:
           else
             echo "Hinweis: kein Bucket konfiguriert – Entwürfe liegen auf flüchtigem Speicher."
           fi
+          # Stand vor der Änderung merken, damit der Warte-Schritt den neuen Build und das neue Release erkennt
+          one() { jq -r 'if type=="array" then .[0] else . end | '"$1"' // ""'; }
           if nctl get app "$APP" >/dev/null 2>&1; then
+            echo "BEFORE_BUILD=$(nctl get app "$APP" -o json | one .status.atProvider.latestBuild)" >> "$GITHUB_ENV"
+            echo "BEFORE_RELEASE=$(nctl get app "$APP" -o json | one .status.atProvider.latestRelease)" >> "$GITHUB_ENV"
             nctl update app "$APP" --git-revision="$REVISION" "${BUCKET_FLAGS[@]}"
           else
+            echo "BEFORE_BUILD=" >> "$GITHUB_ENV"
+            echo "BEFORE_RELEASE=" >> "$GITHUB_ENV"
             ENV_FLAGS=(--env=TRUST_PROXY=1 "--env=USER_AGENT=Stadtplaner/1.0 (+https://github.com/${GITHUB_REPOSITORY})")
             if [ -n "$VAPID_SUBJECT" ]; then ENV_FLAGS+=("--env=VAPID_SUBJECT=${VAPID_SUBJECT}"); fi
             nctl create app "$APP" \
@@ -87,17 +93,37 @@ jobs:
               "${ENV_FLAGS[@]}" "${BUCKET_FLAGS[@]}"
           fi
 
-      - name: Wait for the release
+      - name: Wait for build and release
         run: |
+          # Deploio baut zuerst (Build: running -> success|error|imageUploadFailed) und rollt dann aus
+          # (Release: progressing -> available|failure|replicaFailure). Die App nennt in
+          # status.atProvider.latestBuild / latestRelease die jeweils neuesten Namen.
+          one() { jq -r 'if type=="array" then .[0] else . end | '"$1"' // ""'; }
+          RSTAT=""
           for i in $(seq 1 60); do
-            PHASE=$(nctl get app "$APP" -o yaml | awk '/^status:/{s=1} s && /^ +phase:/{print $2; exit}')
-            echo "  phase: ${PHASE:-?} ($i/60)"
-            case "$PHASE" in
-              Running) break ;;
-              Failed|Error) echo "Build oder Release fehlgeschlagen."; nctl logs build -a "$APP" 2>/dev/null | tail -50; exit 1 ;;
-            esac
+            APPJSON=$(nctl get app "$APP" -o json)
+            BUILD=$(echo "$APPJSON" | one .status.atProvider.latestBuild)
+            REL=$(echo "$APPJSON" | one .status.atProvider.latestRelease)
+            BSTAT=""; RSTAT=""
+            [ -n "$BUILD" ] && BSTAT=$(nctl get build "$BUILD" -o json | one .status.atProvider.buildStatus)
+            [ -n "$REL" ] && RSTAT=$(nctl get release "$REL" -o json | one .status.atProvider.releaseStatus)
+            echo "  Build ${BUILD:-?}: ${BSTAT:-?} · Release ${REL:-?}: ${RSTAT:-?} ($i/60)"
+            if [ -n "$BUILD" ] && [ "$BUILD" != "$BEFORE_BUILD" ]; then
+              case "$BSTAT" in
+                error|imageUploadFailed) echo "Build fehlgeschlagen:"; nctl logs build -a "$APP" 2>/dev/null | tail -80; exit 1 ;;
+              esac
+            fi
+            if [ -n "$REL" ] && [ "$REL" != "$BEFORE_RELEASE" ]; then
+              case "$RSTAT" in
+                available) echo "Release $REL läuft."; break ;;
+                failure|replicaFailure) echo "Release fehlgeschlagen:"; nctl logs app "$APP" --type app --since 15m 2>/dev/null | tail -80; exit 1 ;;
+              esac
+            elif [ "$i" -ge 8 ] && [ "$BUILD" = "$BEFORE_BUILD" ] && [ "$RSTAT" = "available" ]; then
+              # Nach zwei Minuten kein neuer Build: Revision war schon ausgerollt
+              echo "Keine neue Version – Revision $REVISION läuft bereits (Release $REL)."; break
+            fi
             sleep 15
           done
-          [ "$PHASE" = "Running" ] || { echo "Zeitüberschreitung (15 min)."; exit 1; }
-          nctl get releases 2>/dev/null | head -5 || true
+          [ "$RSTAT" = "available" ] || { echo "Zeitüberschreitung (15 min) – Stand: Build ${BSTAT:-?}, Release ${RSTAT:-?}."; exit 1; }
+          nctl get releases -a "$APP" 2>/dev/null | head -5 || true
           nctl get app "$APP"
