@@ -101,7 +101,9 @@ jobs:
           if nctl get app "$APP" >/dev/null 2>&1; then
             echo "BEFORE_BUILD=$(nctl get app "$APP" -o json | one .status.atProvider.latestBuild)" >> "$GITHUB_ENV"
             echo "BEFORE_RELEASE=$(nctl get app "$APP" -o json | one .status.atProvider.latestRelease)" >> "$GITHUB_ENV"
-            run_nctl update app "$APP" --git-revision="$REVISION" "${BUCKET_FLAGS[@]}"
+            # --skip-repo-access-check: ohne neue Zugangsdaten liest nctl beim Update sonst ein Auth-Secret
+            # mit dem App-Namen, das es für ein öffentliches Repo nicht gibt („secrets \"main\" not found“)
+            run_nctl update app "$APP" --git-revision="$REVISION" --skip-repo-access-check "${BUCKET_FLAGS[@]}"
           else
             echo "BEFORE_BUILD=" >> "$GITHUB_ENV"
             echo "BEFORE_RELEASE=" >> "$GITHUB_ENV"
