@@ -69,14 +69,29 @@ jobs:
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
           echo "APP=$APP" >> "$GITHUB_ENV"
           echo "Projekt $PROJECT, App $APP, Revision $REVISION"
+          # Projekt vorhanden? (Service-Accounts dürfen das nicht immer abfragen, darum nur ein Hinweis)
+          if ! nctl get projects "$PROJECT" >/dev/null 2>&1; then
+            echo "::warning title=Deploio-Projekt::Projekt '$PROJECT' konnte nicht abgefragt werden. Falls der nächste Schritt scheitert: Variable DEPLOIO_PROJECT auf den echten Projektnamen setzen (nctl auth whoami zeigt ihn) oder 'nctl create project $PROJECT' ausführen."
+          fi
 
       - name: Create app on first run, otherwise set the new revision
         run: |
-          # Bucket-Variablen (falls hinterlegt) bei jedem Lauf angleichen; Schlüssel als sensitive env
+          # nctl-Fehler als Annotation am Check zeigen (das Log-Archiv ist nicht überall erreichbar)
+          run_nctl() {
+            local out
+            if ! out=$(nctl "$@" 2>&1); then
+              printf '%s\n' "$out"
+              echo "::error title=nctl $1 $2 fehlgeschlagen::$(printf '%s' "$out" | tail -n 15 | tr '\n' ' ' | cut -c1-900)"
+              return 1
+            fi
+            printf '%s\n' "$out"
+          }
+          # Bucket-Variablen (falls hinterlegt) bei jedem Lauf angleichen; Schlüssel als sensitive env, je ein Flag
           BUCKET_FLAGS=()
           if [ -n "$S3_BUCKET" ] && [ -n "$S3_ENDPOINT" ] && [ -n "$S3_ACCESS_KEY" ] && [ -n "$S3_SECRET_KEY" ]; then
-            BUCKET_FLAGS+=("--env=S3_BUCKET=${S3_BUCKET};S3_ENDPOINT=${S3_ENDPOINT}${S3_PREFIX:+;S3_PREFIX=${S3_PREFIX}}")
-            BUCKET_FLAGS+=("--sensitive-env=S3_ACCESS_KEY=${S3_ACCESS_KEY};S3_SECRET_KEY=${S3_SECRET_KEY}")
+            BUCKET_FLAGS+=("--env=S3_BUCKET=${S3_BUCKET}" "--env=S3_ENDPOINT=${S3_ENDPOINT}")
+            if [ -n "$S3_PREFIX" ]; then BUCKET_FLAGS+=("--env=S3_PREFIX=${S3_PREFIX}"); fi
+            BUCKET_FLAGS+=("--sensitive-env=S3_ACCESS_KEY=${S3_ACCESS_KEY}" "--sensitive-env=S3_SECRET_KEY=${S3_SECRET_KEY}")
             echo "Ablage: Bucket $S3_BUCKET ($S3_ENDPOINT)"
           else
             echo "Hinweis: kein Bucket konfiguriert – Entwürfe liegen auf flüchtigem Speicher."
@@ -86,13 +101,13 @@ jobs:
           if nctl get app "$APP" >/dev/null 2>&1; then
             echo "BEFORE_BUILD=$(nctl get app "$APP" -o json | one .status.atProvider.latestBuild)" >> "$GITHUB_ENV"
             echo "BEFORE_RELEASE=$(nctl get app "$APP" -o json | one .status.atProvider.latestRelease)" >> "$GITHUB_ENV"
-            nctl update app "$APP" --git-revision="$REVISION" "${BUCKET_FLAGS[@]}"
+            run_nctl update app "$APP" --git-revision="$REVISION" "${BUCKET_FLAGS[@]}"
           else
             echo "BEFORE_BUILD=" >> "$GITHUB_ENV"
             echo "BEFORE_RELEASE=" >> "$GITHUB_ENV"
             ENV_FLAGS=(--env=TRUST_PROXY=1 "--env=USER_AGENT=Stadtplaner/1.0 (+https://github.com/${GITHUB_REPOSITORY})")
             if [ -n "$VAPID_SUBJECT" ]; then ENV_FLAGS+=("--env=VAPID_SUBJECT=${VAPID_SUBJECT}"); fi
-            nctl create app "$APP" \
+            run_nctl create app "$APP" \
               --git-url="https://github.com/${GITHUB_REPOSITORY}.git" \
               --git-revision="$REVISION" \
               --dockerfile \
