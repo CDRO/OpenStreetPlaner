@@ -46,9 +46,23 @@ async function waitFor(url, tries = 50) {
     const base = `http://127.0.0.1:${port}/`;
     await waitFor(base + 'healthz');
     const files = process.env.ONLY ? process.env.ONLY.split(',') : ['basics.test.cjs', 'osm-editing.test.cjs', 'ux.test.cjs', 'roads.test.cjs', 'analysis.test.cjs', 'dossier.test.cjs', 'reach.test.cjs', 'plan.test.cjs', 'lang.test.cjs', 'bus.test.cjs', 'edit.test.cjs', 'theme.test.cjs', 'offline.test.cjs', 'race.test.cjs', 'merge.test.cjs'];
+    const ci = !!process.env.GITHUB_ACTIONS;
     for (const file of files) {
-      const r = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: 'inherit', env: { ...process.env, BASE_URL: base } });
-      if (r.status !== 0) failed = true;
+      if (ci) console.log(`::group::${file}`);
+      // Ausgabe durchreichen, aber behalten: in der CI landet die Fehlstelle als Annotation am Check,
+      // die auch ohne Zugriff auf das Log-Archiv lesbar ist.
+      const r = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', env: { ...process.env, BASE_URL: base } });
+      process.stdout.write(r.stdout || '');
+      process.stderr.write(r.stderr || '');
+      if (ci) console.log('::endgroup::');
+      if (r.status !== 0) {
+        failed = true;
+        if (ci) {
+          const lines = `${r.stdout || ''}\n${r.stderr || ''}`.split('\n').map((l) => l.trim()).filter((l) => l && !/^\d{4}\/\d{2}\/\d{2} /.test(l));
+          const tail = lines.slice(-12).join(' | ').replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+          console.log(`::error file=web/tests/browser/${file},title=Browser-Test ${file} fehlgeschlagen::${tail}`);
+        }
+      }
     }
   } finally {
     server.kill('SIGTERM');

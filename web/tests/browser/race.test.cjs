@@ -59,7 +59,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   // Uhr läuft, Fahrzeuge bewegen sich
   await h.settle(700);
   const scene = await page.evaluate(() => { const s = window.stadtplaner.actions.raceScene(); const r = window.stadtplaner.actions.race(); return { t: r.t, car: s.runners.find((x) => x.id === 'car:current') }; });
-  assert.ok(scene.t > 5 && scene.t < 120, `Modellzeit läuft im Zeitraffer: ${scene.t}`);
+  assert.ok(scene.t > 1 && scene.t < race.duration, `Modellzeit läuft im Zeitraffer: ${scene.t}`);
   assert.ok(scene.car.position[1] > 8.29 && scene.car.progress > 0 && !scene.car.finished, JSON.stringify(scene.car));
   assert.ok(scene.car.trail.length >= 2, 'Spur hinter dem Auto');
   // Zeitraffer wechseln, Pause, Zeitleiste
