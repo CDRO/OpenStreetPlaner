@@ -1,0 +1,98 @@
+# Release aus der Commit-Nachricht: ein Commit auf main, dessen Betreff mit „Release vX.Y.Z“ beginnt
+# (z. B. ein leerer Commit), wird geprüft, als annotierter Tag vX.Y.Z gesetzt und als GitHub-Release
+# veröffentlicht; danach rollt deploy.yml diese Revision auf Deploio aus (sofern die Secrets gesetzt sind).
+#
+#   git commit --allow-empty -m "Release v2.4.0" && git push
+#
+# Hintergrund: der Git-Proxy von Claude Code im Web erlaubt nur Branch-Pushes, keine Tags. So kann auch
+# eine Cloud-Sitzung eine Version auslösen. Ein bestehender Tag lässt den Lauf absichtlich scheitern.
+name: Release from commit message
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      deploy: ${{ steps.secrets.outputs.deploy }}
+    steps:
+      - name: Version aus dem Commit-Betreff lesen
+        id: parse
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          v=$(printf '%s\n' "$MSG" | head -n 1 | sed -nE 's/^[Rr]elease[: ]+v?([0-9]+\.[0-9]+\.[0-9]+)([^0-9A-Za-z].*)?$/\1/p')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ -n "$v" ]; then echo "Release v$v"; else echo "Kein Release-Commit (Betreff beginnt nicht mit „Release vX.Y.Z“)."; fi
+      - name: Deploio-Secrets vorhanden?
+        id: secrets
+        env:
+          A: ${{ secrets.NCTL_API_CLIENT_ID }}
+          B: ${{ secrets.NCTL_API_CLIENT_SECRET }}
+          C: ${{ secrets.NCTL_ORGANIZATION }}
+        run: |
+          if [ -n "$A" ] && [ -n "$B" ] && [ -n "$C" ]; then echo "deploy=true" >> "$GITHUB_OUTPUT"; else echo "deploy=false" >> "$GITHUB_OUTPUT"; echo "Ohne NCTL-Secrets wird nur getaggt, nicht ausgerollt."; fi
+
+  check:
+    needs: version
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Go
+        run: test -z "$(gofmt -l .)" && go vet ./... && go test ./...
+      - name: Frontend
+        run: node --test web/tests/*.test.mjs
+
+  tag:
+    needs: [version, check]
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    env:
+      TAG: v${{ needs.version.outputs.version }}
+      MSG: ${{ github.event.head_commit.message }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag setzen
+        run: |
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "Tag $TAG existiert schon – Versionsnummer im Commit-Betreff erhöhen."; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$GITHUB_SHA" -m "$MSG"
+          git push origin "refs/tags/$TAG"
+          echo "Tag $TAG auf $GITHUB_SHA gesetzt."
+      - name: GitHub-Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Notizen: Commit-Text nach der ersten Zeile, dazu die automatisch erzeugte Änderungsliste
+          body=$(printf '%s\n' "$MSG" | tail -n +2 | sed '/./,$!d')
+          if [ -n "$body" ]; then
+            gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" --notes "$body" --generate-notes
+          else
+            gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" --generate-notes
+          fi
+
+  deploy:
+    needs: [version, tag]
+    if: needs.version.outputs.version != '' && needs.version.outputs.deploy == 'true'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      revision: v${{ needs.version.outputs.version }}
+    secrets: inherit

@@ -320,6 +320,24 @@ Was Deploio braucht:
 | Zugangsdaten für `nctl` ohne Browser | API-Service-Account: `NCTL_API_CLIENT_ID`, `NCTL_API_CLIENT_SECRET`, `NCTL_ORGANIZATION`, dann `nctl auth login` |
 | Netzfreigaben (Claude Code im Web) | `github.com`/`objects.githubusercontent.com` (nctl-Download), `nineapis.ch`, `auth.nine.ch`, `git-info.deplo.io` |
 
+### Version aus der Commit-Nachricht: taggen und ausrollen
+
+Ein Commit auf `main`, dessen Betreff mit `Release vX.Y.Z` beginnt, löst `.github/workflows/release.yml`
+aus: Go- und Frontend-Tests laufen, der Workflow setzt den annotierten Tag `vX.Y.Z` auf diesen
+Commit, veröffentlicht eine GitHub-Release (Notizen aus dem Commit-Text plus automatische
+Änderungsliste) und ruft danach den Deploy direkt auf, sofern die NCTL-Secrets gesetzt sind.
+Ein bestehender Tag lässt den Lauf scheitern. So reicht ein leerer Commit, auch aus einer
+Cloud-Sitzung, deren Git-Proxy nur Branches, aber keine Tags pushen darf:
+
+```bash
+git commit --allow-empty -m "Release v2.4.0" -m "Was neu ist …"
+git push
+```
+
+Hinweis: Tags und Releases, die eine Action mit dem Standard-Token anlegt, lösen keine weiteren
+Workflows aus; darum ruft `release.yml` den Deploy als wiederverwendbaren Workflow auf, statt auf
+das Release-Ereignis zu warten.
+
 ### Automatisch ausrollen bei jeder Release
 
 Der Workflow `.github/workflows/deploy.yml` übergibt bei jeder **veröffentlichten GitHub-Release**

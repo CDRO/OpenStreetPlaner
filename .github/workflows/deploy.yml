@@ -1,6 +1,7 @@
 # Deployment auf Deploio (nine.ch PaaS): jede veröffentlichte GitHub-Release (Tag auf main)
 # wird als Revision an die Deploio-App übergeben; Deploio baut das Dockerfile und rollt aus.
-# Manuell über „Run workflow“ mit beliebiger Revision (Tag, Branch oder Commit).
+# Manuell über „Run workflow“ mit beliebiger Revision (Tag, Branch oder Commit), und aus
+# release.yml heraus, wenn ein Commit „Release vX.Y.Z“ auf main getaggt wurde.
 #
 # Voraussetzungen (einmalig, siehe README „Deployment auf Deploio“):
 #   Secrets:   NCTL_API_CLIENT_ID, NCTL_API_CLIENT_SECRET, NCTL_ORGANIZATION
@@ -20,6 +21,14 @@ on:
         description: "Git-Revision (Tag, Branch oder Commit)"
         required: false
         default: "main"
+  # Aufruf aus release.yml: Tags und Releases, die eine Action mit GITHUB_TOKEN anlegt, lösen
+  # kein release-Ereignis aus – darum ruft der Release-Workflow den Deploy direkt auf.
+  workflow_call:
+    inputs:
+      revision:
+        description: "Git-Revision (Tag), die ausgerollt wird"
+        required: true
+        type: string
 
 concurrency:
   group: deploio-${{ github.ref }}
