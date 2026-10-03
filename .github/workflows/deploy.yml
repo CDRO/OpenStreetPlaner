@@ -69,10 +69,6 @@ jobs:
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
           echo "APP=$APP" >> "$GITHUB_ENV"
           echo "Projekt $PROJECT, App $APP, Revision $REVISION"
-          # Projekt vorhanden? (Service-Accounts dürfen das nicht immer abfragen, darum nur ein Hinweis)
-          if ! nctl get projects "$PROJECT" >/dev/null 2>&1; then
-            echo "::warning title=Deploio-Projekt::Projekt '$PROJECT' konnte nicht abgefragt werden. Falls der nächste Schritt scheitert: Variable DEPLOIO_PROJECT auf den echten Projektnamen setzen (nctl auth whoami zeigt ihn) oder 'nctl create project $PROJECT' ausführen."
-          fi
 
       - name: Create app on first run, otherwise set the new revision
         run: |
@@ -81,7 +77,9 @@ jobs:
             local out
             if ! out=$(nctl "$@" 2>&1); then
               printf '%s\n' "$out"
-              echo "::error title=nctl $1 $2 fehlgeschlagen::$(printf '%s' "$out" | tail -n 15 | tr '\n' ' ' | cut -c1-900)"
+              hint=""
+              if [ "$1" = "create" ]; then hint=" – Falls das Projekt fehlt: Variable DEPLOIO_PROJECT auf den echten Projektnamen setzen (nctl auth whoami) oder 'nctl create project $PROJECT' ausführen."; fi
+              echo "::error title=nctl $1 $2 fehlgeschlagen::$(printf '%s' "$out" | tail -n 15 | tr '\n' ' ' | cut -c1-800)$hint"
               return 1
             fi
             printf '%s\n' "$out"
