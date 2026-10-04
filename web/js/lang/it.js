@@ -879,7 +879,6 @@ export const it = {
   "Die Strassen hängen an den Enden nicht zusammen (bis 10 m Abstand).": "Le strade non si congiungono alle estremità (fino a 10 m di distanza).",
   "Mindestens zwei Elemente auswählen.": "Selezionare almeno due elementi.",
   "Dieser Entwurf wird am {date} gelöscht, falls er bis dahin nicht erneut gespeichert wird.": "Questa bozza sarà eliminata il {date} se non viene salvata di nuovo entro allora.",
-  "Dieser Server verschickt keine Erinnerungen per E-Mail – lade rechtzeitig eine Sicherung herunter.": "Questo server non invia promemoria via e-mail – scarica per tempo una copia di sicurezza.",
   "E-Mail für eine Erinnerung zur Sicherung, einen Monat und eine Woche vor dem Löschen (leer = keine)": "E-mail per un promemoria di salvataggio, un mese e una settimana prima dell’eliminazione (vuoto = nessuno)",
   "Entwürfe werden {days} Tage nach dem letzten Speichern gelöscht.": "Le bozze vengono eliminate {days} giorni dopo l’ultimo salvataggio.",
   "Erinnerung entfernt.": "Promemoria rimosso.",

@@ -1613,14 +1613,13 @@ export class UI {
       return;
     }
     let html = `<p class="muted small" id="lifecycle-expiry">${t('Entwürfe werden {days} Tage nach dem letzten Speichern gelöscht.', { days: lc.retentionDays })}${lc.expiresAt ? ` ${t('Dieser Entwurf wird am {date} gelöscht, falls er bis dahin nicht erneut gespeichert wird.', { date: esc(fmtDay(lc.expiresAt)) })}` : ''}</p>`;
-    if (actions.canEdit()) {
+    // Die E-Mail-Erinnerung gibt es nur, wenn der Server SMTP konfiguriert hat (Meta-Tag stadtplaner-config)
+    if (actions.canEdit() && lc.mail) {
       const r = lc.reminder;
       if (!r) {
-        actions.loadReminder().then(() => this.renderLifecycle());
+        actions.loadReminder().then((loaded) => { if (loaded) this.renderLifecycle(); });
       } else if (r.error) {
         html += `<p class="muted small">${t('Erinnerung konnte nicht geladen werden')}: ${esc(r.error)}</p>`;
-      } else if (!r.mailEnabled) {
-        html += `<p class="muted small">${t('Dieser Server verschickt keine Erinnerungen per E-Mail – lade rechtzeitig eine Sicherung herunter.')}</p>`;
       } else {
         html += `
         <label class="small" for="reminder-email">${t('E-Mail für eine Erinnerung zur Sicherung, einen Monat und eine Woche vor dem Löschen (leer = keine)')}</label>

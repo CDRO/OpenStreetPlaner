@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -34,7 +35,10 @@ const (
 
 type Server struct {
 	shellFiles   []string
-	shellVersion string
+	shellVersion string // Hash der Schalen-Dateien und der Server-Konfiguration (ETag, SW-Cache)
+	shellBase    string // Hash der Schalen-Dateien allein
+	indexSrc     []byte // index.html mit Platzhalter __CONFIG__
+	swSrc        []byte // sw.js mit Platzhalter __SHELL_VERSION__
 	store        *store.Store
 	osm          *osm.Client
 	index        []byte
@@ -71,14 +75,35 @@ func New(st *store.Store, osmClient *osm.Client, webFS fs.FS, logger *log.Logger
 	if logger == nil {
 		logger = log.Default()
 	}
-	shellFiles, shellVersion := shellManifest(sub)
-	if sw != nil {
-		sw = bytes.ReplaceAll(sw, []byte("__SHELL_VERSION__"), []byte(shellVersion))
-	}
-	s := &Server{store: st, osm: osmClient, index: index, sw: sw, logger: logger, mux: http.NewServeMux(), broker: newBroker(), shellFiles: shellFiles, shellVersion: shellVersion}
+	shellFiles, shellBase := shellManifest(sub)
+	s := &Server{store: st, osm: osmClient, indexSrc: index, swSrc: sw, logger: logger, mux: http.NewServeMux(), broker: newBroker(), shellFiles: shellFiles, shellBase: shellBase}
+	s.applyConfig()
 	s.static = http.StripPrefix("/static/", http.FileServerFS(sub))
 	s.routes()
 	return s, nil
+}
+
+// clientConfig ist das, was die Oberfläche über den Server wissen muss, bevor sie etwas anbietet:
+// ob Erinnerungen per E-Mail möglich sind (SMTP konfiguriert) und wie lange Entwürfe aufbewahrt werden.
+func (s *Server) clientConfig() map[string]any {
+	retentionDays := 0
+	if s.lifecycle.Retention > 0 {
+		retentionDays = int(s.lifecycle.Retention.Hours() / 24)
+	}
+	return map[string]any{"mail": s.lifecycle.Mailer != nil, "retentionDays": retentionDays}
+}
+
+// applyConfig schreibt die Server-Konfiguration in die Startseite (Meta-Tag stadtplaner-config) und
+// leitet die Schalen-Version aus Dateien und Konfiguration ab, damit ETag und Service-Worker-Cache
+// auch dann wechseln, wenn sich nur die Konfiguration ändert (z. B. SMTP nachträglich gesetzt).
+func (s *Server) applyConfig() {
+	cfg, _ := json.Marshal(s.clientConfig())
+	h := sha256.Sum256(append([]byte(s.shellBase), cfg...))
+	s.shellVersion = hex.EncodeToString(h[:])[:16]
+	s.index = bytes.Replace(s.indexSrc, []byte(`content="__CONFIG__"`), []byte(`content="`+html.EscapeString(string(cfg))+`"`), 1)
+	if s.swSrc != nil {
+		s.sw = bytes.ReplaceAll(s.swSrc, []byte("__SHELL_VERSION__"), []byte(s.shellVersion))
+	}
 }
 
 // SetPush aktiviert Web-Push-Benachrichtigungen (nil schaltet sie aus).
@@ -229,7 +254,7 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrUnauthorized):
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, model.ErrInvalid), errors.Is(err, osm.ErrBadRequest), errors.Is(err, store.ErrBadComment),
-		errors.Is(err, store.ErrBadEmail), errors.Is(err, store.ErrBadBackup):
+		errors.Is(err, store.ErrBadEmail), errors.Is(err, store.ErrBadBackup), errors.Is(err, ErrMailDisabled):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, store.ErrCommentLimit), errors.Is(err, store.ErrConflict):
 		status, msg = http.StatusConflict, err.Error()

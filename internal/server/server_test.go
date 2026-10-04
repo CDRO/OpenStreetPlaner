@@ -29,7 +29,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *osm.Client) {
 		t.Fatal(err)
 	}
 	web := fstest.MapFS{
-		"web/index.html":  {Data: []byte("<!doctype html><title>Stadtplaner</title>")},
+		"web/index.html":  {Data: []byte(`<!doctype html><title>Stadtplaner</title><meta name="stadtplaner-config" content="__CONFIG__">`)},
 		"web/css/app.css": {Data: []byte("body{}")},
 		"web/js/app.js":   {Data: []byte("// app")},
 		"web/sw.js":       {Data: []byte("const V = '__SHELL_VERSION__'; self.addEventListener('push', () => {});")},

@@ -31,10 +31,18 @@ type Lifecycle struct {
 	PublicURL string          // Basis für Links in Erinnerungen, z. B. https://plan.example.ch
 }
 
+// ErrMailDisabled: ohne SMTP nimmt der Server keine Adresse an; die Oberfläche bietet das Feld dann gar nicht an.
+var ErrMailDisabled = errors.New("dieser Server verschickt keine E-Mails")
+
 // SetLifecycle schaltet Aufbewahrung und Erinnerungen ein; Retention 0 schaltet beides aus.
+// Vor dem ersten Request aufrufen: die Konfiguration landet in der Startseite.
 func (s *Server) SetLifecycle(lc Lifecycle) {
 	lc.PublicURL = strings.TrimRight(strings.TrimSpace(lc.PublicURL), "/")
+	if lc.Retention <= 0 {
+		lc.Mailer = nil
+	}
 	s.lifecycle = lc
+	s.applyConfig()
 }
 
 // StartSweeper lässt den Aufräum-Lauf im Hintergrund laufen, bis ctx endet.
@@ -147,6 +155,10 @@ func (s *Server) setReminder(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, errors.Join(model.ErrInvalid, errors.New("Anfrage ist kein gültiges JSON")))
+		return
+	}
+	if s.lifecycle.Mailer == nil && strings.TrimSpace(body.Email) != "" {
+		writeError(w, ErrMailDisabled)
 		return
 	}
 	m, err := s.store.SetReminder(id, r.Header.Get(editTokenHeader), body.Email)

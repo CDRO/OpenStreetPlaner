@@ -26,7 +26,8 @@ func (f *fakeMailer) Send(to, subject, body string) error {
 
 func TestReminderEndpoints(t *testing.T) {
 	ts, _ := newTestServer(t)
-	lastServer.SetLifecycle(Lifecycle{Retention: 365 * 24 * time.Hour, Reminders: []time.Duration{30 * 24 * time.Hour, 7 * 24 * time.Hour}, PublicURL: "https://plan.example.ch/"})
+	mailer := &fakeMailer{}
+	lastServer.SetLifecycle(Lifecycle{Retention: 365 * 24 * time.Hour, Reminders: []time.Duration{30 * 24 * time.Hour, 7 * 24 * time.Hour}, PublicURL: "https://plan.example.ch/", Mailer: mailer})
 	_, out := call(t, "POST", ts.URL+"/api/drafts", map[string]any{"doc": sampleDoc()}, nil)
 	id := out["id"].(string)
 	token := out["editToken"].(string)
@@ -41,7 +42,7 @@ func TestReminderEndpoints(t *testing.T) {
 		t.Fatalf("Reminder ohne Token: %d", res.StatusCode)
 	}
 	res, out = call(t, "GET", ts.URL+"/api/drafts/"+id+"/reminder", nil, auth)
-	if res.StatusCode != 200 || out["email"] != "" || out["mailEnabled"] != false || out["retentionDays"].(float64) != 365 {
+	if res.StatusCode != 200 || out["email"] != "" || out["mailEnabled"] != true || out["retentionDays"].(float64) != 365 {
 		t.Fatalf("Reminder leer: %d %+v", res.StatusCode, out)
 	}
 	res, out = call(t, "PUT", ts.URL+"/api/drafts/"+id+"/reminder", map[string]any{"email": "nicht-gueltig"}, auth)
@@ -62,8 +63,6 @@ func TestReminderEndpoints(t *testing.T) {
 	}
 
 	// Aufräum-Lauf: Entwurf künstlich altern lassen, dann muss eine Mail mit Link rausgehen
-	mailer := &fakeMailer{}
-	lastServer.lifecycle.Mailer = mailer
 	ageDraft(t, lastServer.store, id, 340)
 	resSweep := lastServer.Sweep(time.Now())
 	if len(resSweep.Reminded) != 1 || len(mailer.sent) != 1 {
@@ -85,12 +84,72 @@ func TestReminderEndpoints(t *testing.T) {
 		t.Fatalf("nach Löschen: %d", res.StatusCode)
 	}
 
-	// Ohne Aufbewahrung: keine Ablaufangaben
-	lastServer.SetLifecycle(Lifecycle{})
+	// Ohne SMTP: Adresse wird nicht angenommen (die Oberfläche bietet das Feld dann gar nicht an), leer geht
+	lastServer.SetLifecycle(Lifecycle{Retention: 365 * 24 * time.Hour})
+	_, out = call(t, "POST", ts.URL+"/api/drafts", map[string]any{"doc": sampleDoc()}, nil)
+	id2, auth2 := out["id"].(string), map[string]string{"X-Edit-Token": out["editToken"].(string)}
+	res, out = call(t, "PUT", ts.URL+"/api/drafts/"+id2+"/reminder", map[string]any{"email": "x@y.ch"}, auth2)
+	if res.StatusCode != 400 || out["error"] != ErrMailDisabled.Error() {
+		t.Fatalf("Adresse ohne SMTP angenommen: %d %+v", res.StatusCode, out)
+	}
+	res, out = call(t, "PUT", ts.URL+"/api/drafts/"+id2+"/reminder", map[string]any{"email": ""}, auth2)
+	if res.StatusCode != 200 || out["mailEnabled"] != false {
+		t.Fatalf("leere Adresse ohne SMTP: %d %+v", res.StatusCode, out)
+	}
+
+	// Ohne Aufbewahrung: keine Ablaufangaben, und ein Mailer bleibt ohne Wirkung
+	lastServer.SetLifecycle(Lifecycle{Mailer: mailer})
 	_, out = call(t, "POST", ts.URL+"/api/drafts", map[string]any{"doc": sampleDoc()}, nil)
 	_, out = call(t, "GET", ts.URL+"/api/drafts/"+out["id"].(string), nil, nil)
 	if out["expiresAt"] != nil || out["retentionDays"].(float64) != 0 {
 		t.Fatalf("Ablauf trotz Retention 0: %+v", out)
+	}
+	if lastServer.lifecycle.Mailer != nil {
+		t.Fatalf("Mailer ohne Aufbewahrung muss aus sein")
+	}
+}
+
+// Die Oberfläche bietet die E-Mail-Erinnerung nur an, wenn der Server sie kann: die Konfiguration
+// steht fest in der Startseite, und die Schalen-Version wechselt mit ihr (kein veraltetes 304).
+func TestServerConfigInPage(t *testing.T) {
+	ts, _ := newTestServer(t)
+	page := func() (string, string) {
+		res, err := http.Get(ts.URL + "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		return string(body), res.Header.Get("ETag")
+	}
+	body, etag := page()
+	if !strings.Contains(body, `name="stadtplaner-config" content="{&#34;mail&#34;:false,&#34;retentionDays&#34;:0}"`) || strings.Contains(body, "__CONFIG__") {
+		t.Fatalf("Standard-Konfiguration fehlt: %s", body)
+	}
+	lastServer.SetLifecycle(Lifecycle{Retention: 365 * 24 * time.Hour, Mailer: &fakeMailer{}})
+	body2, etag2 := page()
+	if !strings.Contains(body2, `content="{&#34;mail&#34;:true,&#34;retentionDays&#34;:365}"`) {
+		t.Fatalf("Konfiguration nicht eingesetzt: %s", body2)
+	}
+	if etag2 == etag || etag2 == "" {
+		t.Fatalf("ETag muss mit der Konfiguration wechseln: %q %q", etag, etag2)
+	}
+	_, shell := call(t, "GET", ts.URL+"/api/shell", nil, nil)
+	if `"`+shell["version"].(string)+`"` != etag2 {
+		t.Fatalf("Schalen-Version %v passt nicht zum ETag %q", shell["version"], etag2)
+	}
+	res, err := http.Get(ts.URL + "/sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(sw), shell["version"].(string)) {
+		t.Fatalf("Service Worker trägt nicht die neue Version")
+	}
+	lastServer.SetLifecycle(Lifecycle{Retention: 365 * 24 * time.Hour})
+	if body3, _ := page(); !strings.Contains(body3, `&#34;mail&#34;:false`) {
+		t.Fatalf("ohne Mailer muss mail=false stehen: %s", body3)
 	}
 }
 

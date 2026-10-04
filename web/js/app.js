@@ -55,6 +55,17 @@ const safeFilename = (name) => (name || 'entwurf')
   .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
   .replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'entwurf';
 
+/** Server-Konfiguration aus dem Meta-Tag, das der Server beim Start füllt (E-Mail möglich? Aufbewahrung?). */
+function readServerConfig() {
+  try {
+    const meta = document.querySelector('meta[name="stadtplaner-config"]');
+    const cfg = meta && meta.content && meta.content !== '__CONFIG__' ? JSON.parse(meta.content) : {};
+    return { mail: !!cfg.mail, retentionDays: Number(cfg.retentionDays) || 0 };
+  } catch {
+    return { mail: false, retentionDays: 0 };
+  }
+}
+
 function parseLocation() {
   const m = /^\/d\/([0-9a-z]{6,32})\/?$/.exec(location.pathname);
   const id = m ? m[1] : null;
@@ -79,7 +90,8 @@ async function main() {
     serverUpdatedAt: null,
     expiresAt: null, // Lebenszyklus: wann der Server den Entwurf löscht (null = nie)
     retentionDays: 0,
-    reminder: null, // { email, mailEnabled } vom Server, nur für Besitzer
+    reminder: null, // { email } vom Server, nur für Besitzer und nur wenn der Server E-Mails verschickt
+    server: readServerConfig(), // { mail, retentionDays }: ohne SMTP wird die Erinnerung gar nicht angeboten
     activeLayerId: null,
     defaultRoadKind: 'main',
     snapIndex: null,
@@ -1193,22 +1205,22 @@ async function main() {
       download(`${safeFilename(store.doc.name)}.stadtplaner.json`, JSON.stringify(store.doc, null, 2));
     },
     // --- Lebenszyklus: Ablauf, Erinnerung per E-Mail, Sicherung -------------------
-    lifecycle: () => ({ expiresAt: state.expiresAt, retentionDays: state.retentionDays, reminder: state.reminder }),
+    lifecycle: () => ({ expiresAt: state.expiresAt, retentionDays: state.retentionDays, reminder: state.reminder, mail: state.server.mail }),
     async loadReminder() {
-      if (!state.id || !state.token || state.reminder) return state.reminder;
+      if (!state.id || !state.token || !state.server.mail || state.reminder) return state.reminder;
       try {
         const res = await api.reminder(state.id, state.token);
-        state.reminder = { email: res.email || '', mailEnabled: !!res.mailEnabled };
+        state.reminder = { email: res.email || '' };
         applyLifecycle(res);
       } catch (e) {
-        state.reminder = { email: '', mailEnabled: false, error: e.message };
+        state.reminder = { email: '', error: e.message };
       }
       return state.reminder;
     },
     async setReminderEmail(email) {
       if (!state.id || !state.token) throw new Error(t('Entwurf ist nicht gespeichert'));
       const res = await api.setReminder(state.id, state.token, (email || '').trim());
-      state.reminder = { email: res.email || '', mailEnabled: !!res.mailEnabled };
+      state.reminder = { email: res.email || '' };
       applyLifecycle(res);
       ui.toast(res.email ? t('Erinnerung geht an {email}.', { email: res.email }) : t('Erinnerung entfernt.'), 'ok');
       return state.reminder;

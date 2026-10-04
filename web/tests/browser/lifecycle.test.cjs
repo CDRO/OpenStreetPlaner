@@ -34,7 +34,9 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok(/gelöscht/.test(expiry), 'Ablaufdatum genannt');
   console.log('✓ Ablaufhinweis nach dem Speichern');
 
-  // E-Mail hinterlegen (der Testserver hat SMTP konfiguriert, verschickt aber nichts)
+  // E-Mail hinterlegen (der Testserver hat SMTP konfiguriert, verschickt aber nichts); die Seite trägt die Konfiguration
+  const config = await page.evaluate(() => JSON.parse(document.querySelector('meta[name="stadtplaner-config"]').content));
+  assert.deepEqual(config, { mail: true, retentionDays: 365 });
   await page.waitForSelector('#reminder-email');
   await page.fill('#reminder-email', 'kein-mail');
   await page.click('#reminder-save');

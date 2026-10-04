@@ -121,7 +121,7 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 | `RETENTION_DAYS` | `365` | Entwürfe, die so viele Tage nicht gespeichert wurden, werden gelöscht; `0` schaltet das Löschen (und die Erinnerungen) ab |
 | `REMINDER_DAYS` | `30,7` | So viele Tage vor dem Löschen geht je eine Erinnerung an die hinterlegte Adresse (je Stand einmal) |
 | `PUBLIC_URL` | leer | Öffentliche Adresse der App für die Links in Erinnerungen, z. B. `https://plan.example.ch` |
-| `SMTP_HOST` | leer | SMTP-Server für Erinnerungen; leer = keine E-Mails (das Feld fehlt dann in der Oberfläche) |
+| `SMTP_HOST` | leer | SMTP-Server für Erinnerungen; leer = keine E-Mails. Der Server schreibt beim Start in die Startseite (`<meta name="stadtplaner-config">`), ob E-Mails möglich sind; ohne SMTP bietet die Oberfläche die Erinnerung gar nicht an und die API nimmt keine Adresse an |
 | `SMTP_PORT` | `587` | `587`/`25` mit STARTTLS, `465` mit TLS |
 | `SMTP_USER`, `SMTP_PASSWORD` | leer | Anmeldung (PLAIN); ohne Benutzer wird nicht angemeldet |
 | `SMTP_FROM` | `SMTP_USER` | Absenderadresse |
@@ -422,8 +422,10 @@ nctl update app main --skip-repo-access-check \
   --sensitive-env="SMTP_USER=<user>;SMTP_PASSWORD=<passwort>"
 ```
 
-Ohne `SMTP_HOST` wird trotzdem gelöscht, nur ohne Erinnerung; das E-Mail-Feld fehlt dann in der
-Oberfläche, der Löschtermin steht aber im Reiter „Entwürfe“.
+Ohne `SMTP_HOST` wird trotzdem gelöscht, nur ohne Erinnerung: die Oberfläche bietet dann weder Feld
+noch Hinweis zur E-Mail an (der Server schreibt die Konfiguration beim Start in die Startseite, eine
+Änderung wechselt die Schalen-Version und damit ETag und Service-Worker-Cache), der Löschtermin
+steht aber im Reiter „Entwürfe“.
 
 ## Entwicklung und Tests
 

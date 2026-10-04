@@ -219,9 +219,9 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await commenter.page.fill('#comment-author', 'Anna');
   await commenter.page.fill('#comment-text', 'Hier fehlt ein Fussgängerstreifen.');
   await commenter.page.click('#comment-send');
-  await commenter.page.waitForSelector('.comment-row');
+  // Die Liste wird nach dem Senden mehrfach neu aufgebaut (Antwort, Live-Ereignis): auf die fertige Zeile warten
+  await commenter.page.waitForSelector('.comment-row:has-text("Anna")');
   assert.equal(await commenter.page.locator('.comment-row').count(), 1);
-  assert.ok((await commenter.page.textContent('.comment-row')).includes('Anna'));
   assert.equal(await commenter.page.locator('.comment-row .c-resolve').count(), 1, 'Verfasser darf erledigen');
   await commenter.page.click('.comment-row .c-resolve');
   await commenter.page.waitForSelector('.thread.resolved');

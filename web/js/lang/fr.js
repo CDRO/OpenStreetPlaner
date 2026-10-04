@@ -879,7 +879,6 @@ export const fr = {
   "Die Strassen hängen an den Enden nicht zusammen (bis 10 m Abstand).": "Les routes ne se rejoignent pas aux extrémités (jusqu’à 10 m d’écart).",
   "Mindestens zwei Elemente auswählen.": "Sélectionner au moins deux éléments.",
   "Dieser Entwurf wird am {date} gelöscht, falls er bis dahin nicht erneut gespeichert wird.": "Ce projet sera supprimé le {date} s’il n’est pas enregistré à nouveau d’ici là.",
-  "Dieser Server verschickt keine Erinnerungen per E-Mail – lade rechtzeitig eine Sicherung herunter.": "Ce serveur n’envoie pas de rappels par e-mail – télécharge une sauvegarde à temps.",
   "E-Mail für eine Erinnerung zur Sicherung, einen Monat und eine Woche vor dem Löschen (leer = keine)": "E-mail pour un rappel de sauvegarde, un mois et une semaine avant la suppression (vide = aucun)",
   "Entwürfe werden {days} Tage nach dem letzten Speichern gelöscht.": "Les projets sont supprimés {days} jours après le dernier enregistrement.",
   "Erinnerung entfernt.": "Rappel supprimé.",
