@@ -36,6 +36,10 @@ const fmtDate = (iso) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
 };
+const fmtDay = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(locale(), { dateStyle: 'medium' });
+};
 const fmtLen = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
 const options = (list, value) => list.map((o) => `<option value="${o.id}"${o.id === value ? ' selected' : ''}>${esc(t(o.label))}</option>`).join('');
 
@@ -1553,11 +1557,13 @@ export class UI {
         <button type="button" id="d-share" class="btn small">${t('Teilen…')}</button>
         <button type="button" id="d-export" class="btn small">${t('JSON exportieren')}</button>
         <button type="button" id="d-geojson" class="btn small">${t('GeoJSON exportieren')}</button>
-        <button type="button" id="d-import" class="btn small" title="${t('Stadtplaner-JSON ersetzt den Entwurf; GeoJSON, GPX und KML kommen als neue Ebene dazu')}">${t('Importieren (JSON, GeoJSON, GPX, KML)')}</button>
+        <button type="button" id="d-import" class="btn small" title="${t('Stadtplaner-JSON ersetzt den Entwurf; eine Sicherung wird als neuer Entwurf eingespielt; GeoJSON, GPX und KML kommen als neue Ebene dazu')}">${t('Importieren (JSON, Sicherung, GeoJSON, GPX, KML)')}</button>
       </div>
       <div class="btn-row">
         <button type="button" id="d-export-map" class="btn small">${t('Karte als PNG / PDF exportieren…')}</button>
-      </div>`;
+        ${saved ? `<button type="button" id="d-backup" class="btn small" title="${t('Vollständige Sicherung vom Server: aktueller Stand, alle Versionen und Kommentare')}">${t('Sicherung herunterladen')}</button>` : ''}
+      </div>
+      <div id="draft-lifecycle"></div>`;
     this.$('d-new').onclick = () => actions.newDraft();
     if (this.$('d-save')) this.$('d-save').onclick = () => actions.saveDraft();
     if (this.$('d-own')) this.$('d-own').onclick = () => actions.makeOwnCopy();
@@ -1567,6 +1573,8 @@ export class UI {
     this.$('d-geojson').onclick = () => actions.exportGeoJson();
     this.$('d-import').onclick = () => this.$('import-file').click();
     this.$('d-export-map').onclick = () => this.openExport();
+    if (this.$('d-backup')) this.$('d-backup').onclick = () => actions.downloadBackup();
+    this.renderLifecycle();
 
     const drafts = local.listDrafts();
     const list = this.$('draft-list');
@@ -1592,6 +1600,46 @@ export class UI {
       }
     };
     this.$('open-link-btn').onclick = () => actions.openByLink(open.value);
+  }
+
+  /** Ablaufdatum und E-Mail-Erinnerung (nur für gespeicherte Entwürfe; die Adresse sehen nur Besitzer). */
+  renderLifecycle() {
+    const { actions } = this.ctx;
+    const el = this.$('draft-lifecycle');
+    if (!el) return;
+    const lc = actions.lifecycle();
+    if (!actions.isSaved() || !lc.retentionDays) {
+      el.innerHTML = '';
+      return;
+    }
+    let html = `<p class="muted small" id="lifecycle-expiry">${t('Entwürfe werden {days} Tage nach dem letzten Speichern gelöscht.', { days: lc.retentionDays })}${lc.expiresAt ? ` ${t('Dieser Entwurf wird am {date} gelöscht, falls er bis dahin nicht erneut gespeichert wird.', { date: esc(fmtDay(lc.expiresAt)) })}` : ''}</p>`;
+    if (actions.canEdit()) {
+      const r = lc.reminder;
+      if (!r) {
+        actions.loadReminder().then(() => this.renderLifecycle());
+      } else if (r.error) {
+        html += `<p class="muted small">${t('Erinnerung konnte nicht geladen werden')}: ${esc(r.error)}</p>`;
+      } else if (!r.mailEnabled) {
+        html += `<p class="muted small">${t('Dieser Server verschickt keine Erinnerungen per E-Mail – lade rechtzeitig eine Sicherung herunter.')}</p>`;
+      } else {
+        html += `
+        <label class="small" for="reminder-email">${t('E-Mail für eine Erinnerung zur Sicherung, einen Monat und eine Woche vor dem Löschen (leer = keine)')}</label>
+        <div class="link-row"><input type="email" id="reminder-email" value="${esc(r.email || '')}" placeholder="name@example.ch" autocomplete="email"><button type="button" id="reminder-save" class="btn small">${t('Übernehmen')}</button></div>
+        ${r.email ? `<p class="muted small" id="reminder-state">${t('Erinnerung geht an {email}.', { email: esc(r.email) })}</p>` : ''}`;
+      }
+    }
+    el.innerHTML = html;
+    const save = this.$('reminder-save');
+    if (save) {
+      const submit = () => actions.setReminderEmail(this.$('reminder-email').value).then(() => this.renderLifecycle()).catch((e) => this.toast(`${t('Erinnerung konnte nicht gespeichert werden')}: ${e.message}`, 'error', 6000));
+      save.onclick = submit;
+      this.$('reminder-email').onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          submit();
+        }
+      };
+    }
   }
 
   // --- Verlauf ---------------------------------------------------------------------------

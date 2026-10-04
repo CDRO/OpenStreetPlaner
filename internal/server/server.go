@@ -47,6 +47,7 @@ type Server struct {
 	pushKey      string
 	pushWG       sync.WaitGroup
 	broker       *broker
+	lifecycle    Lifecycle
 }
 
 // RateLimit konfiguriert die Drosselung schreibender API-Aufrufe pro Client.
@@ -118,6 +119,10 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/drafts/{id}", s.deleteDraft)
 	m.HandleFunc("POST /api/drafts/{id}/auth", s.authDraft)
 	m.HandleFunc("POST /api/drafts/{id}/fork", s.forkDraft)
+	m.HandleFunc("GET /api/drafts/{id}/reminder", s.getReminder)
+	m.HandleFunc("PUT /api/drafts/{id}/reminder", s.setReminder)
+	m.HandleFunc("GET /api/drafts/{id}/backup", s.backup)
+	m.HandleFunc("POST /api/drafts/import", s.importBackup)
 	m.HandleFunc("GET /api/drafts/{id}/events", s.events)
 	m.HandleFunc("GET /api/drafts/{id}/versions", s.listVersions)
 	m.HandleFunc("GET /api/drafts/{id}/versions/{n}", s.getVersion)
@@ -223,7 +228,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, store.ErrUnauthorized):
 		status, msg = http.StatusForbidden, err.Error()
-	case errors.Is(err, model.ErrInvalid), errors.Is(err, osm.ErrBadRequest), errors.Is(err, store.ErrBadComment):
+	case errors.Is(err, model.ErrInvalid), errors.Is(err, osm.ErrBadRequest), errors.Is(err, store.ErrBadComment),
+		errors.Is(err, store.ErrBadEmail), errors.Is(err, store.ErrBadBackup):
 		status, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, store.ErrCommentLimit), errors.Is(err, store.ErrConflict):
 		status, msg = http.StatusConflict, err.Error()
@@ -304,10 +310,13 @@ func (s *Server) createDraft(w http.ResponseWriter, r *http.Request) {
 	// updatedAt aus den Metadaten: der Client schickt ihn beim Speichern als
 	// baseUpdatedAt zurück, deshalb muss er bitgenau dem Serverstand entsprechen.
 	updatedAt := any(body.Doc.UpdatedAt)
+	var expiresAt any
+	retentionDays := 0
 	if _, cm, gerr := s.store.Get(id); gerr == nil {
 		updatedAt = cm.UpdatedAt
+		expiresAt, retentionDays = s.expiry(cm)
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "editToken": token, "doc": body.Doc, "updatedAt": updatedAt})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "editToken": token, "doc": body.Doc, "updatedAt": updatedAt, "expiresAt": expiresAt, "retentionDays": retentionDays})
 }
 
 func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
@@ -321,8 +330,10 @@ func (s *Server) getDraft(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	expiresAt, retentionDays := s.expiry(meta)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": id, "name": meta.Name, "doc": doc, "createdAt": meta.CreatedAt, "updatedAt": meta.UpdatedAt, "versionCount": len(meta.Versions),
+		"expiresAt": expiresAt, "retentionDays": retentionDays,
 	})
 }
 
@@ -365,7 +376,8 @@ func (s *Server) saveDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.broker.publish(id, "updated", map[string]any{"updatedAt": meta.UpdatedAt, "clientId": r.Header.Get(clientIDHeader), "versionCount": len(meta.Versions)})
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "updatedAt": meta.UpdatedAt, "versionCount": len(meta.Versions), "doc": body.Doc})
+	expiresAt, retentionDays := s.expiry(meta)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "updatedAt": meta.UpdatedAt, "versionCount": len(meta.Versions), "doc": body.Doc, "expiresAt": expiresAt, "retentionDays": retentionDays})
 }
 
 func (s *Server) deleteDraft(w http.ResponseWriter, r *http.Request) {
@@ -419,7 +431,8 @@ func (s *Server) forkDraft(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": newID, "editToken": token, "doc": doc, "updatedAt": cm.UpdatedAt})
+	expiresAt, retentionDays := s.expiry(cm)
+	writeJSON(w, http.StatusCreated, map[string]any{"id": newID, "editToken": token, "doc": doc, "updatedAt": cm.UpdatedAt, "expiresAt": expiresAt, "retentionDays": retentionDays})
 }
 
 func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {

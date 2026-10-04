@@ -21,6 +21,7 @@ export function detectFormat(text, filename = '') {
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
       const obj = JSON.parse(text);
+      if (obj && obj.format === 'stadtplaner-backup' && obj.doc) return 'backup';
       if (obj && Array.isArray(obj.layers) && Array.isArray(obj.features) && !obj.type) return 'stadtplaner';
       if (obj && (obj.type === 'FeatureCollection' || obj.type === 'Feature' || GEOMETRIES.has(obj.type))) return 'geojson';
     } catch {
@@ -137,8 +138,8 @@ export function parseKML(text) {
 /** Liest eine Datei: { format, doc } für Stadtplaner-JSON, sonst { format, items }. */
 export function parseImport(text, filename = '') {
   const format = detectFormat(text, filename);
-  if (!format) throw new Error(t('Format nicht erkannt (unterstützt: Stadtplaner-JSON, GeoJSON, GPX, KML)'));
-  if (format === 'stadtplaner') return { format, raw: JSON.parse(text) };
+  if (!format) throw new Error(t('Format nicht erkannt (unterstützt: Stadtplaner-JSON, Sicherung, GeoJSON, GPX, KML)'));
+  if (format === 'stadtplaner' || format === 'backup') return { format, raw: JSON.parse(text) };
   if (format === 'geojson') return { format, items: parseGeoJSON(JSON.parse(text)) };
   if (format === 'gpx') return { format, items: parseGPX(text) };
   return { format, items: parseKML(text) };

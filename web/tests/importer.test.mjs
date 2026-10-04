@@ -6,6 +6,8 @@ import { createDocument, deserialize, serialize } from '../js/model.js';
 test('Format erkennen', () => {
   assert.equal(detectFormat('{"type":"FeatureCollection","features":[]}'), 'geojson');
   assert.equal(detectFormat('{"version":1,"layers":[],"features":[]}'), 'stadtplaner');
+  assert.equal(detectFormat('{"format":"stadtplaner-backup","formatVersion":1,"doc":{"layers":[],"features":[]},"versions":[]}'), 'backup');
+  assert.equal(parseImport('{"format":"stadtplaner-backup","doc":{"layers":[],"features":[]}}', 'x.json').format, 'backup');
   assert.equal(detectFormat('<?xml version="1.0"?><gpx version="1.1"></gpx>'), 'gpx');
   assert.equal(detectFormat('<kml xmlns="http://www.opengis.net/kml/2.2"><Document/></kml>'), 'kml');
   assert.equal(detectFormat('hallo', 'x.txt'), null);

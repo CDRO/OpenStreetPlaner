@@ -77,6 +77,9 @@ async function main() {
     token: null,
     savedKey: null,
     serverUpdatedAt: null,
+    expiresAt: null, // Lebenszyklus: wann der Server den Entwurf löscht (null = nie)
+    retentionDays: 0,
+    reminder: null, // { email, mailEnabled } vom Server, nur für Besitzer
     activeLayerId: null,
     defaultRoadKind: 'main',
     snapIndex: null,
@@ -122,6 +125,8 @@ async function main() {
       doc = deserialize(JSON.stringify(res.doc));
       state.id = loc.id;
       state.serverUpdatedAt = res.updatedAt;
+      state.expiresAt = res.expiresAt || null;
+      state.retentionDays = res.retentionDays || 0;
       if (loc.token) {
         try {
           await api.authDraft(loc.id, loc.token);
@@ -181,6 +186,12 @@ async function main() {
   const parking = new OsmRoadCache((b) => api.parking(b)); // Parkplätze aus OSM (amenity=parking)
 
   const canEdit = () => !state.present && (!state.id || !!state.token);
+  // Ablaufdatum aus Serverantworten übernehmen; die Erinnerung gilt für den gespeicherten Stand
+  function applyLifecycle(res) {
+    state.expiresAt = (res && res.expiresAt) || null;
+    state.retentionDays = (res && res.retentionDays) || 0;
+    if (state.reminder) state.reminder.expiresAt = state.expiresAt;
+  }
 
   const getSnapIndex = () => {
     if (state.snapDirty || !state.snapIndex) {
@@ -1055,6 +1066,7 @@ async function main() {
             return undefined;
           }
           state.serverUpdatedAt = res.updatedAt;
+          applyLifecycle(res);
           if (state.remoteUpdate) {
             state.remoteUpdate = null;
             ui.showBanner(null);
@@ -1066,6 +1078,7 @@ async function main() {
           bind(res.id, res.editToken);
           history.replaceState(null, '', `/d/${res.id}`);
           state.serverUpdatedAt = res.updatedAt;
+          applyLifecycle(res);
         }
         state.savedKey = contentKey(store.doc);
         local.rememberDraft({ id: state.id, name: store.doc.name, token: state.token, updatedAt: state.serverUpdatedAt });
@@ -1086,6 +1099,7 @@ async function main() {
         bind(res.id, res.editToken);
         loadDocument(copy, { keepView: true });
         state.serverUpdatedAt = res.updatedAt || null;
+        applyLifecycle(res);
         state.savedKey = contentKey(copy);
         local.rememberDraft({ id: res.id, name: copy.name, token: res.editToken });
         history.replaceState(null, '', `/d/${res.id}`);
@@ -1108,6 +1122,7 @@ async function main() {
         bind(res.id, res.editToken);
         loadDocument(deserialize(JSON.stringify(res.doc)), { keepView: true });
         state.serverUpdatedAt = res.updatedAt || null;
+        applyLifecycle(res);
         state.savedKey = contentKey(store.doc);
         local.rememberDraft({ id: res.id, name: copy.name, token: res.editToken, updatedAt: res.updatedAt });
         history.replaceState(null, '', `/d/${res.id}`);
@@ -1177,6 +1192,42 @@ async function main() {
       store.doc.view = currentView();
       download(`${safeFilename(store.doc.name)}.stadtplaner.json`, JSON.stringify(store.doc, null, 2));
     },
+    // --- Lebenszyklus: Ablauf, Erinnerung per E-Mail, Sicherung -------------------
+    lifecycle: () => ({ expiresAt: state.expiresAt, retentionDays: state.retentionDays, reminder: state.reminder }),
+    async loadReminder() {
+      if (!state.id || !state.token || state.reminder) return state.reminder;
+      try {
+        const res = await api.reminder(state.id, state.token);
+        state.reminder = { email: res.email || '', mailEnabled: !!res.mailEnabled };
+        applyLifecycle(res);
+      } catch (e) {
+        state.reminder = { email: '', mailEnabled: false, error: e.message };
+      }
+      return state.reminder;
+    },
+    async setReminderEmail(email) {
+      if (!state.id || !state.token) throw new Error(t('Entwurf ist nicht gespeichert'));
+      const res = await api.setReminder(state.id, state.token, (email || '').trim());
+      state.reminder = { email: res.email || '', mailEnabled: !!res.mailEnabled };
+      applyLifecycle(res);
+      ui.toast(res.email ? t('Erinnerung geht an {email}.', { email: res.email }) : t('Erinnerung entfernt.'), 'ok');
+      return state.reminder;
+    },
+    async downloadBackup() {
+      if (!state.id) return ui.toast(t('Zuerst speichern – die Sicherung kommt vom Server und enthält auch Versionen und Kommentare.'), 'info', 6000);
+      if (actions.isDirty() && canEdit()) {
+        await actions.saveDraft('Vor der Sicherung gespeichert');
+        if (actions.isDirty()) return undefined; // Speichern fehlgeschlagen oder abgebrochen
+      }
+      const a = document.createElement('a');
+      a.href = api.backupUrl(state.id);
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      ui.toast(t('Sicherung wird heruntergeladen; über „Importieren“ lässt sie sich als neuer Entwurf einspielen.'), 'ok', 6000);
+      return undefined;
+    },
     exportGeoJson() {
       download(`${safeFilename(store.doc.name)}.geojson`, JSON.stringify(toGeoJSON(store.doc), null, 2), 'application/geo+json');
     },
@@ -1184,6 +1235,15 @@ async function main() {
       try {
         const text = await file.text();
         const parsed = parseImport(text, file.name);
+        if (parsed.format === 'backup') {
+          if (!actions.confirmDiscard()) return;
+          const res = await api.importBackup(parsed.raw);
+          local.rememberDraft({ id: res.id, name: res.name, token: res.editToken, updatedAt: res.updatedAt });
+          saveWorking();
+          ui.toast(t('Sicherung eingespielt – „{name}“ wird als neuer Entwurf geöffnet.', { name: res.name }), 'ok');
+          location.href = `/d/${res.id}#edit=${res.editToken}`;
+          return;
+        }
         if (parsed.format === 'stadtplaner') {
           const d = deserialize(text);
           if (!actions.confirmDiscard()) return;
@@ -1772,6 +1832,9 @@ async function main() {
     state.token = token;
     state.serverUpdatedAt = null;
     state.remoteUpdate = null;
+    state.expiresAt = null;
+    state.retentionDays = 0;
+    state.reminder = null;
     state.comments = [];
     state.activeCommentId = null;
     state.knownCommentIds = null;

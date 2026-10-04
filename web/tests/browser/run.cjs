@@ -40,12 +40,14 @@ async function waitFor(url, tries = 50) {
   const build = spawnSync('go', ['build', '-o', bin, '.'], { cwd: root, stdio: 'inherit' });
   if (build.status !== 0) process.exit(build.status || 1);
   const port = await freePort();
-  const server = spawn(bin, ['-addr', `127.0.0.1:${port}`, '-data', path.join(tmp, 'data'), '-tile-url', `http://127.0.0.1:${port}/nope/{z}/{x}/{y}.png`], { stdio: ['ignore', 'inherit', 'inherit'] });
+  // SMTP nur konfiguriert, damit das E-Mail-Feld erscheint; der Aufräum-Lauf verschickt im Test nichts
+  const env = { ...process.env, SMTP_HOST: '127.0.0.1', SMTP_PORT: '1', SMTP_FROM: 'stadtplaner@example.ch', PUBLIC_URL: `http://127.0.0.1:${port}` };
+  const server = spawn(bin, ['-addr', `127.0.0.1:${port}`, '-data', path.join(tmp, 'data'), '-tile-url', `http://127.0.0.1:${port}/nope/{z}/{x}/{y}.png`], { stdio: ['ignore', 'inherit', 'inherit'], env });
   let failed = false;
   try {
     const base = `http://127.0.0.1:${port}/`;
     await waitFor(base + 'healthz');
-    const files = process.env.ONLY ? process.env.ONLY.split(',') : ['basics.test.cjs', 'osm-editing.test.cjs', 'ux.test.cjs', 'roads.test.cjs', 'analysis.test.cjs', 'dossier.test.cjs', 'reach.test.cjs', 'plan.test.cjs', 'lang.test.cjs', 'bus.test.cjs', 'edit.test.cjs', 'theme.test.cjs', 'offline.test.cjs', 'race.test.cjs', 'merge.test.cjs'];
+    const files = process.env.ONLY ? process.env.ONLY.split(',') : ['basics.test.cjs', 'osm-editing.test.cjs', 'ux.test.cjs', 'roads.test.cjs', 'analysis.test.cjs', 'dossier.test.cjs', 'reach.test.cjs', 'plan.test.cjs', 'lang.test.cjs', 'bus.test.cjs', 'edit.test.cjs', 'theme.test.cjs', 'offline.test.cjs', 'race.test.cjs', 'merge.test.cjs', 'lifecycle.test.cjs'];
     const ci = !!process.env.GITHUB_ACTIONS;
     for (const file of files) {
       if (ci) console.log(`::group::${file}`);

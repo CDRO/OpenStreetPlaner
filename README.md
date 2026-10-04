@@ -80,7 +80,9 @@ go run . -data ./data
 | Bearbeiten | Punkte ziehen, Zwischenpunkte einfügen, Punkte per Rechtsklick löschen, Eigenschaften in der Seitenleiste, Tooltip beim Überfahren |
 | Speichern | Entwürfe liegen auf dem Server; der Browser merkt sich die eigenen (mit Bearbeitungs-Token). Arbeitskopie wird lokal automatisch gesichert |
 | Historie | Rückgängig/Wiederholen in der Sitzung; jedes Speichern legt eine Version an (Standard: 30), die wiederhergestellt werden kann. **Versionen vergleichen**: zwei Stände (oder Version gegen aktuellen Stand) als Liste hinzugefügter, entfernter und geänderter Elemente mit Beschreibung (Tempolimit 50 → 30, Geometrie 2 → 3 Punkte, Führung der Abschnitte …) und als Karten-Overlay (grün neu, orange geändert, rot gestrichelt entfernt) |
-| Import | Stadtplaner-JSON ersetzt den Entwurf; GeoJSON, GPX und KML kommen als neue Ebene dazu (Linien → Strassen mit Status „bestehend“, Punkte → Kreuzungen/Punkte, Polygone → Flächen; `highway`, `maxspeed`, `oneway`, `kind`, `status` aus GeoJSON-Eigenschaften werden übernommen). Ohne DOM-Parser, bis 2000 Elemente |
+| Lebenszyklus | Entwürfe, die `RETENTION_DAYS` (Standard 365) Tage lang nicht gespeichert wurden, löscht der Server automatisch (Lauf nach dem Start und dann alle 6 Stunden); jedes Speichern verlängert die Frist. Im Reiter „Entwürfe“ steht das Löschdatum; Besitzer können eine E-Mail-Adresse hinterlegen und werden einen Monat und eine Woche vor dem Löschen an die Sicherung erinnert (nur mit `SMTP_HOST`; die Adresse ist nur mit dem Bearbeitungs-Token lesbar und wird bei Kopien und Sicherungen nicht mitgenommen) |
+| Sicherung | „Sicherung herunterladen“ liefert eine Datei `<name>.stadtplaner-backup.json` vom Server mit aktuellem Stand, allen Versionen und Kommentaren (ohne Token); „Importieren“ spielt sie als neuen Entwurf mit eigenem Token ein, Versionen behalten Nummer, Datum und Beschriftung. Damit sichern Benutzer ihre Entwürfe selbst, unabhängig vom Server |
+| Import | Stadtplaner-JSON ersetzt den Entwurf; eine Sicherung wird als neuer Entwurf eingespielt; GeoJSON, GPX und KML kommen als neue Ebene dazu (Linien → Strassen mit Status „bestehend“, Punkte → Kreuzungen/Punkte, Polygone → Flächen; `highway`, `maxspeed`, `oneway`, `kind`, `status` aus GeoJSON-Eigenschaften werden übernommen). Ohne DOM-Parser, bis 2000 Elemente |
 | QR-Code | Im Teilen-Dialog zum Ansichtslink und auf jedem PDF/PNG-Export (rechts unten); eigener Encoder (Byte-Modus, Fehlerkorrektur M, Versionen 1–10) |
 | Teilen | **Ansichtslink** `/d/<id>` (Empfänger können eine eigene Kopie weiterbearbeiten), **Präsentationslink** `/d/<id>?present=1` (nur Karte, Legende und Routenvergleich, ohne Werkzeuge, für Sitzungen und Beamer), **Bearbeitungslink** `/d/<id>#edit=<token>` für gemeinsames Bearbeiten, E-Mail-Versand, JSON-Import/-Export, GeoJSON-Export |
 | Gemeinsam bearbeiten | Speichern schickt den zuletzt geladenen Serverstand mit; hat inzwischen jemand anderes gespeichert, antwortet der Server mit 409 und die App fragt: eigene Fassung speichern oder Serverstand übernehmen (die eigene bleibt per Rückgängig erreichbar). Offene Seiten erhalten Änderungen und neue Kommentare live über Server-Sent Events: ohne eigene Änderungen wird der neue Stand direkt übernommen, sonst erscheint ein Hinweis |
@@ -116,6 +118,13 @@ Umgebungsvariablen (oder gleichnamige Flags, siehe `go run . -h`):
 | `TIMETABLE_URL` | `https://transport.opendata.ch/v1` | Offene Fahrplan-API für den Fahrplan-Abgleich der Buslinien; leer schaltet ab |
 | `USER_AGENT` | `Stadtplaner/1.0 (+…)` | User-Agent gegenüber den OSM-Diensten – bitte auf die eigene Installation anpassen |
 | `MAX_VERSIONS` | `30` | Versionen pro Entwurf |
+| `RETENTION_DAYS` | `365` | Entwürfe, die so viele Tage nicht gespeichert wurden, werden gelöscht; `0` schaltet das Löschen (und die Erinnerungen) ab |
+| `REMINDER_DAYS` | `30,7` | So viele Tage vor dem Löschen geht je eine Erinnerung an die hinterlegte Adresse (je Stand einmal) |
+| `PUBLIC_URL` | leer | Öffentliche Adresse der App für die Links in Erinnerungen, z. B. `https://plan.example.ch` |
+| `SMTP_HOST` | leer | SMTP-Server für Erinnerungen; leer = keine E-Mails (das Feld fehlt dann in der Oberfläche) |
+| `SMTP_PORT` | `587` | `587`/`25` mit STARTTLS, `465` mit TLS |
+| `SMTP_USER`, `SMTP_PASSWORD` | leer | Anmeldung (PLAIN); ohne Benutzer wird nicht angemeldet |
+| `SMTP_FROM` | `SMTP_USER` | Absenderadresse |
 | `WRITE_RATE` | `60` | Schreibende API-Aufrufe pro Minute und Client-IP (Burst 20); `0` schaltet die Drosselung aus |
 | `TRUST_PROXY` | leer | `1`, wenn die Client-IP aus `X-Forwarded-For` gelesen werden soll (hinter einem Reverse-Proxy) |
 | `PUSH` | `1` | `0` schaltet Web-Push ab. Das VAPID-Schlüsselpaar entsteht beim ersten Start in `DATA_DIR/vapid.json` |
@@ -136,12 +145,16 @@ speichert nur einen Hash davon).
 | Methode | Pfad | Zweck |
 |---|---|---|
 | `POST` | `/api/drafts` | Entwurf anlegen: `{doc, label?}` → `{id, editToken, doc, updatedAt}` |
-| `GET` | `/api/drafts/{id}` | Aktueller Stand: `{doc, updatedAt, versionCount, …}` |
+| `GET` | `/api/drafts/{id}` | Aktueller Stand: `{doc, updatedAt, versionCount, expiresAt, retentionDays, …}` |
 | `PUT` | `/api/drafts/{id}` | Speichern: `{doc, label?, baseUpdatedAt?}` (legt eine Version an). Mit `baseUpdatedAt` (der `updatedAt` des geladenen Stands) antwortet der Server **409** samt aktuellem `doc`, wenn inzwischen jemand anderes gespeichert hat; ohne das Feld wird überschrieben. Header `X-Client-Id` (optional) wird an das Live-Ereignis gehängt |
 | `GET` | `/api/drafts/{id}/events` | Server-Sent Events: `updated {updatedAt, clientId, versionCount}` und `comment {id, clientId}`; Keepalive alle 25 s |
 | `DELETE` | `/api/drafts/{id}` | Entwurf löschen |
 | `POST` | `/api/drafts/{id}/auth` | Token prüfen (204/403) |
 | `POST` | `/api/drafts/{id}/fork` | Kopie mit eigenem Token: `{name?}` |
+| `GET` | `/api/drafts/{id}/reminder` | `{email, expiresAt, retentionDays, mailEnabled}`; Header `X-Edit-Token` |
+| `PUT` | `/api/drafts/{id}/reminder` | `{email}` hinterlegen (leer = entfernen); Header `X-Edit-Token` |
+| `GET` | `/api/drafts/{id}/backup` | Sicherungsdatei zum Herunterladen: `{format: "stadtplaner-backup", doc, versions: [{info, doc}], comments}` |
+| `POST` | `/api/drafts/import` | Sicherungsdatei als neuen Entwurf einspielen → `{id, editToken, doc, updatedAt, versionCount}` (Body bis 32 MB) |
 | `GET` | `/api/drafts/{id}/versions` | Versionsliste (neueste zuerst) |
 | `GET` | `/api/drafts/{id}/versions/{n}` | Eine Version samt Inhalt |
 | `GET` | `/api/drafts/{id}/comments` | Kommentare (älteste zuerst) |
@@ -394,11 +407,29 @@ Variablen beim Anlegen der App, wenn im GitHub-Repo die Variablen `S3_BUCKET`, `
 gleicht sie bei jedem Lauf ab. Beim Start prüft der Server den Zugriff auf den Bucket und bricht
 mit klarer Meldung ab, wenn Endpunkt oder Schlüssel nicht stimmen.
 
+### Erinnerungen per E-Mail
+
+Alte Entwürfe löscht der Server nach `RETENTION_DAYS` (365) Tagen ohne Speichern. Damit Besitzer
+vorher eine Erinnerung zur Sicherung bekommen, braucht die App einen SMTP-Zugang: im GitHub-Repo die
+Variablen `SMTP_HOST`, `SMTP_PORT` (587), `SMTP_FROM` und `PUBLIC_URL` (öffentliche Adresse der App,
+für den Link in der Mail) sowie die Secrets `SMTP_USER`, `SMTP_PASSWORD` eintragen; der
+Deploy-Workflow reicht sie als `--env`/`--sensitive-env` an die App weiter (optional auch
+`RETENTION_DAYS`). Von Hand:
+
+```sh
+nctl update app main --skip-repo-access-check \
+  --env="SMTP_HOST=smtp.example.ch;SMTP_PORT=587;SMTP_FROM=stadtplaner@example.ch;PUBLIC_URL=https://plan.example.ch" \
+  --sensitive-env="SMTP_USER=<user>;SMTP_PASSWORD=<passwort>"
+```
+
+Ohne `SMTP_HOST` wird trotzdem gelöscht, nur ohne Erinnerung; das E-Mail-Feld fehlt dann in der
+Oberfläche, der Löschtermin steht aber im Reiter „Entwürfe“.
+
 ## Entwicklung und Tests
 
 ```sh
 make test            # go vet + go test + Frontend-Unit-Tests (node --test)
-make test-browser    # Browser-Tests (basics … theme, offline); braucht Go und Playwright mit Chromium; läuft auch in der CI (Job „browser“)
+make test-browser    # Browser-Tests (basics … offline, race, merge, lifecycle); braucht Go und Playwright mit Chromium; läuft auch in der CI (Job „browser“)
 make run             # Server lokal
 make docker          # Image bauen
 ```

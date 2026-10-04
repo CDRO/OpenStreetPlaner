@@ -14,10 +14,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"stadtplaner/internal/blob"
+	"stadtplaner/internal/mail"
 	"stadtplaner/internal/osm"
 	"stadtplaner/internal/push"
 	"stadtplaner/internal/server"
@@ -60,6 +62,9 @@ func main() {
 	trustProxy := flag.Bool("trust-proxy", env("TRUST_PROXY", "") == "1", "Client-IP aus X-Forwarded-For lesen, hinter einem Reverse-Proxy (env TRUST_PROXY=1)")
 	pushEnabled := flag.Bool("push", env("PUSH", "1") != "0", "Web-Push-Benachrichtigungen (env PUSH=0 schaltet ab)")
 	vapidSubject := flag.String("vapid-subject", env("VAPID_SUBJECT", ""), "Kontakt für Push-Dienste, z. B. mailto:… (env VAPID_SUBJECT)")
+	retentionDays := flag.Int("retention-days", atoi(env("RETENTION_DAYS", "365"), 365), "Entwürfe nach so vielen Tagen ohne Speichern löschen, 0 = nie (env RETENTION_DAYS)")
+	reminderDays := flag.String("reminder-days", env("REMINDER_DAYS", "30,7"), "Erinnerung per E-Mail so viele Tage vor dem Löschen, kommagetrennt (env REMINDER_DAYS)")
+	publicURL := flag.String("public-url", env("PUBLIC_URL", ""), "Öffentliche Adresse der App für Links in E-Mails (env PUBLIC_URL)")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
@@ -119,6 +124,23 @@ func main() {
 			srv.SetPush(push.NewSender(keys, *vapidSubject))
 		}
 	}
+	// Lebenszyklus: alte Entwürfe löschen, vorher per E-Mail erinnern (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM)
+	lifecycle := server.Lifecycle{Retention: time.Duration(*retentionDays) * 24 * time.Hour, Reminders: parseDays(*reminderDays), PublicURL: *publicURL}
+	if lifecycle.Retention > 0 {
+		if cfg, ok := mail.FromEnv(); ok {
+			mailer, err := mail.New(cfg)
+			if err != nil {
+				logger.Fatalf("E-Mail: %v", err)
+			}
+			lifecycle.Mailer = mailer
+			logger.Printf("Entwürfe werden nach %d Tagen gelöscht, Erinnerungen über %s:%d von %s", *retentionDays, cfg.Host, cfg.Port, cfg.From)
+		} else {
+			logger.Printf("Entwürfe werden nach %d Tagen gelöscht; keine Erinnerungen, da SMTP_HOST nicht gesetzt ist", *retentionDays)
+		}
+	} else {
+		logger.Println("Entwürfe werden nie automatisch gelöscht (RETENTION_DAYS=0)")
+	}
+	srv.SetLifecycle(lifecycle)
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
@@ -130,6 +152,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	srv.StartSweeper(ctx)
 	go func() {
 		logger.Printf("Stadtplaner läuft auf %s (Entwürfe: %s, Kachel-Cache: %s)", *addr, storage, filepath.Join(*dataDir, "tiles"))
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -150,6 +173,19 @@ func atof(s string, fallback float64) float64 {
 		return fallback
 	}
 	return f
+}
+
+// parseDays liest "30,7" als Fristen in Tagen; Unbrauchbares wird übersprungen.
+func parseDays(list string) []time.Duration {
+	var out []time.Duration
+	for _, part := range strings.Split(list, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || n <= 0 {
+			continue
+		}
+		out = append(out, time.Duration(n)*24*time.Hour)
+	}
+	return out
 }
 
 func atoi(s string, fallback int) int {

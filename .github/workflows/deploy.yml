@@ -9,6 +9,8 @@
 #              VAPID_SUBJECT (z. B. mailto:…, nur beim Anlegen der App verwendet)
 #   Bucket:    Variablen S3_BUCKET, S3_ENDPOINT, optional S3_PREFIX; Secrets S3_ACCESS_KEY, S3_SECRET_KEY
 #              (dauerhafte Ablage der Entwürfe; ohne Bucket bleibt sie flüchtig)
+#   E-Mail:    Variablen SMTP_HOST, SMTP_PORT, SMTP_FROM, PUBLIC_URL, optional RETENTION_DAYS;
+#              Secrets SMTP_USER, SMTP_PASSWORD (Erinnerung zur Sicherung vor dem Löschen alter Entwürfe)
 # Beim ersten Lauf legt der Workflow die App an (Docker-Build, Port 8080, Health-Probe /healthz).
 name: Deploy to Deploio
 
@@ -49,6 +51,13 @@ jobs:
       S3_PREFIX: ${{ vars.S3_PREFIX }}
       S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+      SMTP_HOST: ${{ vars.SMTP_HOST }}
+      SMTP_PORT: ${{ vars.SMTP_PORT }}
+      SMTP_FROM: ${{ vars.SMTP_FROM }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+      RETENTION_DAYS: ${{ vars.RETENTION_DAYS }}
       REVISION: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.revision }}
     steps:
       - name: Install nctl
@@ -94,6 +103,20 @@ jobs:
           else
             echo "Hinweis: kein Bucket konfiguriert – Entwürfe liegen auf flüchtigem Speicher."
           fi
+          # E-Mail-Erinnerungen (falls hinterlegt): SMTP-Zugang als sensitive env, Rest als env
+          MAIL_FLAGS=()
+          if [ -n "$SMTP_HOST" ]; then
+            MAIL_FLAGS+=("--env=SMTP_HOST=${SMTP_HOST}")
+            if [ -n "$SMTP_PORT" ]; then MAIL_FLAGS+=("--env=SMTP_PORT=${SMTP_PORT}"); fi
+            if [ -n "$SMTP_FROM" ]; then MAIL_FLAGS+=("--env=SMTP_FROM=${SMTP_FROM}"); fi
+            if [ -n "$SMTP_USER" ]; then MAIL_FLAGS+=("--sensitive-env=SMTP_USER=${SMTP_USER}"); fi
+            if [ -n "$SMTP_PASSWORD" ]; then MAIL_FLAGS+=("--sensitive-env=SMTP_PASSWORD=${SMTP_PASSWORD}"); fi
+            echo "E-Mail: Erinnerungen über $SMTP_HOST"
+          else
+            echo "Hinweis: kein SMTP_HOST konfiguriert – alte Entwürfe werden ohne Erinnerung gelöscht."
+          fi
+          if [ -n "$PUBLIC_URL" ]; then MAIL_FLAGS+=("--env=PUBLIC_URL=${PUBLIC_URL}"); fi
+          if [ -n "$RETENTION_DAYS" ]; then MAIL_FLAGS+=("--env=RETENTION_DAYS=${RETENTION_DAYS}"); fi
           # Stand vor der Änderung merken, damit der Warte-Schritt den neuen Build und das neue Release erkennt
           one() { jq -r 'if type=="array" then .[0] else . end | '"$1"' // ""'; }
           if nctl get app "$APP" >/dev/null 2>&1; then
@@ -101,7 +124,7 @@ jobs:
             echo "BEFORE_RELEASE=$(nctl get app "$APP" -o json | one .status.atProvider.latestRelease)" >> "$GITHUB_ENV"
             # --skip-repo-access-check: ohne neue Zugangsdaten liest nctl beim Update sonst ein Auth-Secret
             # mit dem App-Namen, das es für ein öffentliches Repo nicht gibt („secrets \"main\" not found“)
-            run_nctl update app "$APP" --git-revision="$REVISION" --skip-repo-access-check "${BUCKET_FLAGS[@]}"
+            run_nctl update app "$APP" --git-revision="$REVISION" --skip-repo-access-check "${BUCKET_FLAGS[@]}" "${MAIL_FLAGS[@]}"
           else
             echo "BEFORE_BUILD=" >> "$GITHUB_ENV"
             echo "BEFORE_RELEASE=" >> "$GITHUB_ENV"
@@ -114,7 +137,7 @@ jobs:
               --port=8080 \
               --size=micro \
               --health-probe-path=/healthz \
-              "${ENV_FLAGS[@]}" "${BUCKET_FLAGS[@]}"
+              "${ENV_FLAGS[@]}" "${BUCKET_FLAGS[@]}" "${MAIL_FLAGS[@]}"
           fi
 
       - name: Wait for build and release

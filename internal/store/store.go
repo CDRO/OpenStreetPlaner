@@ -34,6 +34,9 @@ const (
 )
 
 var (
+	ErrBadEmail     = errors.New("E-Mail-Adresse ist ungültig")
+	ErrBadBackup    = errors.New("Sicherungsdatei ist ungültig")
+	emailPattern    = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 	ErrNotFound     = errors.New("Entwurf nicht gefunden")
 	ErrCommentLimit = errors.New("zu viele Kommentare für diesen Entwurf")
 	ErrConflict     = errors.New("der Entwurf wurde inzwischen von jemand anderem gespeichert")
@@ -50,6 +53,10 @@ type Meta struct {
 	UpdatedAt time.Time     `json:"updatedAt"`
 	NextSeq   int           `json:"nextSeq"`
 	Versions  []VersionInfo `json:"versions"`
+	// Lebenszyklus: Adresse für die Erinnerung zur Sicherung vor dem Ablauf und
+	// welche Erinnerungen (Schlüssel "30d", "7d") für den aktuellen Stand schon verschickt wurden.
+	Email    string               `json:"email,omitempty"`
+	Reminded map[string]time.Time `json:"reminded,omitempty"`
 }
 
 type VersionInfo struct {
@@ -200,6 +207,7 @@ func (s *Store) writeAll(m *Meta, doc *model.Document, label string, now time.Ti
 	}
 	m.Name = doc.Name
 	m.UpdatedAt = now
+	m.Reminded = nil // neuer Stand: die Ablauf-Erinnerungen beginnen von vorn
 	if err := s.writeJSON(s.draftKey(m.ID, "current.json"), doc); err != nil {
 		return err
 	}
@@ -219,6 +227,7 @@ func (s *Store) Get(id string) (*model.Document, *Meta, error) {
 		return nil, nil, err
 	}
 	m.TokenHash = ""
+	m.Email = "" // nur für den Besitzer (Reminder)
 	return &doc, m, nil
 }
 
@@ -274,7 +283,12 @@ func (s *Store) Delete(id, token string) error {
 	if err := s.checkToken(m, token); err != nil {
 		return err
 	}
-	// Metadaten zuerst: danach gilt der Entwurf als gelöscht, auch wenn Reste bleiben
+	return s.deleteAll(id)
+}
+
+// deleteAll entfernt alle Objekte eines Entwurfs (Aufrufer hält den Lock).
+// Metadaten zuerst: danach gilt der Entwurf als gelöscht, auch wenn Reste bleiben.
+func (s *Store) deleteAll(id string) error {
 	if err := s.blobs.Delete(s.draftKey(id, "meta.json")); err != nil {
 		return err
 	}
@@ -288,6 +302,280 @@ func (s *Store) Delete(id, token string) error {
 		}
 	}
 	return nil
+}
+
+// List liefert die Metadaten aller Entwürfe (ohne Token-Hash), unsortiert.
+func (s *Store) List() ([]*Meta, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys, err := s.blobs.List("drafts/")
+	if err != nil {
+		return nil, err
+	}
+	var out []*Meta
+	for _, k := range keys {
+		if !strings.HasSuffix(k, "/meta.json") {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(k, "drafts/"), "/meta.json")
+		m, err := s.readMeta(id)
+		if err != nil {
+			continue
+		}
+		m.TokenHash = ""
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// --- Lebenszyklus: Erinnerung und Ablauf --------------------------------------
+
+// SetReminder hinterlegt die Adresse für die Ablauf-Erinnerung (leer = entfernen); nur mit Token.
+func (s *Store) SetReminder(id, token, email string) (*Meta, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email != "" && (len(email) > 120 || !emailPattern.MatchString(email)) {
+		return nil, ErrBadEmail
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, err := s.readMeta(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkToken(m, token); err != nil {
+		return nil, err
+	}
+	m.Email = email
+	m.Reminded = nil
+	if err := s.writeJSON(s.draftKey(id, "meta.json"), m); err != nil {
+		return nil, err
+	}
+	m.TokenHash = ""
+	return m, nil
+}
+
+// Reminder liefert die hinterlegte Adresse; nur mit Token.
+func (s *Store) Reminder(id, token string) (*Meta, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, err := s.readMeta(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkToken(m, token); err != nil {
+		return nil, err
+	}
+	m.TokenHash = ""
+	return m, nil
+}
+
+// SweepResult fasst einen Lauf des Lebenszyklus zusammen.
+type SweepResult struct {
+	Scanned  int
+	Deleted  []string
+	Reminded []string
+	Errors   []error
+}
+
+// Sweep löscht Entwürfe, deren letzter Stand älter als retention ist, und ruft notify für
+// Entwürfe mit hinterlegter Adresse, sobald weniger als eine der Fristen in reminders bis zum
+// Ablauf bleibt (je Frist einmal pro Stand). notify liefert nil, wenn die Nachricht raus ist.
+func (s *Store) Sweep(now time.Time, retention time.Duration, reminders []time.Duration, notify func(m *Meta, expires time.Time) error) SweepResult {
+	var res SweepResult
+	if retention <= 0 {
+		return res
+	}
+	metas, err := s.List()
+	if err != nil {
+		res.Errors = append(res.Errors, err)
+		return res
+	}
+	for _, listed := range metas {
+		res.Scanned++
+		expires := listed.UpdatedAt.Add(retention)
+		if !now.Before(expires) {
+			s.mu.Lock()
+			err := s.deleteAll(listed.ID)
+			s.mu.Unlock()
+			if err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("%s löschen: %w", listed.ID, err))
+			} else {
+				res.Deleted = append(res.Deleted, listed.ID)
+			}
+			continue
+		}
+		if listed.Email == "" || notify == nil {
+			continue
+		}
+		for _, d := range reminders {
+			if d <= 0 || now.Before(expires.Add(-d)) {
+				continue
+			}
+			key := reminderKey(d)
+			s.mu.Lock()
+			m, err := s.readMeta(listed.ID)
+			if err != nil || m.Email == "" {
+				s.mu.Unlock()
+				break
+			}
+			if at, ok := m.Reminded[key]; ok && !at.Before(m.UpdatedAt) {
+				s.mu.Unlock()
+				continue // für diesen Stand schon erinnert
+			}
+			s.mu.Unlock()
+			if err := notify(m, expires); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("%s erinnern (%s): %w", m.ID, key, err))
+				break
+			}
+			s.mu.Lock()
+			if m.Reminded == nil {
+				m.Reminded = map[string]time.Time{}
+			}
+			m.Reminded[key] = now
+			if err := s.writeJSON(s.draftKey(m.ID, "meta.json"), m); err != nil {
+				res.Errors = append(res.Errors, err)
+			}
+			s.mu.Unlock()
+			res.Reminded = append(res.Reminded, m.ID+":"+key)
+			break // die knappste zutreffende Frist genügt pro Lauf
+		}
+	}
+	return res
+}
+
+func reminderKey(d time.Duration) string {
+	return strconv.Itoa(int(d.Hours()/24)) + "d"
+}
+
+// --- Sicherung: Export und Import eines ganzen Entwurfs -------------------------
+
+const BackupFormat = "stadtplaner-backup"
+
+// Backup ist die Sicherungsdatei: aktueller Stand, Versionen und Kommentare (ohne Token).
+type Backup struct {
+	Format        string          `json:"format"`
+	FormatVersion int             `json:"formatVersion"`
+	ExportedAt    time.Time       `json:"exportedAt"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	UpdatedAt     time.Time       `json:"updatedAt"`
+	Doc           *model.Document `json:"doc"`
+	Versions      []BackupVersion `json:"versions"`
+	Comments      []Comment       `json:"comments"`
+}
+
+type BackupVersion struct {
+	Info VersionInfo     `json:"info"`
+	Doc  *model.Document `json:"doc"`
+}
+
+func (s *Store) Backup(id string) (*Backup, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, err := s.readMeta(id)
+	if err != nil {
+		return nil, err
+	}
+	var doc model.Document
+	if err := s.readJSON(s.draftKey(id, "current.json"), &doc); err != nil {
+		return nil, err
+	}
+	b := &Backup{Format: BackupFormat, FormatVersion: 1, ExportedAt: time.Now().UTC(), ID: id, Name: m.Name, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt, Doc: &doc, Versions: []BackupVersion{}, Comments: []Comment{}}
+	for _, v := range m.Versions {
+		var vf versionFile
+		if err := s.readJSON(s.draftKey(id, "versions/"+strconv.Itoa(v.N)+".json"), &vf); err != nil {
+			continue
+		}
+		b.Versions = append(b.Versions, BackupVersion{Info: vf.Info, Doc: vf.Doc})
+	}
+	list, err := s.readComments(id)
+	if err == nil {
+		b.Comments = stripTokens(list)
+	}
+	return b, nil
+}
+
+// Restore legt aus einer Sicherung einen neuen Entwurf mit eigenem Token an; Versionen behalten
+// Nummern, Zeiten und Beschriftungen, der aktuelle Stand wird als neue Version abgelegt.
+func (s *Store) Restore(b *Backup) (string, string, error) {
+	if b == nil || b.Format != BackupFormat || b.Doc == nil {
+		return "", "", ErrBadBackup
+	}
+	if err := model.Normalize(b.Doc); err != nil {
+		return "", "", fmt.Errorf("%w: %v", ErrBadBackup, err)
+	}
+	versions := b.Versions
+	if len(versions) > s.maxVersions {
+		versions = versions[len(versions)-s.maxVersions:]
+	}
+	for i := range versions {
+		if versions[i].Doc == nil {
+			return "", "", fmt.Errorf("%w: Version ohne Inhalt", ErrBadBackup)
+		}
+		if err := model.Normalize(versions[i].Doc); err != nil {
+			return "", "", fmt.Errorf("%w: Version %d: %v", ErrBadBackup, versions[i].Info.N, err)
+		}
+	}
+	if len(b.Comments) > MaxComments {
+		return "", "", fmt.Errorf("%w: zu viele Kommentare", ErrBadBackup)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, err := newID()
+	if err != nil {
+		return "", "", err
+	}
+	token, err := newToken()
+	if err != nil {
+		return "", "", err
+	}
+	now := time.Now().UTC()
+	created := b.CreatedAt
+	if created.IsZero() {
+		created = now
+	}
+	m := &Meta{ID: id, Name: b.Doc.Name, TokenHash: hashToken(token), CreatedAt: created, UpdatedAt: now, NextSeq: 1}
+	for _, v := range versions {
+		if v.Info.N < 1 || v.Info.N < m.NextSeq {
+			v.Info.N = m.NextSeq
+		}
+		if v.Info.At.IsZero() {
+			v.Info.At = now
+		}
+		v.Doc.ID = id
+		v.Info.Stats = model.Compute(v.Doc)
+		if err := s.writeJSON(s.draftKey(id, "versions/"+strconv.Itoa(v.Info.N)+".json"), versionFile{Info: v.Info, Doc: v.Doc}); err != nil {
+			return "", "", err
+		}
+		m.Versions = append(m.Versions, v.Info)
+		m.NextSeq = v.Info.N + 1
+	}
+	b.Doc.ID = id
+	b.Doc.CreatedAt = created.Format(time.RFC3339)
+	b.Doc.UpdatedAt = now.Format(time.RFC3339)
+	if err := s.writeAll(m, b.Doc, "Aus Sicherung eingespielt", now); err != nil {
+		return "", "", err
+	}
+	if len(b.Comments) > 0 {
+		list := make([]Comment, 0, len(b.Comments))
+		for _, c := range b.Comments {
+			c.Text = strings.TrimSpace(c.Text)
+			if c.ID == "" || c.Text == "" || len(c.Text) > MaxCommentText {
+				continue
+			}
+			c.TokenHash = ""
+			c.ClientID = ""
+			if c.Author == "" {
+				c.Author = "Anonym"
+			}
+			list = append(list, c)
+		}
+		if err := s.writeJSON(s.commentsKey(id), list); err != nil {
+			return "", "", err
+		}
+	}
+	return id, token, nil
 }
 
 // Fork kopiert einen Entwurf in einen neuen mit eigenem Token.
