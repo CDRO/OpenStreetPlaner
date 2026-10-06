@@ -13,7 +13,9 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
 
   // Ungespeichert: keine Sicherung vom Server, kein Ablaufhinweis
   await page.click('.tabs button[data-tab="drafts"]');
-  assert.equal(await page.locator('#d-backup').count(), 0, 'Sicherung erst nach dem Speichern');
+  await page.click('#d-export');
+  assert.ok(await page.locator('#d-backup').isDisabled(), 'Sicherung erst nach dem Speichern');
+  await page.keyboard.press('Escape');
   assert.equal((await page.locator('#draft-lifecycle').innerHTML()).trim(), '', 'kein Ablauf ohne Entwurf');
 
   // Strasse zeichnen und speichern
@@ -56,6 +58,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
 
   // Sicherung herunterladen: Datei mit Format, Versionen und Kommentaren
   await fetch(`${BASE}api/drafts/${id}/comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat: 47, lng: 8, author: 'Anna', text: 'Hinweis' }) });
+  await page.click('#d-export');
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('#d-backup')]);
   assert.ok(download.suggestedFilename().endsWith('.stadtplaner-backup.json'), download.suggestedFilename());
   const backup = JSON.parse(fs.readFileSync(await download.path(), 'utf8'));

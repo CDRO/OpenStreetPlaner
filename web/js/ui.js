@@ -21,6 +21,12 @@ import { icon, mountIcons } from './icons.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** Abschnittskopf mit Erklärung hinter einem Info-Knopf: Bedienelemente zuerst, Text auf Wunsch. */
+function sectionHead(title, help, tag = 'h3') {
+  if (!help) return `<${tag}>${esc(title)}</${tag}>`;
+  return `<div class="sec-head"><${tag}>${esc(title)}</${tag}><button type="button" class="info-toggle" aria-expanded="false" title="${esc(t('Erklärung ein-/ausblenden'))}">${icon('info', { size: 15 })}</button></div><p class="help-text muted small" hidden>${help}</p>`;
+}
+
 /** Zuversicht als aufklappbare Zeile: Stufe, Band und die Gründe. */
 function confidenceBlock(conf) {
   if (!conf) return '';
@@ -36,6 +42,20 @@ function confidenceDot(conf) {
 const fmtDate = (iso) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
+};
+/** „vor 3 Tagen“, „gestern“ – mit vollem Datum im Tooltip (fmtDate). */
+const fmtRelative = (iso) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const diff = (d.getTime() - Date.now()) / 1000;
+  const abs = Math.abs(diff);
+  const rtf = new Intl.RelativeTimeFormat(locale(), { numeric: 'auto' });
+  if (abs < 60) return rtf.format(Math.round(diff), 'second');
+  if (abs < 3600) return rtf.format(Math.round(diff / 60), 'minute');
+  if (abs < 86400) return rtf.format(Math.round(diff / 3600), 'hour');
+  if (abs < 86400 * 30) return rtf.format(Math.round(diff / 86400), 'day');
+  if (abs < 86400 * 365) return rtf.format(Math.round(diff / (86400 * 30)), 'month');
+  return rtf.format(Math.round(diff / (86400 * 365)), 'year');
 };
 const fmtDay = (iso) => {
   const d = new Date(iso);
@@ -119,8 +139,7 @@ function pairsSection(doc, actions, tools, geometry) {
   }).join('');
   const total = count ? `<tr class="total"><td colspan="4">${tn(count, 'Summe über {n} Paar', 'Summe über {n} Paare')} · Ø ${formatDuration(Math.abs(sumDelta / count))} ${t('je Fahrt')}</td><td class="num"><strong>${sumDelta > 0 ? '+' : sumDelta < 0 ? '−' : '±'}${formatDuration(Math.abs(sumDelta))}</strong></td><td></td></tr>` : '';
   return `
-    <h4>${t('Weitere Routenpaare')}</h4>
-    <p class="muted small">${t('Feste Verbindungen wie Schule, Bahnhof oder Nachbardorf: heute gegen neu{typ}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte.', { typ: geometry ? t(' (typische Zeit)') : '' })}</p>
+    ${sectionHead(t('Weitere Routenpaare'), `${t('Feste Verbindungen wie Schule, Bahnhof oder Nachbardorf: heute gegen neu{typ}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte.', { typ: geometry ? t(' (typische Zeit)') : '' })}`, 'h4')}
     ${pairs.length ? `<table class="route-table pairs"><thead><tr><th>#</th><th>${t('Name')}</th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th><th></th></tr></thead><tbody>${rows}${total}</tbody></table>${confidenceBlock(actions.confidence('pairs'))}` : ''}
     <div class="btn-row"><button type="button" id="pair-add" class="btn small" ${dis}>${t('+ Paar hinzufügen')}</button>${capturing ? `<span class="muted small">${t('Start und Ziel auf der Karte anklicken (Esc bricht ab).')}</span>` : ''}</div>`;
 }
@@ -226,8 +245,7 @@ function busSection(doc, actions, tools) {
       </div>`;
   }).join('');
   return `
-    <h4>${t('Buslinien')}</h4>
-    <p class="muted small">${t('Haltestellen in Reihenfolge; die Fahrzeit folgt dem Bus-Netz: Busschleusen (Zugang „Nur Bus“) und freigegebene Flächen sind für Busse offen, für Autos gesperrt. Je Zwischenhalt kommt die Haltezeit dazu.')} ${t('„Fahrplan abgleichen“ holt die Fahrzeit direkter Busfahrten zwischen erster und letzter Haltestelle aus dem offenen Fahrplan (transport.opendata.ch) und vergleicht sie mit dem Modell heute.')}</p>
+    ${sectionHead(t('Buslinien'), `${t('Haltestellen in Reihenfolge; die Fahrzeit folgt dem Bus-Netz: Busschleusen (Zugang „Nur Bus“) und freigegebene Flächen sind für Busse offen, für Autos gesperrt. Je Zwischenhalt kommt die Haltezeit dazu.')} ${t('„Fahrplan abgleichen“ holt die Fahrzeit direkter Busfahrten zwischen erster und letzter Haltestelle aus dem offenen Fahrplan (transport.opendata.ch) und vergleicht sie mit dem Modell heute.')}`, 'h4')}
     ${rows}
     <div class="btn-row"><button type="button" id="bus-add" class="btn small" ${dis}>${t('+ Buslinie')}</button>${capturing ? `<span class="muted small">${t('Haltestellen anklicken oder neue setzen (Esc beendet).')}</span>` : ''}</div>
     ${transitSection(doc, actions)}`;
@@ -245,9 +263,9 @@ function variantsSection(doc, actions) {
         <thead><tr><th>${t('Ebene')}</th><th class="num">${t('Elemente')}</th><th class="num">${t('Neu (m)')}</th><th class="num">${t('Kosten')}</th><th class="num">${t('Route Δ')}</th><th class="num">${t('Paare Δ')}</th><th class="num">${t('Parzellen')}</th><th class="num">${t('Gebäude')}</th><th class="num">${t('Warn.')}</th></tr></thead>
         <tbody>${v.layers.map((r) => `<tr class="${r.visible ? '' : 'muted'}"><td>${esc(r.name)}${r.visible ? '' : ` (${t('ausgeblendet')})`}</td><td class="num">${r.features}</td><td class="num">${Math.round(r.lengthNew)}</td><td class="num">${formatChf(r.costs)}</td><td class="num">${fmtDelta(r.routeDelta)}</td><td class="num">${r.pairsCount ? fmtDelta(r.pairsDelta) : '–'}</td><td class="num">${r.parcels}</td><td class="num">${r.buildings === null ? '–' : r.buildings}</td><td class="num">${r.warnings}</td></tr>`).join('')}</tbody>
       </table>
-      <p class="muted small">${t('Je Ebene allein sichtbar gerechnet: Kosten der Ebene, Fahrzeit-Differenz der Hauptroute und Summe der Paare gegenüber heute, Parzellen und Gebäude entlang neuer Strassen, Warnungen des Normen-Checks.')}${stale ? ` <strong>${t('Ebenen haben sich geändert – neu rechnen.')}</strong>` : ''}</p>` : `<p class="muted small">${t('Vergleicht die Ebenen als Varianten: jede allein sichtbar mit Kosten, Fahrzeiten, Parzellen, Gebäuden und Warnungen.')}</p>`;
+      <p class="muted small">${t('Je Ebene allein sichtbar gerechnet: Kosten der Ebene, Fahrzeit-Differenz der Hauptroute und Summe der Paare gegenüber heute, Parzellen und Gebäude entlang neuer Strassen, Warnungen des Normen-Checks.')}${stale ? ` <strong>${t('Ebenen haben sich geändert – neu rechnen.')}</strong>` : ''}</p>` : '';
   return `
-      <h3>${t('Variantenvergleich')}</h3>
+      ${sectionHead(t('Variantenvergleich'), t('Vergleicht die Ebenen als Varianten: jede allein sichtbar mit Kosten, Fahrzeiten, Parzellen, Gebäuden und Warnungen.'))}
       ${table}
       <div class="btn-row"><button type="button" id="variants-run" class="btn small">${v ? t('Neu rechnen') : t('Varianten vergleichen')}</button></div>`;
 }
@@ -257,8 +275,7 @@ function parkingSection(actions) {
   const b = actions.parkingBalance();
   const rows = b.items.map((it) => `<li><span class="badge ${it.kind === 'added' ? 'ok' : 'warn'}">${it.spaces > 0 ? '+' : ''}${it.spaces}</span> ${it.featureId ? `<button type="button" class="linkish parking-row" data-id="${esc(it.featureId)}">${esc(it.label)}</button>` : esc(it.label)}${it.note ? ` <span class="muted small">${esc(it.note)}</span>` : ''}</li>`).join('');
   return `
-      <h3>${t('Parkplatzbilanz')}</h3>
-      <p class="muted small">${t('Neu: Parkstreifen aus dem Querschnitt (6 m je Platz) und Parkflächen (25 m² je Platz inkl. Fahrgasse). Entfallen: OSM-Parkstreifen an übernommenen Strassen ohne Parkstreifen im Querschnitt oder bei Rückbau, OSM-Parkplätze, die neue Strassen oder Flächen berühren (capacity oder Fläche).')}</p>
+      ${sectionHead(t('Parkplatzbilanz'), `${t('Neu: Parkstreifen aus dem Querschnitt (6 m je Platz) und Parkflächen (25 m² je Platz inkl. Fahrgasse). Entfallen: OSM-Parkstreifen an übernommenen Strassen ohne Parkstreifen im Querschnitt oder bei Rückbau, OSM-Parkplätze, die neue Strassen oder Flächen berühren (capacity oder Fläche).')}`, 'h3')}
       <table class="route-table"><tbody>
         <tr><td>${t('Neu')}</td><td class="num">+${b.added.lanes + b.added.zones}</td><td class="muted small">${t('{a} Parkstreifen, {b} Flächen', { a: b.added.lanes, b: b.added.zones })}</td></tr>
         <tr><td>${t('Entfallen')}</td><td class="num">−${b.removed.lanes + b.removed.areas}</td><td class="muted small">${t('{a} Parkstreifen, {b} OSM-Parkplätze', { a: b.removed.lanes, b: b.removed.areas })}</td></tr>
@@ -329,8 +346,7 @@ function isochroneSection(doc, actions, tools) {
   }
   if (res && !res.error) stats += confidenceBlock(actions.confidence('isochrone'));
   return `
-    <h4>${t('Erreichbarkeit (Isochronen)')}</h4>
-    <p class="muted small">${t('Welches Strassennetz ist ab einem Punkt in 5, 10 oder 15 Minuten erreichbar – heute, mit dem Entwurf oder als Differenz (grün: nur neu, rot: nur heute).')}</p>
+    ${sectionHead(t('Erreichbarkeit (Isochronen)'), `${t('Welches Strassennetz ist ab einem Punkt in 5, 10 oder 15 Minuten erreichbar – heute, mit dem Entwurf oder als Differenz (grün: nur neu, rot: nur heute).')}`, 'h4')}
     <div class="btn-row">
       <button type="button" id="iso-set" class="btn small ${capturing ? 'primary' : ''}" ${dis}>${iso ? t('Ursprung verschieben') : t('Ursprung setzen')}</button>
       ${iso ? `
@@ -580,6 +596,14 @@ export class UI {
       if (e.target === this.$('modal') || e.target.closest('[data-close]')) this.closeModal();
     });
     this.$('pin-close').addEventListener('click', () => this.setPin(null));
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.info-toggle');
+      if (!btn) return;
+      const text = btn.closest('.sec-head') && btn.closest('.sec-head').nextElementSibling;
+      if (!text || !text.classList.contains('help-text')) return;
+      text.hidden = !text.hidden;
+      btn.setAttribute('aria-expanded', String(!text.hidden));
+    });
     this.wireSearch();
   }
 
@@ -781,8 +805,7 @@ export class UI {
     const overridden = Object.keys(doc.costs || {}).length;
     const openState = Array.from(el.querySelectorAll('details')).map((d) => d.open); // bleibt über das Neuzeichnen erhalten
     el.innerHTML = `
-      <h3>${t('Kostenschätzung')}</h3>
-      <p class="muted small">${t('Grobe Richtwerte für Schweizer Verhältnisse: Strassen pro Kilometer (mit der Breite skaliert), Brücken und Tunnel als Zuschlag pro Meter, Knoten und Flächen pauschal. Bestehende Strassen werden nicht gerechnet; ein Umbau wird als „Neu“ markiert. Die Summe zählt nur sichtbare Ebenen, Varianten also per Ein-/Ausblenden.')}</p>
+      ${sectionHead(t('Kostenschätzung'), `${t('Grobe Richtwerte für Schweizer Verhältnisse: Strassen pro Kilometer (mit der Breite skaliert), Brücken und Tunnel als Zuschlag pro Meter, Knoten und Flächen pauschal. Bestehende Strassen werden nicht gerechnet; ein Umbau wird als „Neu“ markiert. Die Summe zählt nur sichtbare Ebenen, Varianten also per Ein-/Ausblenden.')}`, 'h3')}
       ${confidenceBlock(actions.confidence('costs'))}
       <table class="route-table">
         <thead><tr><th>${t('Ebene')}</th><th class="num">${t('Kosten')}</th></tr></thead>
@@ -801,15 +824,14 @@ export class UI {
           <label class="cost-item"><span>${esc(t(it.label))}</span><input type="number" class="cost-input" data-key="${it.key}" min="0" step="${it.value >= 1e6 ? 100000 : it.value >= 10000 ? 10000 : 10}" value="${costValue(doc, it.key)}" ${dis}><span class="muted small">${esc(it.unit)}</span></label>`).join('')}</div>`).join('')}
         <button type="button" id="cost-reset" class="btn small" ${dis || !overridden ? 'disabled' : ''}>${t('Alle auf Standard')}</button>
       </details>
-      <h3>${t('Normen-Check')}</h3>
-      <p class="muted small">${t('Richtwerte nach VSS: Kurvenradius zum Tempo, Steigung aus dem Höhenprofil, Kreiselgrösse, Fahrstreifenbreite, Tempo in Zonen, nicht angeschlossene Enden.')} ${checks.length ? `${tn(warns, '{n} Warnung', '{n} Warnungen')}, ${tn(checks.length - warns, '{n} Hinweis', '{n} Hinweise')}.` : t('Keine Auffälligkeiten.')}</p>
+      ${sectionHead(t('Normen-Check'), t('Richtwerte nach VSS: Kurvenradius zum Tempo, Steigung aus dem Höhenprofil, Kreiselgrösse, Fahrstreifenbreite, Tempo in Zonen, nicht angeschlossene Enden.'))}
+      <p class="muted small">${checks.length ? `${tn(warns, '{n} Warnung', '{n} Warnungen')}, ${tn(checks.length - warns, '{n} Hinweis', '{n} Hinweise')}.` : t('Keine Auffälligkeiten.')}</p>
       ${checks.length ? `<ul class="check-list">${checks.map((c) => `<li class="${c.severity}"><button type="button" class="linkish check-row" data-id="${esc(c.id)}">${esc(c.text)}</button></li>`).join('')}</ul>` : ''}
       ${confidenceBlock(staticConfidence('checks'))}
       ${variantsSection(doc, actions)}
       ${parkingSection(actions)}
       ${phasesSection(doc, actions)}
-      <h3>${t('Betroffene Gebäude')}</h3>
-      <p class="muted small">${t('Gebäude aus OpenStreetMap im Umkreis der heutigen Route, der neuen Route und aller neuen Strassen (sichtbare Ebenen). Lärm- und Sicherheitsargument in einer Zahl.')}</p>
+      ${sectionHead(t('Betroffene Gebäude'), `${t('Gebäude aus OpenStreetMap im Umkreis der heutigen Route, der neuen Route und aller neuen Strassen (sichtbare Ebenen). Lärm- und Sicherheitsargument in einer Zahl.')}`, 'h3')}
       <div class="btn-row">
         <label class="field inline">${t('Umkreis')}<select id="exp-radius">${[25, 50, 100].map((r) => `<option value="${r}" ${settings.exposureRadius === r ? 'selected' : ''}>${r} m</option>`).join('')}</select></label>
         <button type="button" id="exp-load" class="btn small">${t('Gebäude für die Ansicht laden')}</button>
@@ -1160,7 +1182,7 @@ export class UI {
     menu.innerHTML = items.map((it, i) => {
       if (it.header) return `<div class="menu-header">${esc(it.header)}</div>`;
       if (it.separator) return '<div class="sep"></div>';
-      return `<button type="button" class="${it.checked ? 'checked' : ''}${it.danger ? ' danger' : ''}" data-i="${i}" ${it.disabled ? 'disabled' : ''}>${it.icon ? `<span class="mi">${icon(it.icon, { size: 15 })}</span>` : ''}${esc(it.label)}</button>`;
+      return `<button type="button" class="${it.checked ? 'checked' : ''}${it.danger ? ' danger' : ''}" data-i="${i}" ${it.id ? `id="${esc(it.id)}"` : ''} ${it.disabled ? 'disabled' : ''}>${it.icon ? `<span class="mi">${icon(it.icon, { size: 15 })}</span>` : ''}<span class="mi-text">${esc(it.label)}${it.hint ? `<small>${esc(it.hint)}</small>` : ''}</span></button>`;
     }).join('');
     menu.hidden = false;
     const w = menu.offsetWidth;
@@ -1612,24 +1634,20 @@ export class UI {
     if (saved && !editable) badge = `<span class="badge muted">${t('nur Ansicht')}</span>`;
     else if (saved && !dirty) badge = `<span class="badge ok">${t('gespeichert')}</span>`;
     else if (saved) badge = `<span class="badge warn">${t('ungespeicherte Änderungen')}</span>`;
+    const link = saved ? `${location.origin}/d/${actions.draftId()}` : '';
     this.$('draft-current').innerHTML = `
-      <h3>${esc(store.doc.name)} ${badge}</h3>
-      <p class="muted">${t('{roads} Strassen ({len}), {junctions} Kreuzungen, {roundabouts} Kreisel', { roads: s.roads, len: fmtLen(s.lengthMeters), junctions: s.junctions, roundabouts: s.roundabouts })}${s.zones ? `, ${t('{n} Flächen', { n: s.zones })}` : ''}${s.bridges ? `, ${t('{n} Brückenabschnitte', { n: s.bridges })}` : ''}${s.tunnels ? `, ${t('{n} Tunnelabschnitte', { n: s.tunnels })}` : ''}</p>
-      ${saved ? `<p class="muted small">Link: <code>${esc(location.origin)}/d/${esc(actions.draftId())}</code></p>` : ''}
+      <div class="draft-head"><h3 class="draft-title">${esc(store.doc.name)}</h3>${badge}</div>
+      <p class="muted small">${t('{roads} Strassen ({len}), {junctions} Kreuzungen, {roundabouts} Kreisel', { roads: s.roads, len: fmtLen(s.lengthMeters), junctions: s.junctions, roundabouts: s.roundabouts })}${s.zones ? `, ${t('{n} Flächen', { n: s.zones })}` : ''}${s.bridges ? `, ${t('{n} Brückenabschnitte', { n: s.bridges })}` : ''}${s.tunnels ? `, ${t('{n} Tunnelabschnitte', { n: s.tunnels })}` : ''}</p>
+      ${saved ? `<p class="draft-link small">${icon('link', { size: 14 })}<code>${esc(link)}</code><button type="button" class="link" id="d-copy-link">${t('Kopieren')}</button></p>` : ''}
       <div class="btn-row">
-        <button type="button" id="d-new" class="btn small">${t('Neu')}</button>
-        ${editable ? `<button type="button" id="d-save" class="btn small primary">${t('Speichern')}</button>` : `<button type="button" id="d-own" class="btn small primary">${t('Eigene Kopie anlegen')}</button>`}
-        <button type="button" id="d-copy" class="btn small">${t('Als neuen Entwurf speichern')}</button>
+        ${editable ? `<button type="button" id="d-save" class="btn primary">${icon('save')}<span>${t('Speichern')}</span></button>` : `<button type="button" id="d-own" class="btn primary">${icon('copy')}<span>${t('Eigene Kopie anlegen')}</span></button>`}
+        <button type="button" id="d-share" class="btn">${icon('share')}<span>${t('Teilen…')}</span></button>
       </div>
       <div class="btn-row">
-        <button type="button" id="d-share" class="btn small">${t('Teilen…')}</button>
-        <button type="button" id="d-export" class="btn small">${t('JSON exportieren')}</button>
-        <button type="button" id="d-geojson" class="btn small">${t('GeoJSON exportieren')}</button>
-        <button type="button" id="d-import" class="btn small" title="${t('Stadtplaner-JSON ersetzt den Entwurf; eine Sicherung wird als neuer Entwurf eingespielt; GeoJSON, GPX und KML kommen als neue Ebene dazu')}">${t('Importieren (JSON, Sicherung, GeoJSON, GPX, KML)')}</button>
-      </div>
-      <div class="btn-row">
-        <button type="button" id="d-export-map" class="btn small">${t('Karte als PNG / PDF exportieren…')}</button>
-        ${saved ? `<button type="button" id="d-backup" class="btn small" title="${t('Vollständige Sicherung vom Server: aktueller Stand, alle Versionen und Kommentare')}">${t('Sicherung herunterladen')}</button>` : ''}
+        <button type="button" id="d-new" class="btn small">${icon('file', { size: 15 })}<span>${t('Neu')}</span></button>
+        <button type="button" id="d-copy" class="btn small" title="${t('Als neuen Entwurf speichern')}">${icon('copy', { size: 15 })}<span>${t('Kopie…')}</span></button>
+        <button type="button" id="d-export" class="btn small" aria-haspopup="menu">${icon('download', { size: 15 })}<span>${t('Export')}</span>${icon('chevron', { size: 13, cls: 'caret' })}</button>
+        <button type="button" id="d-import" class="btn small" title="${t('Stadtplaner-JSON ersetzt den Entwurf; eine Sicherung wird als neuer Entwurf eingespielt; GeoJSON, GPX und KML kommen als neue Ebene dazu')}">${icon('upload', { size: 15 })}<span>${t('Import')}</span></button>
       </div>
       <div id="draft-lifecycle"></div>`;
     this.$('d-new').onclick = () => actions.newDraft();
@@ -1637,26 +1655,46 @@ export class UI {
     if (this.$('d-own')) this.$('d-own').onclick = () => actions.makeOwnCopy();
     this.$('d-copy').onclick = () => actions.saveCopy();
     this.$('d-share').onclick = () => actions.share();
-    this.$('d-export').onclick = () => actions.exportJson();
-    this.$('d-geojson').onclick = () => actions.exportGeoJson();
     this.$('d-import').onclick = () => this.$('import-file').click();
-    this.$('d-export-map').onclick = () => this.openExport();
-    if (this.$('d-backup')) this.$('d-backup').onclick = () => actions.downloadBackup();
+    if (this.$('d-copy-link')) {
+      this.$('d-copy-link').onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(link);
+          this.toast(t('Link kopiert.'), 'ok');
+        } catch {
+          this.toast(t('Link markiert – mit Ctrl+C kopieren.'));
+        }
+      };
+    }
+    this.$('d-export').onclick = (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      this.showContextMenu([
+        { header: t('Daten') },
+        { id: 'd-export-json', label: t('Stadtplaner-JSON'), hint: t('Entwurf als Datei, für Import und Weitergabe'), icon: 'file', action: () => actions.exportJson() },
+        { id: 'd-geojson', label: 'GeoJSON', hint: t('Geometrien und Eigenschaften für andere GIS-Werkzeuge'), icon: 'globe', action: () => actions.exportGeoJson() },
+        { id: 'd-backup', label: t('Sicherung herunterladen'), hint: saved ? t('Vom Server: aktueller Stand, alle Versionen und Kommentare') : t('Erst nach dem Speichern verfügbar'), icon: 'download', disabled: !saved, action: () => actions.downloadBackup() },
+        { separator: true },
+        { header: t('Karte') },
+        { id: 'd-export-map', label: t('Karte als PNG / PDF / DXF…'), hint: t('Massstab, Papierformat, Bericht'), icon: 'image', action: () => this.openExport() },
+      ], { x: r.left, y: r.bottom + 4 });
+    };
     this.renderLifecycle();
 
-    const drafts = local.listDrafts();
+    const drafts = local.listDrafts().slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
     const list = this.$('draft-list');
     if (!drafts.length) {
       list.innerHTML = `<p class="muted">${t('Noch keine Entwürfe in diesem Browser. Speichern legt den ersten an.')}</p>`;
     } else {
       list.innerHTML = drafts.map((d) => `
         <div class="list-row${d.id === actions.draftId() ? ' active' : ''}" data-id="${d.id}">
-          <div class="grow"><div class="title">${esc(d.name)} ${d.token ? '' : `<span class="badge muted">${t('nur Ansicht')}</span>`}</div><div class="muted">${fmtDate(d.updatedAt)}</div></div>
-          <button type="button" class="btn small d-open" ${d.id === actions.draftId() ? 'disabled' : ''}>${t('Öffnen')}</button>
-          <button type="button" class="icon-btn d-delete" title="${t('Löschen / entfernen')}">✕</button>
+          <span class="list-ic">${icon(d.token ? 'file' : 'eye', { size: 16 })}</span>
+          <div class="grow"><div class="title">${esc(d.name)} ${d.token ? '' : `<span class="badge muted">${t('nur Ansicht')}</span>`}</div><div class="muted small" title="${esc(fmtDate(d.updatedAt))}">${esc(fmtRelative(d.updatedAt))}</div></div>
+          ${d.id === actions.draftId() ? `<span class="badge ok">${t('geöffnet')}</span>` : `<button type="button" class="btn small d-open">${t('Öffnen')}</button>`}
+          <button type="button" class="icon-btn d-delete" title="${t('Löschen / entfernen')}">${icon('trash', { size: 15 })}</button>
         </div>`).join('');
       list.querySelectorAll('.list-row').forEach((row) => {
-        row.querySelector('.d-open').onclick = () => actions.openDraft(row.dataset.id);
+        const open = row.querySelector('.d-open');
+        if (open) open.onclick = () => actions.openDraft(row.dataset.id);
         row.querySelector('.d-delete').onclick = () => actions.deleteDraft(row.dataset.id);
       });
     }
@@ -1680,7 +1718,7 @@ export class UI {
       el.innerHTML = '';
       return;
     }
-    let html = `<p class="muted small" id="lifecycle-expiry">${t('Entwürfe werden {days} Tage nach dem letzten Speichern gelöscht.', { days: lc.retentionDays })}${lc.expiresAt ? ` ${t('Dieser Entwurf wird am {date} gelöscht, falls er bis dahin nicht erneut gespeichert wird.', { date: esc(fmtDay(lc.expiresAt)) })}` : ''}</p>`;
+    let html = `<p class="muted small lifecycle" id="lifecycle-expiry">${icon('history', { size: 14 })}<span>${t('Entwürfe werden {days} Tage nach dem letzten Speichern gelöscht.', { days: lc.retentionDays })}${lc.expiresAt ? ` ${t('Dieser Entwurf wird am {date} gelöscht, falls er bis dahin nicht erneut gespeichert wird.', { date: esc(fmtDay(lc.expiresAt)) })}` : ''} ${t('Eine Sicherung gibt es unter „Export“.')}</span></p>`;
     // Die E-Mail-Erinnerung gibt es nur, wenn der Server SMTP konfiguriert hat (Meta-Tag stadtplaner-config)
     if (actions.canEdit() && lc.mail) {
       const r = lc.reminder;
@@ -2122,7 +2160,7 @@ export class UI {
       }).join('')
       : `<p class="muted">${saved ? t('Noch keine Kommentare. Mit „Kommentar setzen“ einen Punkt auf der Karte anklicken.') : t('Kommentare gibt es, sobald der Entwurf gespeichert ist und einen Link hat.')}</p>`;
     el.innerHTML = `
-      <p class="muted small">${t('Wer den Ansichtslink hat, kann Kommentare an eine Stelle der Karte heften und auf Kommentare antworten. Der Besitzer des Entwurfs kann Kommentare erledigen oder löschen, Verfasser ihre eigenen.')}</p>
+      ${sectionHead(t('Kommentare'), t('Wer den Ansichtslink hat, kann Kommentare an eine Stelle der Karte heften und auf Kommentare antworten. Der Besitzer des Entwurfs kann Kommentare erledigen oder löschen, Verfasser ihre eigenen.'))}
       <div class="btn-row">
         <button type="button" id="comment-add" class="btn small ${tools.tool === 'comment' ? 'primary' : ''}" ${saved ? '' : 'disabled'}>${t('Kommentar setzen')}</button>
         <button type="button" id="comment-refresh" class="btn small" ${saved ? '' : 'disabled'}>${t('Aktualisieren')}</button>
@@ -2207,7 +2245,7 @@ export class UI {
     }
     const race = actions.race();
     el.innerHTML = `
-      <p class="muted small">${t('Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.')} ${t('Velo (17 km/h, Wege und Velostreifen) und zu Fuss (4.8 km/h, auch Treppen und Fusswege, ohne Einbahnen) mit Anteil unsicherer Strecke: schnelle Strassen ohne Velostreifen bzw. Trottoir.')}</p>
+      ${sectionHead(t('Routen-Rechner: heute vs. neu'), `${t('Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.')} ${t('Velo (17 km/h, Wege und Velostreifen) und zu Fuss (4.8 km/h, auch Treppen und Fusswege, ohne Einbahnen) mit Anteil unsicherer Strecke: schnelle Strassen ohne Velostreifen bzw. Trottoir.')}`)}
       ${body}
       <div id="race-box" class="race-box">${raceBlock(race, actions, { canStart: !!(q && routes) })}</div>
       <label class="check"><input type="checkbox" id="route-model" ${geometry ? 'checked' : ''}> ${t('Fahrzeit aus der Strassenführung (Kurvenradien, Steigung aus Höhenprofil, Wartezeiten mit Streuung)')}</label>

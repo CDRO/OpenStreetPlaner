@@ -70,12 +70,14 @@
       </section>
 
       <section id="tab-drafts" class="tab">
-        <div id="draft-current" class="box"></div>
+        <div id="draft-current" class="box draft-card"></div>
         <h3 data-i18n>Meine Entwürfe</h3>
         <p class="muted small" data-i18n>Entwürfe liegen auf dem Server; dieser Browser merkt sich, welche dir gehören.</p>
         <div id="draft-list"></div>
-        <h3 data-i18n>Entwurf per Link öffnen</h3>
-        <div class="link-row"><input type="text" id="open-link" placeholder="Link oder ID einfügen" data-i18n-placeholder><button type="button" id="open-link-btn" class="btn" data-i18n>Öffnen</button></div>
+        <details class="box">
+          <summary data-i18n>Entwurf per Link öffnen</summary>
+          <div class="link-row"><input type="text" id="open-link" placeholder="Link oder ID einfügen" data-i18n-placeholder><button type="button" id="open-link-btn" class="btn" data-i18n>Öffnen</button></div>
+        </details>
       </section>
 
       <section id="tab-history" class="tab">
@@ -84,12 +86,10 @@
       </section>
 
       <section id="tab-route" class="tab">
-        <h3 data-i18n>Routen-Rechner: heute vs. neu</h3>
         <div id="route-panel"></div>
       </section>
 
       <section id="tab-comments" class="tab">
-        <h3 data-i18n>Kommentare</h3>
         <div id="comments-panel"></div>
       </section>
 

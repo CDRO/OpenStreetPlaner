@@ -296,6 +296,7 @@ const C = [47.05, 8.3];
 
   // Export-Dialog: PNG in 96 dpi (Ansicht) und PDF A3 300 dpi (ganzer Entwurf)
   await page.click('.tabs button[data-tab="drafts"]');
+  await page.click('#d-export');
   await page.click('#d-export-map');
   await page.waitForSelector('#export-png');
   await page.selectOption('#export-dpi', '96');
