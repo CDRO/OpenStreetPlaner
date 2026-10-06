@@ -2036,6 +2036,7 @@ async function main() {
     const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable);
     if (e.key === 'Escape') {
       if (!ui.$('modal').hidden) return ui.closeModal();
+      if (ui.closePanel()) return undefined;
       if (typing) return target.blur();
       if (tools.cancel()) return undefined;
       if (tools.tool === 'route' && store.doc.route) return actions.clearRoute();
@@ -2061,6 +2062,10 @@ async function main() {
       return tools.selectAll();
     }
     if (ctrl) return;
+    if (e.key === '?') {
+      e.preventDefault();
+      return ui.togglePanel('help');
+    }
     if (e.key === 'Enter') return tools.finish();
     if (e.key === 'Backspace') {
       if (tools.popVertex()) e.preventDefault();

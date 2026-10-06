@@ -561,6 +561,15 @@ export class UI {
     this.$('btn-save').addEventListener('click', () => actions.saveDraft());
     this.$('btn-share').addEventListener('click', () => actions.share());
     this.$('btn-locate').addEventListener('click', () => actions.locate());
+    this.$('btn-settings').addEventListener('click', () => this.togglePanel('settings'));
+    this.$('btn-help').addEventListener('click', () => this.togglePanel('help'));
+    document.querySelectorAll('[data-close-panel]').forEach((b) => b.addEventListener('click', () => this.closePanel()));
+    // Klick ausserhalb schliesst das Panel (der Klick selbst wirkt weiter, z. B. auf der Karte)
+    document.addEventListener('pointerdown', (e) => {
+      if (!this.openPanelName) return;
+      if (e.target.closest('.popover') || e.target.closest('#btn-settings') || e.target.closest('#btn-help') || e.target.closest('#context-menu')) return;
+      this.closePanel();
+    }, { capture: true });
     this.$('btn-add-layer').addEventListener('click', () => actions.addLayer());
     this.$('import-file').addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
@@ -572,6 +581,61 @@ export class UI {
     });
     this.$('pin-close').addEventListener('click', () => this.setPin(null));
     this.wireSearch();
+  }
+
+  // --- Einstellungen und Hilfe als Panel über der Karte -------------------------------
+
+  togglePanel(name) {
+    if (this.openPanelName === name) this.closePanel();
+    else this.openPanel(name);
+  }
+
+  openPanel(name) {
+    this.closePanel();
+    const el = this.$(`panel-${name}`);
+    if (!el) return;
+    el.hidden = false;
+    this.openPanelName = name;
+    const btn = this.$(`btn-${name}`);
+    if (btn) btn.classList.add('active');
+    this.hideContextMenu();
+    if (name === 'help') this.refreshHelp();
+  }
+
+  /** Schliesst das offene Panel; liefert true, wenn eines offen war (für Esc). */
+  closePanel() {
+    const name = this.openPanelName;
+    if (!name) return false;
+    const el = this.$(`panel-${name}`);
+    if (el) el.hidden = true;
+    const btn = this.$(`btn-${name}`);
+    if (btn) btn.classList.remove('active');
+    this.openPanelName = null;
+    return true;
+  }
+
+  refreshHelp() {
+    const extra = this.$('help-extra');
+    if (extra) extra.innerHTML = '';
+    const keys = this.$('help-keys');
+    if (!keys) return;
+    const k = (...names) => names.map((n) => `<kbd>${esc(n)}</kbd>`).join(' + ');
+    const rows = [
+      ...TOOLS.map((tool) => [k(tool.key), t(tool.label)]),
+      [`${k('Shift')} + ${t('Klick')}`, t('Mehrfachauswahl, oder mit Shift einen Rahmen ziehen')],
+      [k('Ctrl', 'A'), t('Alles auswählen')],
+      [t('Rechtsklick / Langdruck'), t('Kontextmenü')],
+      [k('Enter'), t('Strasse oder Fläche beenden')],
+      [k('Esc'), t('Abbrechen, Auswahl aufheben, Panel schliessen')],
+      [k('⌫'), t('Letzten Punkt entfernen')],
+      [k('Entf'), t('Ausgewähltes löschen')],
+      [`${k('Ctrl', 'Z')} / ${k('Ctrl', 'Y')}`, t('Rückgängig / Wiederholen')],
+      [k('Ctrl', 'S'), t('Speichern')],
+      [`${k(this.ctx.settings.snapModifier || 'Shift')} ${t('halten')}`, t('Einrasten für diese Aktion aussetzen (Taste einstellbar)')],
+      [k('?'), t('Diese Hilfe')],
+      [`${k('+')} / ${k('−')} / ${t('Pfeiltasten')}`, t('Karte zoomen und verschieben; Ziehen, Mausrad, Doppelklick, Pinch auf Touch')],
+    ];
+    keys.innerHTML = `<table class="shortcuts">${rows.map(([key, what]) => `<tr><td>${key}</td><td>${esc(what)}</td></tr>`).join('')}</table>`;
   }
 
   showTab(name, { reveal = false } = {}) {
@@ -1149,7 +1213,8 @@ export class UI {
             <option value="remove" ${tools.adoptStatus === 'remove' ? 'selected' : ''}>${t('Rückbau (entfernen)')}</option>
           </select>
         </label>
-        <p class="muted small">${t('OSM-Strassen der Ansicht werden eingeblendet; die Strasse unter dem Zeiger leuchtet orange. Bereits übernommene Strassen werden ausgewählt statt verdoppelt.')}</p>` : '';
+        <p class="muted small">${t('OSM-Strassen der Ansicht werden eingeblendet; die Strasse unter dem Zeiger leuchtet orange. Bereits übernommene Strassen werden ausgewählt statt verdoppelt.')}</p>` : tools.tool === 'select' ? `
+        <label class="check small"><input type="checkbox" id="multi-mode" ${tools.multiMode ? 'checked' : ''}> <span>${t('Mehrfachauswahl (sonst Shift+Klick oder mit Shift einen Rahmen ziehen)')}</span></label>` : '';
       const sel = this.$('adopt-status');
       if (sel) sel.onchange = () => { tools.adoptStatus = sel.value; };
     }
@@ -1190,7 +1255,8 @@ export class UI {
     mapBox.innerHTML = `
       <label class="field">${t('Grundkarte')}<select id="set-basemap">${bases.map((src) => `<option value="${esc(src.id)}"${src.id === settings.basemap ? ' selected' : ''}>${esc(src.label)}</option>`).join('')}</select></label>
       ${overlays.map((src) => `<label class="check"><input type="checkbox" class="set-overlay" data-id="${esc(src.id)}" ${settings.overlays.includes(src.id) ? 'checked' : ''}> ${esc(src.label)}${src.minZoom ? ` <span class="muted small">(${t('ab Zoom')} ${src.minZoom})</span>` : ''}</label>`).join('')}
-      ${bases.length <= 1 ? `<p class="muted small">${t('Weitere Kartenquellen lassen sich auf dem Server über TILE_SOURCES einrichten.')}</p>` : ''}
+      ${bases.length <= 1 ? `<p class="muted small">${t('Weitere Kartenquellen lassen sich auf dem Server über TILE_SOURCES einrichten.')}</p>` : ''}`;
+    this.$('app-settings').innerHTML = `
       <label class="field">Sprache / Langue / Lingua<select id="set-language">${LANGUAGES.map((l) => `<option value="${l.id}" ${getLanguage() === l.id ? 'selected' : ''}>${l.label}</option>`).join('')}</select></label>
       <label class="field">${t('Darstellung')}<select id="set-theme">${[['system', 'Wie das System'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([id, label]) => `<option value="${id}" ${(settings.theme || 'system') === id ? 'selected' : ''}>${t(label)}</option>`).join('')}</select></label>`;
     this.$('set-basemap').onchange = (e) => actions.updateSettings({ basemap: e.target.value });

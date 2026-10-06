@@ -9,6 +9,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   const { page } = await openPage(browser, BASE, errors);
   const h = helpers(page);
   assert.equal(await page.textContent('.tabs button[data-tab="draw"]'), 'Zeichnen');
+  await h.openSettings();
   await page.selectOption('#set-language', 'fr');
   await h.settle(300);
   assert.equal(await page.textContent('.tabs button[data-tab="draw"]'), 'Dessiner');
@@ -41,8 +42,8 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
     return reportBlocks(window.stadtplaner.store.doc, {}).map((b) => b.text);
   });
   assert.ok(blocks.includes('Mesures') && blocks.some((b) => b.includes('Route principale')), blocks.join(' | '));
-  // Italienisch und zurück (die Sprachwahl liegt im Zeichnen-Tab)
-  await page.click('.tabs button[data-tab="draw"]');
+  // Italienisch und zurück (die Sprachwahl liegt im Einstellungen-Panel)
+  await h.openSettings();
   await page.selectOption('#set-language', 'it');
   await h.settle(200);
   assert.equal(await page.textContent('.tabs button[data-tab="comments"]'), 'Commenti');
@@ -50,6 +51,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await h.settle(200);
   assert.equal(await page.textContent('.tabs button[data-tab="comments"]'), 'Kommentare');
   // Einstellung bleibt nach Neuladen; Browser-Sprache wird beim ersten Start erkannt
+  await h.openSettings();
   await page.selectOption('#set-language', 'fr');
   await page.reload({ waitUntil: 'load' });
   await page.waitForSelector('.smap-canvas');

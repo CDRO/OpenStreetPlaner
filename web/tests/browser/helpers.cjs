@@ -22,6 +22,9 @@ const helpers = (page) => ({
   project: (ll) => page.evaluate((x) => window.stadtplaner.map.project(x), ll),
   mapBox: () => page.locator('#map').boundingBox(),
   settle: (ms = 500) => page.waitForTimeout(ms),
+  // Einstellungen (Karte, Einrasten, Sprache, Darstellung) liegen im Panel hinter dem Zahnrad
+  openSettings: async () => { if (await page.locator('#panel-settings').isHidden()) { await page.click('#btn-settings'); await page.waitForTimeout(100); } },
+  closeSettings: async () => { if (!(await page.locator('#panel-settings').isHidden())) { await page.click('#panel-settings [data-close-panel]'); await page.waitForTimeout(100); } },
 });
 
 module.exports = { chromium, assert, openPage, helpers };

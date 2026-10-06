@@ -52,7 +52,9 @@ const C = [47.05, 8.3];
   await page.evaluate(() => window.stadtplaner.map.panBy(20, 20));
   await h.settle(600);
   assert.equal(roadsCalls, initialCalls, 'kleiner Versatz lädt nicht neu');
+  await h.openSettings();
   await page.check('#set-show-osm');
+  await h.closeSettings();
   await h.settle(300);
   console.log('✓ OSM-Strassen laden');
 
@@ -263,7 +265,7 @@ const C = [47.05, 8.3];
     for (const k of Object.keys(tileHits)) if (u.includes(`/tiles/${k}/`)) tileHits[k]++;
     route.abort();
   });
-  await page.click('.tabs button[data-tab="draw"]');
+  await h.openSettings();
   await page.waitForFunction(() => document.querySelectorAll('#set-basemap option').length >= 4);
   await page.selectOption('#set-basemap', 'swisstopo');
   await h.settle(500);
@@ -277,6 +279,7 @@ const C = [47.05, 8.3];
   assert.deepEqual(persisted.overlays, ['cadastre']);
   await page.uncheck('.set-overlay[data-id="cadastre"]');
   await page.selectOption('#set-basemap', 'osm');
+  await h.closeSettings();
   await h.settle(300);
   console.log('✓ Kartenquellen');
 

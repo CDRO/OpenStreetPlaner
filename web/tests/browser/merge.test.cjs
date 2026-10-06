@@ -66,7 +66,9 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   // --- Kontextmenü auf OSM-Strasse im Auswahl-Werkzeug ---------------------------------
   await page.evaluate(() => window.stadtplaner.store.commit('leeren', (d) => { d.features = []; }));
   await page.keyboard.press('v');
+  await h.openSettings();
   await page.check('#set-show-osm');
+  await h.closeSettings();
   await h.settle(200);
   await page.mouse.click(hof.x, hof.y, { button: 'right' });
   await page.waitForSelector('#context-menu:not([hidden])');

@@ -17,6 +17,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.ok(dark(await bodyBg()), `System dunkel: ${await bodyBg()}`);
   assert.equal(await page.evaluate(() => window.stadtplaner.map.darkTiles), true, 'Kacheln folgen dem System');
   // Ausdrücklich hell trotz dunklem System
+  await h.openSettings();
   await page.waitForSelector('#set-theme');
   await page.selectOption('#set-theme', 'light');
   await h.settle(200);
@@ -25,6 +26,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.equal(await page.evaluate(() => window.stadtplaner.map.darkTiles), false);
   // Ausdrücklich dunkel trotz hellem System
   await page.emulateMedia({ colorScheme: 'light' });
+  await h.openSettings();
   await page.selectOption('#set-theme', 'dark');
   await h.settle(200);
   assert.ok(dark(await bodyBg()), 'dunkel erzwungen');
@@ -40,6 +42,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await page.waitForSelector('.smap-canvas');
   await h.settle(300);
   assert.ok(dark(await bodyBg()), 'nach Neuladen dunkel');
+  await h.openSettings();
   await page.selectOption('#set-theme', 'system');
   await h.settle(200);
   assert.ok(!dark(await bodyBg()), 'zurück zum (hellen) System');
