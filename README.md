@@ -77,7 +77,8 @@ go run . -data ./data
 | Einrasten | Beim Zeichnen und Verschieben rastet der Cursor an eigene Punkte, Abschnitte, Kreisel-Ringe und – ab Zoom 16 – an OSM-Strassen. Wird auf einen eigenen Abschnitt eingerastet, wird dieser dort geteilt, damit das Netz verbunden ist. **Shift** (einstellbar: Shift/Ctrl/Alt) gedrückt halten setzt das Einrasten für die aktuelle Aktion aus. |
 | OSM übernehmen / entfernen | Werkzeug „OSM übernehmen“ (Taste O): die OSM-Strassen der Ansicht werden eingeblendet, die Strasse unter dem Zeiger leuchtet orange und steht in der Statusleiste. Klick holt sie als bearbeitbare Kopie in die aktive Ebene (Name, Typ, Brücke/Tunnel, Einbahn, Tempolimit; die Kopie merkt sich den OSM-Way, damit der Routen-Rechner ihn ersetzt) und wählt sie aus. Option „Übernehmen als Rückbau“ oder Shift+Klick entfernt die Strasse aus dem Netz (rot gestrichelt, der Routen-Rechner fährt nicht mehr darüber). Bereits übernommene Strassen werden ausgewählt statt verdoppelt. Im Auswahl-Werkzeug bietet Rechtsklick auf eine OSM-Strasse dasselbe an |
 | Zusammenführen | Mehrfachauswahl (Shift+Klick, Rahmen) → „Flächen vereinigen“: sich berührende oder überlappende Flächen werden zu einer (Polygon-Vereinigung ohne Bibliothek, Löcher entfallen; Eigenschaften der ersten bleiben). „Strassen verbinden“: Strassen, deren Enden bis 10 m zusammenliegen, werden Ende an Ende zu einer Strasse (Richtung wird angepasst, Lücke wird Abschnitt, Abschnittseigenschaften bleiben, Einbahn nur wenn beide gleich gerichtet). Beides auch per Rechtsklick, rückgängig mit Ctrl+Z |
-| Bearbeiten | Punkte ziehen, Zwischenpunkte einfügen, Punkte per Rechtsklick löschen, Eigenschaften in der Seitenleiste, Tooltip beim Überfahren |
+| Bearbeiten | Punkte ziehen, Zwischenpunkte einfügen, Punkte per Rechtsklick löschen, Eigenschaften in der Seitenleiste (das Werkzeugraster bleibt beim Scrollen oben), Tooltip beim Überfahren |
+| Oberfläche (v3) | Eigenes SVG-Symbolset (`web/js/icons.js`) für Werkzeuge, Kopfzeile, Reiter und Kontextmenü; Reiter als Symbolleiste, der aktive zeigt sein Label. Einstellungen (Kartenquelle, Overlays, Einrasten, Sprache, Darstellung) und Hilfe (Legende, Tastenkürzel, Einführung) als Panels über der Karte (Zahnrad, Fragezeichen, Taste `?`). Kartenleiste rechts oben: Grundkarte, OSM-Netz laden, Standort, Legende, Vollbild. Erklärtexte in Route, Kommentare und Analyse hinter Info-Knöpfen; Entwürfe-Reiter mit Export-Menü. Einstieg beim ersten Besuch mit drei Schritten |
 | Speichern | Entwürfe liegen auf dem Server; der Browser merkt sich die eigenen (mit Bearbeitungs-Token). Arbeitskopie wird lokal automatisch gesichert |
 | Historie | Rückgängig/Wiederholen in der Sitzung; jedes Speichern legt eine Version an (Standard: 30), die wiederhergestellt werden kann. **Versionen vergleichen**: zwei Stände (oder Version gegen aktuellen Stand) als Liste hinzugefügter, entfernter und geänderter Elemente mit Beschreibung (Tempolimit 50 → 30, Geometrie 2 → 3 Punkte, Führung der Abschnitte …) und als Karten-Overlay (grün neu, orange geändert, rot gestrichelt entfernt) |
 | Lebenszyklus | Entwürfe, die `RETENTION_DAYS` (Standard 365) Tage lang nicht gespeichert wurden, löscht der Server automatisch (Lauf nach dem Start und dann alle 6 Stunden); jedes Speichern verlängert die Frist. Im Reiter „Entwürfe“ steht das Löschdatum; Besitzer können eine E-Mail-Adresse hinterlegen und werden einen Monat und eine Woche vor dem Löschen an die Sicherung erinnert (nur mit `SMTP_HOST`; die Adresse ist nur mit dem Bearbeitungs-Token lesbar und wird bei Kopien und Sicherungen nicht mitgenommen) |
@@ -86,15 +87,15 @@ go run . -data ./data
 | QR-Code | Im Teilen-Dialog zum Ansichtslink und auf jedem PDF/PNG-Export (rechts unten); eigener Encoder (Byte-Modus, Fehlerkorrektur M, Versionen 1–10) |
 | Teilen | **Ansichtslink** `/d/<id>` (Empfänger können eine eigene Kopie weiterbearbeiten), **Präsentationslink** `/d/<id>?present=1` (nur Karte, Legende und Routenvergleich, ohne Werkzeuge, für Sitzungen und Beamer), **Bearbeitungslink** `/d/<id>#edit=<token>` für gemeinsames Bearbeiten, E-Mail-Versand, JSON-Import/-Export, GeoJSON-Export |
 | Gemeinsam bearbeiten | Speichern schickt den zuletzt geladenen Serverstand mit; hat inzwischen jemand anderes gespeichert, antwortet der Server mit 409 und die App fragt: eigene Fassung speichern oder Serverstand übernehmen (die eigene bleibt per Rückgängig erreichbar). Offene Seiten erhalten Änderungen und neue Kommentare live über Server-Sent Events: ohne eigene Änderungen wird der neue Stand direkt übernommen, sonst erscheint ein Hinweis |
-| Sprachen | Oberfläche, Hinweise, Dialoge, Rückgängig-Beschriftungen und der PDF-Bericht auf Deutsch, Französisch und Italienisch. Die Sprache wird beim ersten Start aus dem Browser abgeleitet und im Zeichnen-Tab unter „Karte“ umgestellt (`web/js/i18n.js`, Wörterbücher in `web/js/lang/`; der deutsche Text ist der Schlüssel, ein Test prüft die vollständige Abdeckung) |
-| Touch / Mobil | Aktionsleiste „Strasse fertig / Letzter Punkt / Abbrechen“ über der Karte während des Zeichnens; langes Drücken wirkt wie Rechtsklick (Strasse beenden, Punkt löschen); auf schmalen Bildschirmen wird die Seitenleiste zum Bottom-Sheet, das eingeklappt startet und per Tipp auf einen Tab aufgeht |
+| Sprachen | Oberfläche, Hinweise, Dialoge, Rückgängig-Beschriftungen und der PDF-Bericht auf Deutsch, Französisch und Italienisch. Die Sprache wird beim ersten Start aus dem Browser abgeleitet und in den Einstellungen umgestellt (`web/js/i18n.js`, Wörterbücher in `web/js/lang/`; der deutsche Text ist der Schlüssel, ein Test prüft die vollständige Abdeckung) |
+| Touch / Mobil | Aktionsleiste „Strasse fertig / Letzter Punkt / Abbrechen“ über der Karte während des Zeichnens; langes Drücken wirkt wie Rechtsklick (Strasse beenden, Punkt löschen). Auf schmalen Bildschirmen wird die Seitenleiste zum Bottom-Sheet mit Griff (eingeklappt, halb, voll; Tipp oder Ziehen), Rückgängig/Wiederholen/Einstellungen/Hilfe liegen in einem Menü, auf dem Handy öffnet die Lupe eine Suchzeile und Speichern/Teilen zeigen nur ihr Symbol |
 
 ### Tastenkürzel
 
-`V` Auswählen · `S` Strasse · `K` Kreuzung/Punkt · `R` Kreisel · `F` Fläche · `O` OSM übernehmen · `T` Route · `C` Kommentar ·
-`Enter` Strasse beenden · `Esc` abbrechen · `⌫` letzter Punkt · `Entf` löschen ·
-`Ctrl+Z` / `Ctrl+Y` rückgängig / wiederholen · `Ctrl+S` speichern ·
-Karte: Pfeiltasten, `+` / `−`
+`V` Auswählen · `S` Strasse · `K` Kreuzung/Punkt · `R` Kreisel · `F` Fläche · `O` OSM übernehmen · `T` Route · `M` Messen · `C` Kommentar ·
+`Enter` Strasse beenden · `Esc` abbrechen / Panel schliessen · `⌫` letzter Punkt · `Entf` löschen ·
+`Ctrl+Z` / `Ctrl+Y` rückgängig / wiederholen · `Ctrl+S` speichern · `?` Hilfe ·
+Karte: Pfeiltasten, `+` / `−`. Die vollständige Tabelle steht im Hilfe-Panel.
 
 ## Konfiguration
 
@@ -213,7 +214,8 @@ web/js/api.js            Aufrufe ans Backend
 web/js/local.js          Browser-lokal: eigene Entwürfe, Arbeitskopie, Einstellungen, Browser-Kennung
 web/js/push.js           Service Worker registrieren, Push-Abonnement anlegen/lösen
 web/sw.js                Service Worker: Benachrichtigung anzeigen, Klick öffnet den Kommentar
-web/js/ui.js             Seitenleiste, Dialoge, Statuszeile
+web/js/ui.js             Seitenleiste, Panels, Dialoge, Statuszeile
+web/js/icons.js          SVG-Symbolset (Inline, currentColor)
 web/js/app.js            Verdrahtung
 web/tests/               Unit-Tests (Node-Testrunner) und Browser-Tests (Playwright)
 ```
@@ -431,7 +433,7 @@ steht aber im Reiter „Entwürfe“.
 
 ```sh
 make test            # go vet + go test + Frontend-Unit-Tests (node --test)
-make test-browser    # Browser-Tests (basics … offline, race, merge, lifecycle); braucht Go und Playwright mit Chromium; läuft auch in der CI (Job „browser“)
+make test-browser    # Browser-Tests (basics … offline, race, merge, lifecycle, ui); braucht Go und Playwright mit Chromium; läuft auch in der CI (Job „browser“)
 make run             # Server lokal
 make docker          # Image bauen
 ```
