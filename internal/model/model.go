@@ -262,22 +262,24 @@ type Profile struct {
 	Key    string       `json:"key"`
 }
 
-// Route ist die gespeicherte Routenanfrage (Start/Ziel) des Routen-Rechners.
+// Route ist die gespeicherte Routenanfrage (Start/Ziel, optional Zwischenpunkte) des Routen-Rechners.
 type Route struct {
-	From    LatLng `json:"from"`
-	To      LatLng `json:"to"`
-	Vehicle string `json:"vehicle,omitempty"` // car (Standard), bus, bike, foot
+	From    LatLng   `json:"from"`
+	To      LatLng   `json:"to"`
+	Via     []LatLng `json:"via,omitempty"`
+	Vehicle string   `json:"vehicle,omitempty"` // car (Standard), bus, bike, foot
 }
 
 var vehicleValues = []string{"car", "bus", "bike", "foot"}
 
 // RoutePair ist ein weiteres benanntes Start-Ziel-Paar (Start oder Ziel können noch fehlen).
 type RoutePair struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
-	From    *LatLng `json:"from"`
-	To      *LatLng `json:"to"`
-	Vehicle string  `json:"vehicle,omitempty"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	From    *LatLng  `json:"from"`
+	To      *LatLng  `json:"to"`
+	Via     []LatLng `json:"via,omitempty"`
+	Vehicle string   `json:"vehicle,omitempty"`
 }
 
 // Isochrone ist die Erreichbarkeitsanfrage: Ursprung, Zeitschwellen in Minuten, Modus.
@@ -289,6 +291,7 @@ type Isochrone struct {
 
 const (
 	MaxRoutePairs    = 20
+	MaxRouteVia      = 8
 	MaxIsochroneBand = 5
 )
 
@@ -337,6 +340,21 @@ func validLatLng(p LatLng) bool {
 
 func round6(p LatLng) LatLng {
 	return LatLng{math.Round(p[0]*1e6) / 1e6, math.Round(p[1]*1e6) / 1e6}
+}
+
+// cleanVia behält gültige Zwischenpunkte (gerundet, höchstens MaxRouteVia); leer wird nil.
+func cleanVia(via []LatLng) []LatLng {
+	var out []LatLng
+	for _, p := range via {
+		if !validLatLng(p) {
+			continue
+		}
+		out = append(out, round6(p))
+		if len(out) >= MaxRouteVia {
+			break
+		}
+	}
+	return out
 }
 
 func oneOf(list []string, v, fallback string) string {
@@ -602,6 +620,7 @@ func Normalize(d *Document) error {
 	if d.Route != nil {
 		d.Route.From = round6(d.Route.From)
 		d.Route.To = round6(d.Route.To)
+		d.Route.Via = cleanVia(d.Route.Via)
 		d.Route.Vehicle = oneOf(vehicleValues, d.Route.Vehicle, "car")
 	}
 	if len(d.RoutePairs) > MaxRoutePairs {
@@ -610,6 +629,7 @@ func Normalize(d *Document) error {
 	for i := range d.RoutePairs {
 		p := &d.RoutePairs[i]
 		p.Vehicle = oneOf(vehicleValues, p.Vehicle, "car")
+		p.Via = cleanVia(p.Via)
 		if !idPattern.MatchString(p.ID) {
 			p.ID = fmt.Sprintf("p_%d", i+1)
 		}

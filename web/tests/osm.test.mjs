@@ -100,3 +100,12 @@ test('OsmRoadCache meldet Fortschritt je Zelle (done/total) für die Fortschritt
   assert.equal(cache.batchDone, 0);
   await cache.pending;
 });
+
+test('pointsBounds puffert eine Trasse um 250 m und zählt Zellen', async () => {
+  const { pointsBounds } = await import('../js/osm.js');
+  const b = pointsBounds([[47, 8], [47.001, 8.002]]);
+  assert.ok(b.south < 47 && b.north > 47.001 && b.west < 8 && b.east > 8.002);
+  assert.ok((b.north - 47.001) * 111320 > 240 && (b.north - 47.001) * 111320 < 260, 'Puffer rund 250 m');
+  assert.ok(b.cells >= 1 && !b.tooLarge);
+  assert.equal(pointsBounds([]), null);
+});

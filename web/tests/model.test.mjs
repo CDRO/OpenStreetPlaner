@@ -146,7 +146,7 @@ test('Tempolimit: Normalisierung, Standard je Typ, Route im Dokument', () => {
   const back = deserialize(serialize(doc));
   assert.equal(back.features[0].osmId, 4242);
   assert.equal(back.features[0].maxspeed, 20);
-  assert.deepEqual(back.route, { from: [47, 8], to: [47, 8.001], vehicle: 'car' });
+  assert.deepEqual(back.route, { from: [47, 8], to: [47, 8.001], via: [], vehicle: 'car' });
   const noRoute = normalizeDocument({ layers: [{ id: 'l1' }], route: { from: [99, 0], to: [0, 0] } });
   assert.equal(noRoute.route, null);
 });
@@ -269,7 +269,7 @@ test('Autobahn/Autostrasse, Querschnitte und Abbiegeregeln', () => {
 test('Routenpaare und Isochronen-Einstellung werden geprüft und gespeichert', () => {
   const pairs = normalizeRoutePairs([{ id: 'p1', name: 'Schule', from: [47, 8], to: [99, 8] }, { name: 'x'.repeat(80) }, 'kaputt']);
   assert.equal(pairs.length, 2);
-  assert.deepEqual(pairs[0], { id: 'p1', name: 'Schule', from: [47, 8], to: null, vehicle: 'car' });
+  assert.deepEqual(pairs[0], { id: 'p1', name: 'Schule', from: [47, 8], to: null, via: [], vehicle: 'car' });
   assert.ok(pairs[1].id.startsWith('p_') && pairs[1].name.length === 60);
   assert.deepEqual(normalizeRoutePairs(null), []);
   assert.equal(normalizeRoutePairs(new Array(30).fill({ id: 'a' })).length, 20);
@@ -280,7 +280,12 @@ test('Routenpaare und Isochronen-Einstellung werden geprüft und gespeichert', (
   doc.routePairs = pairs;
   doc.isochrone = { from: [47, 8], minutes: [10, 20, 30], mode: 'diff' };
   const back = deserialize(serialize(doc));
-  assert.deepEqual(back.routePairs, pairs);
+  assert.deepEqual(back.routePairs, pairs.map((p) => ({ ...p, via: p.via || [] })));
+  // Zwischenpunkte: nur gültige Koordinaten, gerundet, höchstens acht
+  const viaPair = normalizeRoutePairs([{ id: 'v', from: [47, 8], to: [47, 8.1], via: [[47.0000004, 8.05], [99, 0], ...new Array(10).fill([47.01, 8.01])] }])[0];
+  assert.equal(viaPair.via.length, 8);
+  assert.deepEqual(viaPair.via[0], [47, 8.05]);
+  assert.deepEqual(normalizeDocument({ layers: [{ id: 'l1' }], route: { from: [47, 8], to: [47, 8.1], via: 'x' } }).route.via, []);
   assert.deepEqual(back.isochrone, doc.isochrone);
   assert.deepEqual(createDocument().routePairs, []);
 });

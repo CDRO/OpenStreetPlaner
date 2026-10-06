@@ -534,3 +534,68 @@ test('Lose Enden neuer Strassen hängen bis 10 m am Netz, Kreisel verbinden auch
   assert.ok(rr.current.dist > 2200, `heute aussen herum: ${rr.current.dist}`);
   assert.ok(rr.proposed.path && rr.proposed.dist < 1600, `Kreisel verbindet OSM und Entwurf: ${rr.proposed.dist} vs ${rr.current.dist}`);
 });
+
+// Tunnel und Brücken: nur an ihren Enden erreichbar, nicht an Zwischenpunkten über fremden Strassen
+function tunnelRoad(doc, nodes, levels) {
+  const road = createRoad({ layerId: doc.layers[0].id, nodes, kind: 'main', status: 'new' });
+  road.segments = levels.map((level) => ({ level, maxspeed: null }));
+  doc.features.push(road);
+  return road;
+}
+
+test('Tunnel: Zwischenpunkt über einer OSM-Strasse ist kein Anschluss, Portale schon', () => {
+  const ways = [{ id: 1, tags: { highway: 'residential', maxspeed: '30' }, geometry: [[47, 8], [47, 8.01]] }];
+  // Tunnel quer unter der Strasse hindurch: beide Enden abseits, Mitte genau auf der Strasse
+  const doc = createDocument();
+  tunnelRoad(doc, [[47.005, 8.002], [47, 8.005], [46.995, 8.008]], ['tunnel', 'tunnel']);
+  const blocked = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [46.995, 8.008] });
+  assert.ok(blocked.proposed.error, 'unter der Strasse hindurch gibt es keinen Einstieg in den Tunnel');
+  // Dieselbe Trasse ebenerdig: die Kreuzung verbindet
+  const open = createDocument();
+  tunnelRoad(open, [[47.005, 8.002], [47, 8.005], [46.995, 8.008]], ['ground', 'ground']);
+  const ok = computeRoutes({ osmWays: ways, doc: open, from: [47, 8], to: [46.995, 8.008] });
+  assert.ok(!ok.proposed.error && ok.proposed.quality.draftDist > 0, 'ebenerdig wird die Trasse benutzt');
+  // Tunnel entlang der Strasse mit Portalen auf ihr: schneller (50 statt 30), Einstieg nur am Portal
+  const along = createDocument();
+  tunnelRoad(along, [[47, 8.003], [47, 8.006], [47, 8.009]], ['tunnel', 'tunnel']);
+  const fast = computeRoutes({ osmWays: ways, doc: along, from: [47, 8], to: [47, 8.01] });
+  assert.ok(!fast.proposed.error && fast.proposed.quality.draftDist > 400, 'durch den Tunnel von Portal zu Portal');
+  assert.ok(fast.proposed.time < fast.current.time, 'Tunnel mit 50 ist schneller als die Strasse mit 30');
+  // Ein Ziel mitten im Tunnelabschnitt hängt an der Oberfläche (Strasse), nicht im Tunnel
+  const mid = computeRoutes({ osmWays: ways, doc: along, from: [47, 8], to: [47, 8.006] });
+  assert.ok(!mid.proposed.error && mid.proposed.quality.draftDist === 0, 'Ziel über dem Tunnel liegt auf der Strasse');
+  // OSM-Tunnel: eine neue Strasse, die ihn kreuzt, verbindet sich nicht mit ihm
+  const osmTunnel = [
+    { id: 1, tags: { highway: 'primary', maxspeed: '80', tunnel: 'yes' }, geometry: [[47, 8], [47, 8.005], [47, 8.01]] },
+    { id: 2, tags: { highway: 'residential' }, geometry: [[47.004, 8.005], [47, 8.005]] },
+  ];
+  const cross = createDocument();
+  tunnelRoad(cross, [[47, 8.005], [46.996, 8.005]], ['ground']);
+  const r = computeRoutes({ osmWays: osmTunnel, doc: cross, from: [47.004, 8.005], to: [47, 8.01] });
+  assert.ok(r.proposed.error, 'über dem OSM-Tunnel gibt es keinen Einstieg');
+});
+
+test('Zwischenpunkte: Etappen werden aneinandergehängt, Zeitachse bleibt monoton', () => {
+  const ways = detourWays();
+  const doc = createDocument();
+  const diag = createRoad({ layerId: doc.layers[0].id, nodes: [[47, 8], [47.01, 8.01]], kind: 'main', status: 'new' });
+  diag.segments = [{ level: 'ground', maxspeed: null }];
+  doc.features.push(diag);
+  const direct = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47.01, 8.01] });
+  const viaCorner = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47.01, 8.01], via: [[47, 8.01]] });
+  assert.ok(!viaCorner.proposed.error, viaCorner.proposed.error);
+  assert.equal(viaCorner.proposed.legs, 2);
+  assert.ok(viaCorner.proposed.dist > direct.proposed.dist * 1.3, 'über die Ecke ist länger als die Diagonale');
+  assert.ok(viaCorner.proposed.path.some((p) => Math.abs(p[0] - 47) < 1e-6 && Math.abs(p[1] - 8.01) < 1e-6), 'Ecke liegt auf dem Pfad');
+  const times = viaCorner.proposed.times;
+  assert.equal(times.length, viaCorner.proposed.path.length);
+  for (let i = 1; i < times.length; i++) assert.ok(times[i] >= times[i - 1], 'Zeitachse monoton');
+  assert.ok(Math.abs(times[times.length - 1] - viaCorner.proposed.time) < 1e-6);
+  assert.equal(viaCorner.proposed.quality.dist, viaCorner.proposed.dist);
+  // Unerreichbarer Zwischenpunkt meldet den Zwischenpunkt
+  const far = computeRoutes({ osmWays: ways, doc, from: [47, 8], to: [47.01, 8.01], via: [[48, 9]] });
+  assert.ok(/Zwischenpunkt/.test(far.proposed.error));
+  // Paare mit Zwischenpunkten über computeRoutesMany
+  const many = computeRoutesMany({ osmWays: ways, doc, pairs: [{ id: 'p1', from: [47, 8], to: [47.01, 8.01], via: [[47, 8.01]] }] });
+  assert.equal(many[0].proposed.legs, 2);
+});

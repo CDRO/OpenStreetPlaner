@@ -388,6 +388,12 @@ export function createDocument({ name = 'Neuer Entwurf', center = [46.8, 8.23], 
 }
 
 export const MAX_ROUTE_PAIRS = 20;
+export const MAX_ROUTE_VIA = 8;
+/** Zwischenpunkte einer Route: gültige Koordinaten, gerundet, höchstens MAX_ROUTE_VIA. */
+export function normalizeVia(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isLatLng).slice(0, MAX_ROUTE_VIA).map(roundCoord);
+}
 export const VEHICLES = [
   { id: 'car', label: 'Auto' },
   { id: 'bus', label: 'Bus' },
@@ -411,6 +417,7 @@ export function normalizeRoutePairs(raw) {
       name: typeof p.name === 'string' ? p.name.slice(0, 60) : '',
       from: isLatLng(p.from) ? roundCoord(p.from) : null,
       to: isLatLng(p.to) ? roundCoord(p.to) : null,
+      via: normalizeVia(p.via),
       vehicle: normalizeVehicle(p.vehicle),
     };
     out.push(pair);
@@ -787,7 +794,7 @@ export function normalizeDocument(raw) {
     busLines: [],
   };
   if (raw.route && isLatLng(raw.route.from) && isLatLng(raw.route.to)) {
-    doc.route = { from: roundCoord(raw.route.from), to: roundCoord(raw.route.to), vehicle: normalizeVehicle(raw.route.vehicle) };
+    doc.route = { from: roundCoord(raw.route.from), to: roundCoord(raw.route.to), via: normalizeVia(raw.route.via), vehicle: normalizeVehicle(raw.route.vehicle) };
   }
   if (raw.view && isLatLng(raw.view.center) && Number.isFinite(raw.view.zoom)) {
     doc.view = { center: [raw.view.center[0], raw.view.center[1]], zoom: raw.view.zoom };

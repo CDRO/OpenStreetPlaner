@@ -407,3 +407,20 @@ func TestGroups(t *testing.T) {
 		t.Fatalf("ungültige Gruppen-ID wird verworfen: %q", d.Features[0].Group)
 	}
 }
+
+func TestRouteVia(t *testing.T) {
+	d := sample()
+	ok := LatLng{47.1234567, 8}
+	via := []LatLng{{47.1, 8.1}, {99, 0}, {47.2, 8.2}, {47.3, 8.3}, {47.4, 8.4}, {47.5, 8.5}, {47.6, 8.6}, {47.7, 8.7}, {47.8, 8.8}, {47.9, 8.9}}
+	d.Route = &Route{From: ok, To: ok, Via: via}
+	d.RoutePairs = []RoutePair{{ID: "p1", From: &ok, To: &ok, Via: []LatLng{{47.1, 8.1234567}}}, {ID: "p2"}}
+	if err := Normalize(d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Route.Via) != MaxRouteVia || d.Route.Via[0] != (LatLng{47.1, 8.1}) || d.Route.Via[1] != (LatLng{47.2, 8.2}) {
+		t.Fatalf("Zwischenpunkte der Hauptroute: %v", d.Route.Via)
+	}
+	if len(d.RoutePairs[0].Via) != 1 || d.RoutePairs[0].Via[0][1] != 8.123457 || d.RoutePairs[1].Via != nil {
+		t.Fatalf("Zwischenpunkte der Paare: %v %v", d.RoutePairs[0].Via, d.RoutePairs[1].Via)
+	}
+}

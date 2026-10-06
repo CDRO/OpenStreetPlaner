@@ -225,8 +225,13 @@ export class Graph {
     return cost(kind);
   }
 
-  node(ll) {
-    const k = keyOf(ll);
+  /**
+   * Knoten für eine Position; key überschreibt den Koordinatenschlüssel. Tunnel- und
+   * Brückenabschnitte bekommen so eigene Knoten, die sich nicht mit Strassen an derselben
+   * Stelle auf der Oberfläche verbinden (nur ihre Enden, die Portale, bleiben gemeinsam).
+   */
+  node(ll, key = null) {
+    const k = key || keyOf(ll);
     let n = this.nodes.get(k);
     if (!n) {
       n = { latlng: ll, edges: [] };
@@ -245,8 +250,8 @@ export class Graph {
       if (cap !== null) speedKmh = Math.min(speedKmh, cap);
     }
     if (!(speedKmh > 0)) return;
-    const ka = this.node(a);
-    const kb = this.node(b);
+    const ka = this.node(a, meta && meta.keyA);
+    const kb = this.node(b, meta && meta.keyB);
     if (ka === kb) return;
     const dist = haversine(a, b);
     let time;
@@ -269,7 +274,7 @@ export class Graph {
     if (dir <= 0) this.nodes.get(kb).edges.push({ to: ka, dist, time, variance, assumed, draft, noProfile, unsafe });
     this.degree.set(ka, (this.degree.get(ka) || 0) + 1);
     this.degree.set(kb, (this.degree.get(kb) || 0) + 1);
-    this.segments.push({ a, b, ka, kb, speed: speedKmh, dir });
+    this.segments.push({ a, b, ka, kb, speed: speedKmh, dir, level: (meta && meta.level) || 'ground' });
   }
 
   /** Linienzug mit einer Geschwindigkeit; im Geometriemodell mit Kurvenradien. */
@@ -277,15 +282,20 @@ export class Graph {
     this.addPolylineSpeeds(points, points.slice(1).map(() => speedKmh), dir, grades, meta);
   }
 
-  /** Linienzug mit Geschwindigkeit je Abschnitt (speeds.length = points.length - 1); meta als Objekt oder je Abschnitt. */
-  addPolylineSpeeds(points, speeds, dir = 0, grades = null, meta = null) {
+  /**
+   * Linienzug mit Geschwindigkeit je Abschnitt (speeds.length = points.length - 1); meta als Objekt
+   * oder je Abschnitt; keys je Punkt (null = Koordinatenschlüssel), für Tunnel- und Brückenknoten.
+   */
+  addPolylineSpeeds(points, speeds, dir = 0, grades = null, meta = null, keys = null) {
     const radii = this.model === 'geometry' ? polylineRadii(points) : null;
     for (let i = 1; i < points.length; i++) {
       const geo = radii ? { radiusA: radii[i - 1], radiusB: radii[i], grade: grades ? grades[i - 1] : 0 } : null;
       // Steigung wirkt in Fahrtrichtung; bei beiden Richtungen nehmen wir den Betrag konservativ als bergauf.
       if (geo && dir === 0 && geo.grade) geo.grade = Math.abs(geo.grade);
       if (geo && dir === -1 && geo.grade) geo.grade = -geo.grade;
-      this.link(points[i - 1], points[i], speeds[i - 1], dir, geo, Array.isArray(meta) ? meta[i - 1] : meta);
+      let m = Array.isArray(meta) ? meta[i - 1] : meta;
+      if (keys) m = { ...(m || {}), keyA: keys[i - 1] || null, keyB: keys[i] || null };
+      this.link(points[i - 1], points[i], speeds[i - 1], dir, geo, m);
     }
   }
 
@@ -295,6 +305,29 @@ export class Graph {
     const cur = this.penalty.get(k) || { mean: 0, variance: 0 };
     this.penalty.set(k, { mean: cur.mean + mean, variance: cur.variance + sd * sd });
   }
+}
+
+/** Ebene eines OSM-Ways: Tunnel oder Brücke (Tags tunnel=*, bridge=*; „no“ zählt nicht). */
+export function wayLevel(tags = {}) {
+  if (tags.tunnel && tags.tunnel !== 'no') return 'tunnel';
+  if (tags.bridge && tags.bridge !== 'no') return 'bridge';
+  return 'ground';
+}
+
+/**
+ * Knotenschlüssel eines Linienzugs mit Ebene je Abschnitt: Zwischenpunkte, die beidseits in
+ * einem Tunnel oder auf einer Brücke liegen, bekommen einen eigenen Schlüssel und verbinden
+ * sich nicht mit Strassen an derselben Stelle; Enden und Portale (Wechsel der Ebene) bleiben
+ * gemeinsame Knoten. Liefert null je Punkt, wenn der Koordinatenschlüssel gilt.
+ */
+export function levelKeys(points, levels) {
+  return points.map((ll, i) => {
+    if (i === 0 || i === points.length - 1) return null;
+    const before = levels[i - 1] || 'ground';
+    const after = levels[i] || 'ground';
+    if (before === 'ground' || after === 'ground') return null;
+    return `${keyOf(ll)}#${after}`;
+  });
 }
 
 /** Fügt Punkte, die auf einem Abschnitt der Linie liegen, als Zwischenpunkte ein (Toleranz in Metern). */
@@ -345,16 +378,26 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
   const zones = visible.filter((f) => f.type === 'zone' && zoneKind(f).speed !== null);
   if (zones.length) g.speedCap = (ll) => zoneSpeedAt(zones, ll, vehicle);
   const replaced = new Set(roads.filter((r) => r.osmId).map((r) => r.osmId));
+  // Knoten des Entwurfs, an denen OSM-Strassen geteilt werden: nur Oberflächenknoten (keine
+  // Zwischenpunkte in Tunnel oder auf Brücken, dort gibt es keinen Anschluss)
   const draftNodes = [];
+  const roadLevels = new Map();
   for (const r of roads) {
     if (r.status === 'remove') continue;
-    for (const n of r.nodes) draftNodes.push({ ll: n, p: project(n) });
+    const levels = r.segments.map((seg) => (seg && seg.level) || 'ground');
+    const keys = levelKeys(r.nodes, levels);
+    roadLevels.set(r.id, { levels, keys });
+    r.nodes.forEach((n, i) => { if (!keys[i]) draftNodes.push({ ll: n, p: project(n) }); });
   }
   for (const w of osmWays) {
     if (replaced.has(w.id) || !isDrivable(w.tags, vehicle)) continue;
-    const pts = draftNodes.length ? insertPointsOnLine(w.geometry, draftNodes) : w.geometry;
+    const level = wayLevel(w.tags);
+    // Tunnel und Brücken aus OSM: keine Teilung durch Entwurfsknoten, Zwischenknoten eigenständig
+    const pts = level === 'ground' && draftNodes.length ? insertPointsOnLine(w.geometry, draftNodes) : w.geometry;
     const dir = vehicle === 'foot' ? 0 : wayDirection(w.tags); // Einbahnen gelten nicht zu Fuss
-    g.addPolyline(pts, waySpeed(w.tags, vehicle), dir, null, { assumed: vehicle === 'car' || vehicle === 'bus' ? parseMaxspeed(w.tags.maxspeed) === null : true, noProfile: geometry, unsafe: unsafeFor(w.tags, vehicle) });
+    const meta = { assumed: vehicle === 'car' || vehicle === 'bus' ? parseMaxspeed(w.tags.maxspeed) === null : true, noProfile: geometry, unsafe: unsafeFor(w.tags, vehicle), level };
+    const keys = level === 'ground' ? null : levelKeys(pts, pts.slice(1).map(() => level));
+    g.addPolylineSpeeds(pts, pts.slice(1).map(() => waySpeed(w.tags, vehicle)), dir, null, meta, keys);
   }
   if (mode === 'proposed' && doc) {
     const roundabouts = visible.filter((f) => f.type === 'roundabout');
@@ -369,8 +412,9 @@ export function buildGraph({ osmWays = [], doc = null, mode = 'current', model =
         for (let i = 1; i < r.nodes.length; i++) dists.push(dists[i - 1] + haversine(r.nodes[i - 1], r.nodes[i]));
         grades = segmentGrades(dists, profile.points);
       }
-      const metas = r.segments.map((seg, i) => ({ draft: true, assumed: vehicle === 'bike' || vehicle === 'foot' || (!(seg && seg.maxspeed) && !r.maxspeed), noProfile: geometry && !profile, unsafe: draftUnsafe(r, i, vehicle) }));
-      g.addPolylineSpeeds(r.nodes, speeds, r.oneway && vehicle !== 'foot' ? 1 : 0, grades, metas);
+      const lv = roadLevels.get(r.id);
+      const metas = r.segments.map((seg, i) => ({ draft: true, assumed: vehicle === 'bike' || vehicle === 'foot' || (!(seg && seg.maxspeed) && !r.maxspeed), noProfile: geometry && !profile, unsafe: draftUnsafe(r, i, vehicle), level: lv ? lv.levels[i] : 'ground' }));
+      g.addPolylineSpeeds(r.nodes, speeds, r.oneway && vehicle !== 'foot' ? 1 : 0, grades, metas, lv ? lv.keys : null);
     }
     // Enden neuer Strassen ans Netz hängen, auch ohne exaktes Einrasten: bis ATTACH_TOLERANCE m
     // zur nächsten Strasse (OSM oder Entwurf) entsteht ein kurzer Verbinder.
@@ -421,9 +465,8 @@ export function attachLooseEnd(g, end, maxMeters = ATTACH_TOLERANCE) {
   const tol = maxMeters * scale;
   let best = null;
   for (const s of g.segments) {
-    const ka = keyOf(s.a);
-    const kb = keyOf(s.b);
-    if (ka === key || kb === key) continue;
+    if (s.level !== 'ground') continue; // in einen Tunnel oder auf eine Brücke führt kein Anschluss von der Seite
+    if (s.ka === key || s.kb === key) continue;
     const a = project(s.a);
     const b = project(s.b);
     if (p.x < Math.min(a.x, b.x) - tol || p.x > Math.max(a.x, b.x) + tol || p.y < Math.min(a.y, b.y) - tol || p.y > Math.max(a.y, b.y) + tol) continue;
@@ -434,8 +477,8 @@ export function attachLooseEnd(g, end, maxMeters = ATTACH_TOLERANCE) {
   const onLine = best.dist < 1e-9 * scale ? end : unproject(best);
   const s = best.seg;
   if (!g.nodes.has(keyOf(onLine))) {
-    g.link(s.a, onLine, s.speed, s.dir);
-    g.link(onLine, s.b, s.speed, s.dir);
+    g.link(s.a, onLine, s.speed, s.dir, null, { keyA: s.ka, level: s.level });
+    g.link(onLine, s.b, s.speed, s.dir, null, { keyB: s.kb, level: s.level });
   }
   if (keyOf(onLine) !== key) g.link(end, onLine, s.speed, 0);
   return true;
@@ -454,6 +497,7 @@ export function attachRoundabout(g, k) {
   let attached = false;
   const seen = new Set();
   for (const s of segs) {
+    if (s.level !== 'ground') continue; // Tunnel unter dem Kreisel und Brücken darüber bleiben getrennt
     const a = project(s.a);
     const b = project(s.b);
     if (c.x < Math.min(a.x, b.x) - reach || c.x > Math.max(a.x, b.x) + reach || c.y < Math.min(a.y, b.y) - reach || c.y > Math.max(a.y, b.y) + reach) continue;
@@ -468,8 +512,8 @@ export function attachRoundabout(g, k) {
     if (!at) {
       at = unproject(q);
       if (!g.nodes.has(keyOf(at))) {
-        g.link(s.a, at, s.speed, s.dir);
-        g.link(at, s.b, s.speed, s.dir);
+        g.link(s.a, at, s.speed, s.dir, null, { keyA: s.ka });
+        g.link(at, s.b, s.speed, s.dir, null, { keyB: s.kb });
       }
     }
     const key = keyOf(at);
@@ -487,20 +531,25 @@ export function attachPoint(g, ll, maxMeters = 300) {
   const scale = mercatorScale(ll[0]);
   const tol = maxMeters * scale;
   let best = null;
+  let bestAny = null; // Rückfall, wenn nur Tunnel- oder Brückensegmente in Reichweite liegen
   for (const s of g.segments) {
     const a = project(s.a);
     const b = project(s.b);
     if (p.x < Math.min(a.x, b.x) - tol || p.x > Math.max(a.x, b.x) + tol || p.y < Math.min(a.y, b.y) - tol || p.y > Math.max(a.y, b.y) + tol) continue;
     const q = closestPointOnSegment(p, a, b);
-    if (q.dist <= tol && (!best || q.dist < best.dist)) best = { ...q, seg: s };
+    if (q.dist > tol) continue;
+    if (s.level === 'ground') {
+      if (!best || q.dist < best.dist) best = { ...q, seg: s };
+    } else if (!bestAny || q.dist < bestAny.dist) bestAny = { ...q, seg: s };
   }
+  if (!best) best = bestAny;
   if (!best) return null;
   const onLine = unproject(best);
-  const key = keyOf(onLine);
+  const s = best.seg;
+  const key = s.level === 'ground' ? keyOf(onLine) : `${keyOf(onLine)}#${s.level}`;
   if (!g.nodes.has(key)) {
-    const s = best.seg;
-    g.link(s.a, onLine, s.speed, s.dir);
-    g.link(onLine, s.b, s.speed, s.dir);
+    g.link(s.a, onLine, s.speed, s.dir, null, { keyA: s.ka, keyB: key, level: s.level });
+    g.link(onLine, s.b, s.speed, s.dir, null, { keyA: key, keyB: s.kb, level: s.level });
   }
   return { key, latlng: onLine, distanceMeters: best.dist / scale };
 }
@@ -813,13 +862,49 @@ export function computeBusLines({ osmWays, doc, model = 'limit', graphs = null }
 }
 
 /** Route auf einem fertigen Netz; Start und Ziel werden temporär angebunden. */
-export function routeOnGraph(g, from, to) {
+function routeLeg(g, from, to, { legIndex = 0, legs = 1 } = {}) {
   const a = attachPoint(g, from);
   const b = attachPoint(g, to);
-  if (!a || !b) return { error: !a ? 'Start liegt nicht in der Nähe einer befahrbaren Strasse.' : 'Ziel liegt nicht in der Nähe einer befahrbaren Strasse.' };
+  if (!a || !b) {
+    if (!a && legIndex === 0) return { error: 'Start liegt nicht in der Nähe einer befahrbaren Strasse.' };
+    if (!b && legIndex === legs - 1) return { error: 'Ziel liegt nicht in der Nähe einer befahrbaren Strasse.' };
+    return { error: 'Zwischenpunkt liegt nicht in der Nähe einer befahrbaren Strasse.' };
+  }
   const r = shortestPath(g, a.key, b.key);
   // Start und Ziel hängen ohne Zeit am Netz (Anbindung bis 300 m zählt nicht zur Fahrzeit)
   return r ? { ...r, path: [from, ...r.path, to], times: [0, ...r.times, r.time] } : { error: 'Keine Verbindung im Netz gefunden (Strassennetz für den ganzen Bereich geladen?).' };
+}
+
+/**
+ * Route von from nach to, auf Wunsch über Zwischenpunkte (via): jede Etappe ist die schnellste
+ * Verbindung, Pfad und Zeitachse werden aneinandergehängt. Liefert wie shortestPath, plus legs.
+ */
+export function routeOnGraph(g, from, to, via = []) {
+  const stops = [from, ...(Array.isArray(via) ? via : []), to];
+  if (stops.length === 2) return routeLeg(g, from, to);
+  const legs = [];
+  for (let i = 1; i < stops.length; i++) {
+    const leg = routeLeg(g, stops[i - 1], stops[i], { legIndex: i - 1, legs: stops.length - 1 });
+    if (leg.error) return { error: leg.error };
+    legs.push(leg);
+  }
+  const first = legs[0];
+  const out = { ...first, path: first.path.slice(), times: first.times.slice(), quality: { ...first.quality }, legs: legs.length };
+  let variance = first.sd * first.sd;
+  for (const leg of legs.slice(1)) {
+    const offset = out.time;
+    out.path.push(...leg.path.slice(1));
+    out.times.push(...leg.times.slice(1).map((tt) => tt + offset));
+    out.dist += leg.dist;
+    out.time += leg.time;
+    variance += leg.sd * leg.sd;
+    for (const k of ['dist', 'assumedDist', 'draftDist', 'noProfileDist', 'unsafeDist']) out.quality[k] = (out.quality[k] || 0) + (leg.quality[k] || 0);
+  }
+  const band = summarize(out.time, variance);
+  out.sd = band.sd;
+  out.p15 = band.p15;
+  out.p85 = band.p85;
+  return out;
 }
 
 /** Mehrere Start-Ziel-Paare auf denselben Netzen: [{ id, current, proposed }]. */
@@ -831,27 +916,27 @@ export function computeRoutesMany({ osmWays, doc, pairs, model = 'limit' }) {
   };
   return pairs.map((p) => {
     const g = graphsFor(VEHICLE_IDS.includes(p.vehicle) ? p.vehicle : 'car');
-    return { id: p.id, current: routeOnGraph(g.current, p.from, p.to), proposed: routeOnGraph(g.proposed, p.from, p.to) };
+    return { id: p.id, current: routeOnGraph(g.current, p.from, p.to, p.via), proposed: routeOnGraph(g.proposed, p.from, p.to, p.via) };
   });
 }
 
 /** Beide Netze rechnen. Liefert { current, proposed, model }. */
-export function computeRoutes({ osmWays, doc, from, to, model = 'limit', vehicle = 'car' }) {
+export function computeRoutes({ osmWays, doc, from, to, via = [], model = 'limit', vehicle = 'car' }) {
   const graphs = buildGraphs({ osmWays, doc, model, vehicle: VEHICLE_IDS.includes(vehicle) ? vehicle : 'car' });
-  return { current: routeOnGraph(graphs.current, from, to), proposed: routeOnGraph(graphs.proposed, from, to), error: null, model };
+  return { current: routeOnGraph(graphs.current, from, to, via), proposed: routeOnGraph(graphs.proposed, from, to, via), error: null, model };
 }
 
 /**
  * Rennen: dieselbe Strecke je Verkehrsmittel (Auto, Bus, Velo, zu Fuss) auf beiden Netzen.
  * Liefert { car: { current, proposed }, bus: …, bike: …, foot: … }; jedes Ergebnis wie routeOnGraph (mit times).
  */
-export function computeRace({ osmWays = [], doc, from, to, model = 'limit', vehicles = VEHICLE_IDS }) {
+export function computeRace({ osmWays = [], doc, from, to, via = [], model = 'limit', vehicles = VEHICLE_IDS }) {
   const out = {};
   for (const v of vehicles) {
     if (!VEHICLE_IDS.includes(v)) continue;
     try {
       const g = buildGraphs({ osmWays, doc, model, vehicle: v });
-      out[v] = { current: routeOnGraph(g.current, from, to), proposed: routeOnGraph(g.proposed, from, to) };
+      out[v] = { current: routeOnGraph(g.current, from, to, via), proposed: routeOnGraph(g.proposed, from, to, via) };
     } catch (e) {
       out[v] = { current: { error: e.message }, proposed: { error: e.message } };
     }
@@ -892,11 +977,11 @@ export function computeAll({ osmWays = [], doc, model = 'limit' }) {
     };
     if (q) {
       const g = graphsFor(q.vehicle);
-      out.routes = { current: routeOnGraph(g.current, q.from, q.to), proposed: routeOnGraph(g.proposed, q.from, q.to), model, vehicle: q.vehicle || 'car' };
+      out.routes = { current: routeOnGraph(g.current, q.from, q.to, q.via), proposed: routeOnGraph(g.proposed, q.from, q.to, q.via), model, vehicle: q.vehicle || 'car' };
     }
     out.pairResults = pairs.map((p) => {
       const g = graphsFor(p.vehicle);
-      return { id: p.id, vehicle: p.vehicle || 'car', current: routeOnGraph(g.current, p.from, p.to), proposed: routeOnGraph(g.proposed, p.from, p.to) };
+      return { id: p.id, vehicle: p.vehicle || 'car', current: routeOnGraph(g.current, p.from, p.to, p.via), proposed: routeOnGraph(g.proposed, p.from, p.to, p.via) };
     });
     out.iso = iso ? computeIsochrone({ osmWays, doc, from: iso.from, minutes: iso.minutes, mode: iso.mode, model, graphs: graphsFor('car') }) : null;
   } catch (e) {

@@ -144,21 +144,23 @@ function pairsSection(doc, actions, tools, geometry) {
       count++;
       delta = `${d > 0 ? '+' : d < 0 ? '−' : '±'}${formatDuration(Math.abs(d))}`;
     }
-    const state = !p.from || !p.to ? `<span class="muted small">${t('Start und Ziel setzen')}</span>` : '';
+    const via = (p.via || []).length;
+    const state = !p.from || !p.to ? `<span class="muted small">${t('Start und Ziel setzen')}</span>` : via ? `<span class="muted small">${tn(via, '{n} Zwischenpunkt', '{n} Zwischenpunkte')}</span>` : '';
     return `<tr class="${capturing === p.id ? 'active' : ''}">
       <td>${i + 1}</td>
       <td><input type="text" class="pair-name" data-id="${esc(p.id)}" value="${esc(p.name)}" ${dis}> <select class="pair-vehicle" data-id="${esc(p.id)}" title="${t('Verkehrsmittel')}" ${dis}>${VEHICLES.map((v) => `<option value="${v.id}" ${(p.vehicle || 'car') === v.id ? 'selected' : ''}>${esc(t(v.label))}</option>`).join('')}</select> ${state}${unsafeNote(r)}</td>
       <td class="num">${cur ? `${fmtKm(cur.dist)}<br>${formatDuration(cur.time)}` : '–'}</td>
       <td class="num">${neu ? `${fmtKm(neu.dist)}<br>${formatDuration(neu.time)}` : '–'}</td>
       <td class="num">${delta} ${confidenceDot(actions.confidence('pair', p.id))}</td>
-      <td class="pair-actions"><button type="button" class="icon-btn pair-set" data-id="${esc(p.id)}" title="${t('Start und Ziel auf der Karte setzen')}" ${dis}>◎</button><button type="button" class="icon-btn pair-swap" data-id="${esc(p.id)}" title="A ↔ B" ${dis || !p.from || !p.to ? 'disabled' : ''}>⇄</button><button type="button" class="icon-btn pair-del" data-id="${esc(p.id)}" title="${t('Löschen')}" ${dis}>✕</button></td>
+      <td class="pair-actions"><button type="button" class="icon-btn pair-set" data-id="${esc(p.id)}" title="${t('Start und Ziel auf der Karte setzen')}" ${dis}>${icon('locate', { size: 15 })}</button><button type="button" class="icon-btn pair-via" data-id="${esc(p.id)}" title="${t('Zwischenpunkt hinzufügen')}" ${dis || !p.from || !p.to ? 'disabled' : ''}>${icon('pin', { size: 15 })}</button><button type="button" class="icon-btn pair-swap" data-id="${esc(p.id)}" title="A ↔ B" ${dis || !p.from || !p.to ? 'disabled' : ''}>⇄</button><button type="button" class="icon-btn pair-del" data-id="${esc(p.id)}" title="${t('Löschen')}" ${dis}>${icon('trash', { size: 15 })}</button></td>
     </tr>`;
   }).join('');
-  const total = count ? `<tr class="total"><td colspan="4">${tn(count, 'Summe über {n} Paar', 'Summe über {n} Paare')} · Ø ${formatDuration(Math.abs(sumDelta / count))} ${t('je Fahrt')}</td><td class="num"><strong>${sumDelta > 0 ? '+' : sumDelta < 0 ? '−' : '±'}${formatDuration(Math.abs(sumDelta))}</strong></td><td></td></tr>` : '';
+  const total = count ? `<tr class="total"><td colspan="4">${tn(count, 'Summe über {n} Route', 'Summe über {n} Routen')} · Ø ${formatDuration(Math.abs(sumDelta / count))} ${t('je Fahrt')}</td><td class="num"><strong>${sumDelta > 0 ? '+' : sumDelta < 0 ? '−' : '±'}${formatDuration(Math.abs(sumDelta))}</strong></td><td></td></tr>` : '';
+  const viaCapture = tools.routeTarget && tools.routeTarget.via && tools.routeTarget.pairId;
   return `
-    ${sectionHead(t('Weitere Routenpaare'), `${t('Feste Verbindungen wie Schule, Bahnhof oder Nachbardorf: heute gegen neu{typ}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte.', { typ: geometry ? t(' (typische Zeit)') : '' })}`, 'h4')}
+    ${sectionHead(t('Weitere Routen'), `${t('Weitere Verbindungen wie Schule, Bahnhof oder Nachbardorf, jede mit eigenem Start, Ziel und Zwischenpunkten: heute gegen neu{typ}, dazu die Summe der Zeitgewinne. Nummerierte Marker auf der Karte lassen sich ziehen.', { typ: geometry ? t(' (typische Zeit)') : '' })}`, 'h4')}
     ${pairs.length ? `<table class="route-table pairs"><thead><tr><th>#</th><th>${t('Name')}</th><th class="num">${t('Heute')}</th><th class="num">${t('Neu')}</th><th class="num">Δ</th><th></th></tr></thead><tbody>${rows}${total}</tbody></table>${confidenceBlock(actions.confidence('pairs'))}` : ''}
-    <div class="btn-row"><button type="button" id="pair-add" class="btn small" ${dis}>${t('+ Paar hinzufügen')}</button>${capturing ? `<span class="muted small">${t('Start und Ziel auf der Karte anklicken (Esc bricht ab).')}</span>` : ''}</div>`;
+    <div class="btn-row"><button type="button" id="pair-add" class="btn small" ${dis}>${icon('plus', { size: 15 })}<span>${t('Weitere Route')}</span></button>${capturing ? `<span class="muted small">${t('Start und Ziel auf der Karte anklicken (Esc bricht ab).')}</span>` : viaCapture ? `<span class="muted small">${t('Zwischenpunkt auf der Karte anklicken (Esc bricht ab).')}</span>` : ''}</div>`;
 }
 
 /**
@@ -1496,13 +1498,13 @@ export class UI {
         <label class="field">${t('Status')}<select id="prop-status" ${dis}>${options(STATUSES, f.status)}</select></label>
         <label class="check"><input type="checkbox" id="prop-oneway"${f.oneway ? ' checked' : ''} ${dis}> ${t('Einbahn (in Zeichenrichtung)')}</label>
         <label class="field">${t('Zugang')}<select id="prop-access" ${dis}>${options(ROAD_ACCESS, f.access || 'all')}</select></label>
-        <label class="field">${t('Tempolimit (km/h)')}
+        <div class="field">${t('Tempolimit (km/h)')}
           <div class="speed-row">
-            <input type="number" id="prop-maxspeed" min="5" max="200" step="5" value="${f.maxspeed ?? ''}" placeholder="${t('Standard')} ${roadSpeed({ ...f, maxspeed: null }) || '–'}" ${dis}>
+            <button type="button" class="speed std${f.maxspeed ? '' : ' active'}" data-speed="" title="${t('Standard je Strassentyp')}: ${roadSpeed({ ...f, maxspeed: null }) || '–'} km/h" ${dis}><span class="sign-value">${roadSpeed({ ...f, maxspeed: null }) || '–'}</span><span class="sign-tag">${t('Std.')}</span></button>
             ${[20, 30, 50, 80].map((v) => `<button type="button" class="speed${f.maxspeed === v ? ' active' : ''}" data-speed="${v}" ${dis}>${v}</button>`).join('')}
-            <button type="button" class="speed${f.maxspeed ? '' : ' active'}" data-speed="" title="${t('Standard je Strassentyp')}" ${dis}>${t('Std.')}</button>
+            <label class="speed-custom${f.maxspeed && ![20, 30, 50, 80].includes(f.maxspeed) ? ' active' : ''}" title="${t('Eigener Wert, z. B. 10, 40, 60 oder 70')}"><input type="number" id="prop-maxspeed" min="5" max="200" step="5" value="${f.maxspeed ?? ''}" placeholder="…" aria-label="${t('Eigenes Tempolimit (km/h)')}" ${dis}><span>km/h</span></label>
           </div>
-        </label>
+        </div>
         <label class="field">${t('Breite (m)')}<input type="number" id="prop-width" min="1" max="60" step="0.5" value="${f.section ? sectionWidth(f.section) : (f.width ?? '')}" placeholder="${t('Standard')} ${roadWidthMeters({ ...f, width: null, section: null })} m" ${f.section ? `disabled title="${t('Ergibt sich aus dem Querschnitt')}"` : dis}></label>
         ${roadKind(f).motorOnly ? `<p class="muted small">${t('Autobahn/Autostrasse: keine Fussgänger und Velos; zwei getrennte Fahrbahnen ab Zoom 15.')}</p>` : ''}
         ${sectionBlock(f, editable)}
@@ -1650,6 +1652,7 @@ export class UI {
     el.querySelectorAll('.pair-name').forEach((inp) => { inp.onchange = () => actions.renamePair(inp.dataset.id, inp.value); });
     el.querySelectorAll('.pair-set').forEach((b) => { b.onclick = () => actions.capturePair(b.dataset.id); });
     el.querySelectorAll('.pair-swap').forEach((b) => { b.onclick = () => actions.swapPair(b.dataset.id); });
+    el.querySelectorAll('.pair-via').forEach((b) => { b.onclick = () => actions.addVia(b.dataset.id); });
     el.querySelectorAll('.pair-del').forEach((b) => { b.onclick = () => actions.removePair(b.dataset.id); });
     el.querySelectorAll('.pair-vehicle').forEach((sel) => { sel.onchange = () => actions.setPairVehicle(sel.dataset.id, sel.value); });
   }
@@ -2426,6 +2429,7 @@ export class UI {
         ${routes.proposed && routes.proposed.error ? `<p class="muted small">${t('Neu')}: ${esc(t(routes.proposed.error))}</p>` : ''}`;
     }
     const race = actions.race();
+    const viaCapture = tools.routeTarget && tools.routeTarget.via && !tools.routeTarget.pairId;
     el.innerHTML = `
       ${sectionHead(t('Routen-Rechner: heute vs. neu'), `${t('Schnellste Fahrroute im heutigen Strassennetz (OpenStreetMap) verglichen mit dem Netz inklusive deiner Änderungen: neue Strassen kommen dazu, Rückbau fällt weg, übernommene Strassen zählen mit ihren Änderungen, Zonen deckeln das Tempo. Fahrzeit aus Tempolimits (OSM maxspeed oder Standard je Strassentyp); gezeichnete Ampeln +20 s, Stop +8 s, Vortritt +3 s, Fussgängerstreifen +2 s.')} ${t('Velo (17 km/h, Wege und Velostreifen) und zu Fuss (4.8 km/h, auch Treppen und Fusswege, ohne Einbahnen) mit Anteil unsicherer Strecke: schnelle Strassen ohne Velostreifen bzw. Trottoir.')}`)}
       ${body}
@@ -2433,12 +2437,14 @@ export class UI {
       <label class="check"><input type="checkbox" id="route-model" ${geometry ? 'checked' : ''}> ${t('Fahrzeit aus der Strassenführung (Kurvenradien, Steigung aus Höhenprofil, Wartezeiten mit Streuung)')}</label>
       <div class="btn-row">
         <label class="field inline">${t('Verkehrsmittel')}<select id="route-vehicle">${VEHICLES.map((v) => `<option value="${v.id}" ${actions.routeVehicle() === v.id ? 'selected' : ''}>${esc(t(v.label))}</option>`).join('')}</select></label>
-        <button type="button" id="route-tool" class="btn small ${tools.tool === 'route' ? 'primary' : ''}">${t('Punkte setzen')}</button>
+        <button type="button" id="route-tool" class="btn small ${tools.tool === 'route' && !tools.routeTarget ? 'primary' : ''}">${icon('route', { size: 15 })}<span>${q ? t('Neu setzen') : t('Punkte setzen')}</span></button>
+        <button type="button" id="route-via" class="btn small ${viaCapture ? 'primary' : ''}" ${q ? '' : 'disabled'} title="${t('Nächster Klick auf die Karte fügt einen Wegpunkt ein; Marker lassen sich ziehen')}">${icon('pin', { size: 15 })}<span>${t('Zwischenpunkt')}</span></button>
         <button type="button" id="route-swap" class="btn small" ${q ? '' : 'disabled'}>A ↔ B</button>
         <button type="button" id="route-clear" class="btn small" ${q || tools.routeDraft ? '' : 'disabled'}>${t('Löschen')}</button>
-        <button type="button" id="route-load" class="btn small">${t('Netz für Ansicht laden')}</button>
       </div>
-      <p class="muted small" id="route-net">${esc(t(net))}</p>
+      ${q && (q.via || []).length ? `<p class="muted small via-note">${tn(q.via.length, '{n} Zwischenpunkt', '{n} Zwischenpunkte')} · ${t('Marker ziehen verschiebt, Rechtsklick entfernt.')} <button type="button" class="link" id="route-via-clear">${t('Alle entfernen')}</button></p>` : q ? `<p class="muted small via-note">${t('Start und Ziel lassen sich auf der Karte ziehen.')}</p>` : ''}
+      ${viaCapture ? `<p class="muted small">${t('Zwischenpunkt auf der Karte anklicken (Esc bricht ab).')}</p>` : ''}
+      <p class="muted small" id="route-net">${esc(t(net))} <button type="button" class="link" id="route-load">${t('Netz für Ansicht laden')}</button></p>
       ${actions.phaseView() ? `<p class="muted small"><strong>${t('Ansicht bis Etappe {name}: Fahrzeiten und Erreichbarkeit gelten für diesen Zustand.', { name: phaseLabel(store.doc.phases.find((ph) => ph.id === actions.phaseView()) || {}, store.doc.phases.findIndex((ph) => ph.id === actions.phaseView())) })}</strong></p>` : ''}
       ${pairsSection(store.doc, actions, tools, geometry)}
       ${busSection(store.doc, actions, tools)}
@@ -2452,6 +2458,8 @@ export class UI {
     this.$('route-model').onchange = (e) => actions.updateSettings({ speedModel: e.target.checked ? 'geometry' : 'limit' });
     this.$('route-swap').onclick = () => actions.swapRoute();
     this.$('route-clear').onclick = () => actions.clearRoute();
+    this.$('route-via').onclick = () => actions.addVia(null);
     this.$('route-load').onclick = () => actions.loadRouteNetwork();
+    if (this.$('route-via-clear')) this.$('route-via-clear').onclick = () => actions.clearVia(null);
   }
 }

@@ -22,7 +22,7 @@ export const BAND_MIN_PX_PER_M = 1.2;
 const MARKING_MIN_PX_PER_M = 3;
 
 export function drawScene(ctx, map, s) {
-  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6, ghostIds = null, race = null, osmHover = null } = s;
+  const { doc, selection, osmWays = [], showOsm = false, preview = null, snap = null, showHandles = false, routes = null, routeDraft = null, routeDrag = null, comments = [], activeCommentId = null, commentDraft = null, parcels = null, buildings = null, isochrone = null, pairs = null, routeTarget = null, diff = null, busLines = null, transit = null, multiIds = null, handleRadius = 6, ghostIds = null, race = null, osmHover = null } = s;
   const zoom = map.getZoom();
   const P = (ll) => map.project(ll);
   const mpp = map.metersPerPixel();
@@ -205,8 +205,8 @@ export function drawScene(ctx, map, s) {
       speedSigns(ctx, P, f);
     }
   }
-  drawRoutePairs(ctx, P, doc.routePairs || [], pairs, routeDraft, routeTarget);
-  drawRoutes(ctx, P, doc.route, routes, routeDraft && !routeDraft.pairId ? routeDraft : null);
+  drawRoutePairs(ctx, P, doc.routePairs || [], pairs, routeDraft, routeTarget, routeDrag);
+  drawRoutes(ctx, P, doc.route, routes, routeDraft && !routeDraft.pairId ? routeDraft : null, routeDrag);
   if (race) drawRace(ctx, P, race);
   if (doc.isochrone && doc.isochrone.from) {
     const c = P(doc.isochrone.from);
@@ -634,7 +634,20 @@ function speedSigns(ctx, P, road) {
   flush();
 }
 
-function drawRoutes(ctx, P, query, routes, routeDraft) {
+/** Position eines Routen-Markers; während des Ziehens die Zeigerposition. */
+function markerPos(routeDrag, kind, pairId, field, index, ll) {
+  const d = routeDrag;
+  if (d && d.latlng && d.kind === kind && d.pairId === pairId && d.field === field && (field !== 'via' || d.index === index)) return d.latlng;
+  return ll;
+}
+
+/** Zwischenpunkt: kleiner nummerierter Kreis in der Routenfarbe. */
+function viaMarker(ctx, c, n, { r = 7, color = '#1b6ac9' } = {}) {
+  circle(ctx, c, r, { stroke: color, width: 2, fill: '#fff' });
+  text(ctx, String(n), c.x, c.y + 0.5, { font: `bold ${r > 6 ? 9 : 8}px system-ui, sans-serif`, color, align: 'center', baseline: 'middle' });
+}
+
+function drawRoutes(ctx, P, query, routes, routeDraft, routeDrag = null) {
   const marker = (ll, letter) => {
     const c = P(ll);
     circle(ctx, c, 11, { stroke: '#fff', width: 2, fill: '#1f2933' });
@@ -658,8 +671,9 @@ function drawRoutes(ctx, P, query, routes, routeDraft) {
   }
   if (routeDraft && routeDraft.from) marker(routeDraft.from, 'A');
   if (query && query.from && query.to) {
-    marker(query.from, 'A');
-    marker(query.to, 'B');
+    (query.via || []).forEach((ll, i) => viaMarker(ctx, P(markerPos(routeDrag, 'main', null, 'via', i, ll)), i + 1));
+    marker(markerPos(routeDrag, 'main', null, 'from', null, query.from), 'A');
+    marker(markerPos(routeDrag, 'main', null, 'to', null, query.to), 'B');
   }
 }
 
@@ -806,7 +820,7 @@ function drawIsochrone(ctx, P, iso) {
 }
 
 /** Weitere Routenpaare: dünnere Linien und nummerierte Marker; das gerade zu setzende Paar zeigt nur seinen Start. */
-function drawRoutePairs(ctx, P, pairsDef, results, routeDraft, routeTarget) {
+function drawRoutePairs(ctx, P, pairsDef, results, routeDraft, routeTarget, routeDrag = null) {
   const marker = (ll, label, fill) => {
     const c = P(ll);
     circle(ctx, c, 9, { stroke: '#fff', width: 2, fill });
@@ -829,8 +843,9 @@ function drawRoutePairs(ctx, P, pairsDef, results, routeDraft, routeTarget) {
       }
     }
     const n = String(i + 1);
-    if (pair.from) marker(pair.from, n, '#4a5568');
-    if (pair.to) marker(pair.to, n, '#1f2933');
+    (pair.via || []).forEach((ll, k) => viaMarker(ctx, P(markerPos(routeDrag, 'pair', pair.id, 'via', k, ll)), k + 1, { r: 6, color: '#4a5568' }));
+    if (pair.from) marker(markerPos(routeDrag, 'pair', pair.id, 'from', null, pair.from), n, '#4a5568');
+    if (pair.to) marker(markerPos(routeDrag, 'pair', pair.id, 'to', null, pair.to), n, '#1f2933');
   });
   if (routeDraft && routeDraft.pairId) {
     const i = pairsDef.findIndex((p) => p.id === routeDraft.pairId);

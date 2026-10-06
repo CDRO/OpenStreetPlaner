@@ -7,10 +7,9 @@ import { LocalState } from './local.js';
 import { api, setClientId } from './api.js';
 import {
   cloneDocument, createBusLine, createDocument, createLayer, deserialize, getFeature, getLayer, moveLayer, removeLayer, toGeoJSON, adoptBusRoute, MAX_BUS_LINES, featureLabel, STATUSES, LEVELS, ROAD_ACCESS, docForPhase, createPhase, removePhase, phaseLabel, featureInPhase, VEHICLES,
-  groupFeatures, ungroupFeatures,
-} from './model.js';
+  groupFeatures, ungroupFeatures, MAX_ROUTE_VIA } from './model.js';
 import { buildSnapIndex } from './snap.js';
-import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, routeBounds } from './osm.js';
+import { MAX_CELLS, OSM_MIN_ZOOM, OsmRoadCache, OsmTransitCache, cellsFor, pointsBounds, routeBounds } from './osm.js';
 import { ToolController, TOOLS } from './tools.js';
 import { UI } from './ui.js';
 import { computeAll, computeRace, computeRoutes, formatDuration } from './routing.js';
@@ -310,6 +309,7 @@ async function main() {
     buildings: state.showExposure ? exposureForDrawing() : null,
     diff: state.showDiff && state.diff ? state.diff.result : null,
     routeDraft: tools.routeDraft,
+    routeDrag: tools.routeDrag,
     race: raceScene(),
     comments: settings.showComments ? state.comments : [],
     activeCommentId: state.activeCommentId,
@@ -524,6 +524,17 @@ async function main() {
       const b = isochroneBounds(doc.isochrone);
       if (b.tooLarge) ui.toast(t('Erreichbarkeit: Bereich zu gross ({n} Zellen, erlaubt {max}). Weniger Minuten wählen.', { n: b.cells, max: MAX_CELLS }), 'error', 6000);
       else osm.ensureArea(b);
+    }
+    // Gezeichnete Trassen und Kreisel: das Netz um sie herum muss geladen sein, damit ihre Anschlüsse
+    // zählen und der Rechner einen Umweg über sie findet, ohne dass jemand „Netz laden“ drückt.
+    if (!queries.length && !doc.isochrone) return;
+    const hidden = new Set(doc.layers.filter((l) => l.visible === false).map((l) => l.id));
+    for (const f of doc.features) {
+      if (hidden.has(f.layerId)) continue;
+      let b = null;
+      if (f.type === 'road' && f.status !== 'remove' && f.nodes.length >= 2) b = pointsBounds(f.nodes);
+      else if (f.type === 'roundabout') b = pointsBounds([f.center]);
+      if (b && !b.tooLarge) osm.ensureArea(b);
     }
   }
 
@@ -1331,7 +1342,7 @@ async function main() {
       const id = newId('p');
       store.commit('Routenpaar hinzufügen', (d) => {
         if (!d.routePairs) d.routePairs = [];
-        d.routePairs.push({ id, name: `${t('Paar')} ${n + 1}`, from: null, to: null, vehicle: state.vehicle });
+        d.routePairs.push({ id, name: `${t('Route')} ${n + 2}`, from: null, to: null, via: [], vehicle: state.vehicle });
       });
       tools.captureRoute({ pairId: id });
       ui.refreshRoute();
@@ -1350,7 +1361,32 @@ async function main() {
     swapPair(id) {
       actions.commitDoc('Routenpaar umkehren', (d) => {
         const p = (d.routePairs || []).find((x) => x.id === id);
-        if (p && p.from && p.to) [p.from, p.to] = [p.to, p.from];
+        if (p && p.from && p.to) {
+          [p.from, p.to] = [p.to, p.from];
+          p.via = (p.via || []).slice().reverse();
+        }
+      });
+    },
+    /** Nächster Klick auf der Karte fügt der Hauptroute (pairId null) oder einer weiteren Route einen Zwischenpunkt ein. */
+    addVia(pairId = null) {
+      if (!actions.requireEdit()) return;
+      const r = pairId ? (store.doc.routePairs || []).find((x) => x.id === pairId) : store.doc.route;
+      if (!r || !r.from || !r.to) return ui.toast(t('Zuerst Start und Ziel setzen.'), 'error');
+      if ((r.via || []).length >= MAX_ROUTE_VIA) return ui.toast(t('Höchstens {n} Zwischenpunkte je Route.', { n: MAX_ROUTE_VIA }), 'error');
+      tools.captureRoute({ via: true, pairId });
+      ui.refreshRoute();
+      return undefined;
+    },
+    removeVia(pairId, index) {
+      actions.commitDoc('Zwischenpunkt entfernen', (d) => {
+        const r = pairId ? (d.routePairs || []).find((x) => x.id === pairId) : d.route;
+        if (r && r.via) r.via.splice(index, 1);
+      });
+    },
+    clearVia(pairId = null) {
+      actions.commitDoc('Zwischenpunkte entfernen', (d) => {
+        const r = pairId ? (d.routePairs || []).find((x) => x.id === pairId) : d.route;
+        if (r) r.via = [];
       });
     },
     removePair(id) {
@@ -1537,7 +1573,7 @@ async function main() {
       state.race = race;
       ui.refreshRace();
       ui.progress('race', { label: t('Fahrt wird vorbereitet…') });
-      const job = { osmWays: osm.list(), doc: effectiveDoc(), model: settings.speedModel, from: q.from, to: q.to };
+      const job = { osmWays: osm.list(), doc: effectiveDoc(), model: settings.speedModel, from: q.from, to: q.to, via: q.via || [] };
       const results = await runRaceJob(job);
       if (state.race !== race) return; // inzwischen abgebrochen oder neu gestartet
       ui.progressDone('race');
@@ -1599,7 +1635,7 @@ async function main() {
     swapRoute() {
       const q = store.doc.route;
       if (!q) return;
-      store.commit('Route umkehren', (d) => { d.route = { from: q.to, to: q.from }; });
+      store.commit('Route umkehren', (d) => { d.route = { ...q, from: q.to, to: q.from, via: (q.via || []).slice().reverse() }; });
     },
     clearRoute() {
       tools.routeDraft = null;
@@ -1968,6 +2004,20 @@ async function main() {
   function showMenuFor(info) {
     const doc = store.doc;
     const rect = map.container.getBoundingClientRect();
+    if (info.routeMarker) {
+      // Rechtsklick auf Start, Ziel oder Zwischenpunkt einer Route
+      const m = info.routeMarker;
+      const pair = m.pairId ? (doc.routePairs || []).find((p) => p.id === m.pairId) : null;
+      const r = pair || doc.route;
+      const items = [{ header: pair ? pair.name || t('Route') : t('Hauptroute') }];
+      if (m.field === 'via') items.push({ label: t('Zwischenpunkt entfernen'), icon: 'trash', action: () => actions.removeVia(m.pairId, m.index) });
+      items.push({ label: t('Zwischenpunkt hinzufügen'), icon: 'pin', action: () => actions.addVia(m.pairId) });
+      if (r && (r.via || []).length) items.push({ label: t('Alle Zwischenpunkte entfernen'), action: () => actions.clearVia(m.pairId) });
+      items.push({ label: t('Start und Ziel tauschen'), icon: 'arrow-right', action: () => (pair ? actions.swapPair(pair.id) : actions.swapRoute()) });
+      items.push({ separator: true }, { label: t('Route löschen'), icon: 'trash', danger: true, action: () => (pair ? actions.removePair(pair.id) : actions.clearRoute()) });
+      ui.showContextMenu(items, { x: rect.left + info.point.x, y: rect.top + info.point.y });
+      return;
+    }
     if (info.osmWay) {
       // Rechtsklick auf eine OSM-Strasse: übernehmen oder als Rückbau übernehmen
       const tags = info.osmWay.tags || {};

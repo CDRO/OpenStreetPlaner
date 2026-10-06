@@ -50,7 +50,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   const res = await page.evaluate(() => window.stadtplaner.actions.pairResults()[0]);
   assert.ok(res.proposed.time < res.current.time, 'Diagonale ist schneller');
   const panel = (await page.textContent('#route-panel')).replace(/\s+/g, ' ');
-  assert.ok(/Summe über 1 Paar/.test(panel) && panel.includes('−'), panel);
+  assert.ok(/Summe über 1 Route/.test(panel) && panel.includes('−'), panel);
   // Route neu ist gestrichelt: entlang der Diagonale wechseln grüne Striche und weisse Lücken (Halo)
   const samples = await page.evaluate(() => {
     const sp = window.stadtplaner;

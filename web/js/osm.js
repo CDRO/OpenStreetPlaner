@@ -62,6 +62,27 @@ export function routeBounds(from, to, { factor = 0.3, minMeters = 400 } = {}) {
   return b;
 }
 
+/** Umgebung einer Punktliste (gezeichnete Strasse, Kreisel) mit Puffer in Metern, für das Nachladen des Netzes. */
+export function pointsBounds(points, { padMeters = 250 } = {}) {
+  if (!points || !points.length) return null;
+  let south = Infinity;
+  let north = -Infinity;
+  let west = Infinity;
+  let east = -Infinity;
+  for (const [lat, lng] of points) {
+    south = Math.min(south, lat);
+    north = Math.max(north, lat);
+    west = Math.min(west, lng);
+    east = Math.max(east, lng);
+  }
+  const dLat = padMeters / 111320;
+  const dLng = padMeters / (111320 * Math.cos(((south + north) / 2) * Math.PI / 180));
+  const b = { south: south - dLat, north: north + dLat, west: west - dLng, east: east + dLng };
+  b.cells = cellsFor(b).length;
+  b.tooLarge = b.cells > MAX_CELLS;
+  return b;
+}
+
 /**
  * Hält geladene Strassen im Speicher. loader(bounds) -> Promise<Way[]>.
  * Zustandsmeldungen über subscribe(): { status: 'loading', remaining, done, total } |

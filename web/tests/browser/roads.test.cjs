@@ -42,7 +42,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await page.mouse.click(at(0.3, 0.5).x, at(0.3, 0.5).y);
   await page.waitForSelector('#prop-kind');
   assert.equal(await page.inputValue('#prop-kind'), 'motorway');
-  assert.ok((await page.getAttribute('#prop-maxspeed', 'placeholder')).includes('120'), 'Standardtempo 120');
+  assert.ok((await page.textContent('.speed.std')).includes('120'), 'Standardtempo 120');
   assert.ok((await page.textContent('#properties')).includes('keine Fussgänger und Velos'));
   console.log('✓ Autobahn');
 

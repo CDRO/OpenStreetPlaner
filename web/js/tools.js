@@ -6,10 +6,9 @@ import {
   applySnapSplits, createJunction, createRoad, createRoundabout, createZone, extendRoad, featureLabel, getFeature, getLayer,
   insertZoneNode, moveFeatureNode, pointInPolygon, removeFeature, removeRoadNode, removeZoneNode, ringArea,
   splitRoadSegment, roundCoord, shiftLatLng, translateFeatures, featuresInBounds,
-  expandGroups,
-} from './model.js';
+  expandGroups, MAX_ROUTE_VIA } from './model.js';
 import { snapLatLng, excludeFeature } from './snap.js';
-import { haversine, pathLength, project as mercator } from './geometry.js';
+import { closestPointOnSegment, haversine, pathLength, project as mercator } from './geometry.js';
 import { ringAreaM2 } from './costs.js';
 import { roadKindFromHighway } from './osm.js';
 import { hitComment, hitHandle } from './draw.js';
@@ -23,7 +22,7 @@ export const TOOLS = [
   { id: 'zone', label: 'Zone / Fläche', key: 'F', hint: 'Klicken setzt Eckpunkte. Doppelklick, Enter oder Rechtsklick schliesst die Fläche (mindestens drei Punkte), Esc bricht ab.' },
   { id: 'roundabout', label: 'Kreisel', key: 'R', hint: 'Klicken setzt das Zentrum, Maus bewegen wählt den Radius, erneut klicken bestätigt.' },
   { id: 'adopt', label: 'OSM übernehmen', key: 'O', hint: 'Bestehende OSM-Strasse anklicken: sie wird als bearbeitbare Kopie in die aktive Ebene übernommen (ab Zoom 16, OSM-Strassen werden eingeblendet). Shift+Klick übernimmt sie als Rückbau.' },
-  { id: 'route', label: 'Route', key: 'T', hint: 'Klicken setzt den Start (A), ein zweiter Klick das Ziel (B). Weitere Klicks beginnen neu, Esc löscht die Route.' },
+  { id: 'route', label: 'Route', key: 'T', hint: 'Klicken setzt den Start (A), ein zweiter Klick das Ziel (B). Marker lassen sich ziehen, „Zwischenpunkt“ fügt Wegpunkte ein. Weitere Klicks beginnen neu, Esc löscht die Route.' },
   { id: 'measure', label: 'Messen', key: 'M', hint: 'Klicken setzt Messpunkte: Länge je Abschnitt und gesamt, ab drei Punkten auch die Fläche. Doppelklick oder Enter beendet, Esc löscht die Messung.' },
   { id: 'comment', label: 'Kommentar', key: 'C', hint: 'Auf die Karte klicken, um dort einen Kommentar zu hinterlassen. Geht auch ohne Bearbeitungsrecht.' },
 ];
@@ -46,7 +45,8 @@ export class ToolController {
     this.preview = null;
     this.snapPoint = null;
     this.routeDraft = null; // Start gesetzt, Ziel fehlt noch
-    this.routeTarget = null; // null = Hauptroute, sonst { pairId }, { isochrone: true } oder { busLine: id }
+    this.routeTarget = null; // null = Hauptroute, sonst { pairId }, { via: true, pairId }, { isochrone: true } oder { busLine: id }
+    this.routeDrag = null; // Marker einer Route wird gezogen: { kind, pairId, field, index, latlng }
     this.commentDraft = null; // Position für einen neuen Kommentar
     this.modifiers = { Shift: false, Control: false, Alt: false };
     this.multi = new Set(); // Mehrfachauswahl (enthält bei mehr als einem Element auch das primäre)
@@ -265,6 +265,7 @@ export class ToolController {
   }
 
   onPointerMove(e) {
+    if (this.routeDrag) return this.routeDragMove(e);
     if (this.drag) return this.dragMove(e);
     if (this.groupDrag) return this.groupDragMove(e);
     if (this.box) return this.boxMove(e);
@@ -310,16 +311,30 @@ export class ToolController {
   onPointerDown(e) {
     const type = e.originalEvent && e.originalEvent.pointerType;
     this.touch = !!type && type !== 'mouse';
-    if (this.tool !== 'select' || !this.canEdit()) return;
-    const f = this.selectedFeature();
-    const hit = f ? hitHandle(this.map, f, e.point, this.handleTol()) : null;
-    if (hit && hit.kind === 'vertex') {
-      e.consume();
-      this.map.setDragEnabled(false);
-      this.drag = { featureId: f.id, index: hit.index, latlng: null, moved: false };
-      return;
+    const editable = this.canEdit();
+    // Griffe des ausgewählten Elements haben Vorrang (die Auswahl ist ausdrücklich)
+    if (this.tool === 'select' && editable) {
+      const f = this.selectedFeature();
+      const hit = f ? hitHandle(this.map, f, e.point, this.handleTol()) : null;
+      if (hit && hit.kind === 'vertex') {
+        e.consume();
+        this.map.setDragEnabled(false);
+        this.drag = { featureId: f.id, index: hit.index, latlng: null, moved: false };
+        return;
+      }
+      if (hit) return;
     }
-    if (hit) return;
+    // Start, Ziel und Zwischenpunkte einer Route lassen sich im Auswahl- und im Routen-Werkzeug ziehen
+    if ((this.tool === 'select' || this.tool === 'route') && editable && !this.routeDraft && !this.routeTarget) {
+      const m = this.hitRouteMarker(e.point);
+      if (m) {
+        e.consume();
+        this.map.setDragEnabled(false);
+        this.routeDrag = { ...m, start: e.point, latlng: null, moved: false };
+        return;
+      }
+    }
+    if (this.tool !== 'select' || !editable) return;
     const picked = this.pick(e);
     if (picked && this.isSelected(picked.featureId)) {
       // Ziehen auf einem ausgewählten Element verschiebt die ganze Auswahl
@@ -336,6 +351,7 @@ export class ToolController {
   }
 
   onPointerUp(e) {
+    if (this.routeDrag) this.routeDragEnd();
     if (this.drag) this.dragEnd();
     if (this.groupDrag) this.groupDragEnd();
     if (this.box) this.boxEnd(e);
@@ -399,6 +415,13 @@ export class ToolController {
     if (this.tool === 'road' && this.draft) return this.finishRoad();
     if (this.tool === 'zone' && this.draft) return this.finishZone();
     if (this.tool === 'measure') return this.measureFinish();
+    if ((this.tool === 'select' || this.tool === 'route') && this.canEdit() && !this.routeDraft) {
+      const rm = this.hitRouteMarker(e.point);
+      if (rm && this.onMenu) {
+        this.onMenu({ point: e.point, latlng: e.latlng, featureId: null, segIndex: null, ids: [], routeMarker: rm });
+        return undefined;
+      }
+    }
     if (this.tool !== 'select') return undefined;
     const f = this.selectedFeature();
     const hit = f && this.canEdit() ? hitHandle(this.map, f, e.point, this.handleTol()) : null;
@@ -805,10 +828,98 @@ export class ToolController {
 
   // --- Route ------------------------------------------------------------------
 
+  /** Alle Marker der Routen (Hauptroute und weitere Routen): Start, Zwischenpunkte, Ziel. */
+  routeMarkers() {
+    const doc = this.store.doc;
+    const out = [];
+    const push = (kind, pairId, r) => {
+      if (!r) return;
+      if (r.from) out.push({ kind, pairId, field: 'from', index: null, latlng: r.from });
+      (r.via || []).forEach((ll, i) => out.push({ kind, pairId, field: 'via', index: i, latlng: ll }));
+      if (r.to) out.push({ kind, pairId, field: 'to', index: null, latlng: r.to });
+    };
+    push('main', null, doc.route);
+    for (const p of doc.routePairs || []) push('pair', p.id, p);
+    return out;
+  }
+
+  /** Marker unter dem Zeiger (Bildschirmtoleranz), sonst null. */
+  hitRouteMarker(point) {
+    const tol = this.touch ? 16 : 12;
+    let best = null;
+    for (const m of this.routeMarkers()) {
+      const p = this.map.project(m.latlng);
+      const d = Math.hypot(p.x - point.x, p.y - point.y);
+      if (d <= tol && (!best || d < best.d)) best = { ...m, d };
+    }
+    return best;
+  }
+
+  routeDragMove(e) {
+    const d = this.routeDrag;
+    if (!d.moved && Math.hypot(e.point.x - d.start.x, e.point.y - d.start.y) <= 3) return;
+    d.moved = true;
+    d.latlng = roundCoord(e.latlng);
+    this.onStatus(t('Routenpunkt verschieben – loslassen setzt ab.'));
+    this.onSceneChange();
+  }
+
+  routeDragEnd() {
+    const d = this.routeDrag;
+    this.routeDrag = null;
+    this.map.setDragEnabled(true);
+    if (!d || !d.moved || !d.latlng) {
+      this.onSceneChange();
+      return;
+    }
+    const label = d.field === 'via' ? 'Zwischenpunkt verschieben' : d.field === 'from' ? 'Start verschieben' : 'Ziel verschieben';
+    this.store.commit(label, (doc) => {
+      const r = d.kind === 'main' ? doc.route : (doc.routePairs || []).find((p) => p.id === d.pairId);
+      if (!r) return;
+      if (d.field === 'via') {
+        if (r.via && r.via[d.index]) r.via[d.index] = d.latlng;
+      } else r[d.field] = d.latlng;
+    });
+    this.onStatus(this.toolInfo().hint);
+  }
+
+  /** Fügt ll als Zwischenpunkt in die Etappe ein, deren Luftlinie dem Punkt am nächsten liegt. */
+  static insertVia(r, ll) {
+    const via = (r.via || []).slice();
+    if (via.length >= MAX_ROUTE_VIA) return via;
+    const stops = [r.from, ...via, r.to];
+    const p = mercator(ll);
+    let bestI = 0;
+    let bestD = Infinity;
+    for (let i = 1; i < stops.length; i++) {
+      const q = closestPointOnSegment(p, mercator(stops[i - 1]), mercator(stops[i]));
+      if (q.dist < bestD) {
+        bestD = q.dist;
+        bestI = i - 1;
+      }
+    }
+    via.splice(bestI, 0, ll);
+    return via;
+  }
+
   routeClick(e) {
     const ll = roundCoord(e.latlng);
     const target = this.routeTarget;
     if (target && target.busLine) return this.busStopClick(e, target.busLine);
+    if (target && target.via) {
+      // Zwischenpunkt in die Hauptroute oder eine weitere Route einfügen
+      this.routeTarget = null;
+      this.store.commit('Zwischenpunkt setzen', (doc) => {
+        const r = target.pairId ? (doc.routePairs || []).find((p) => p.id === target.pairId) : doc.route;
+        if (!r || !r.from || !r.to) return;
+        r.via = ToolController.insertVia(r, ll);
+      });
+      this.onStatus(this.toolInfo().hint);
+      this.onSceneChange();
+      return;
+    }
+    // Klick auf einen bestehenden Marker beginnt keine neue Route (Marker werden gezogen)
+    if (!this.routeDraft && !target && this.hitRouteMarker(e.point)) return;
     if (target && target.isochrone) {
       this.routeTarget = null;
       this.store.commit('Isochronen-Ursprung setzen', (doc) => {
@@ -929,7 +1040,8 @@ export class ToolController {
     this.routeDraft = null;
     if (this.tool !== 'route') this.setTool('route');
     if (target && target.busLine) this.onStatus(t('Haltestellen der Linie anklicken oder neue setzen; Esc beendet.'));
-    else this.onStatus(target && target.isochrone ? t('Ursprung der Erreichbarkeit auf der Karte anklicken.') : t('Start des Paars auf der Karte anklicken, dann das Ziel.'));
+    else if (target && target.via) this.onStatus(t('Zwischenpunkt auf der Karte anklicken (Esc bricht ab).'));
+    else this.onStatus(target && target.isochrone ? t('Ursprung der Erreichbarkeit auf der Karte anklicken.') : t('Start der Route auf der Karte anklicken, dann das Ziel.'));
     this.onSceneChange();
   }
 
