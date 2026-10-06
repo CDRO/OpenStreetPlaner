@@ -765,9 +765,49 @@ export class UI {
     return true;
   }
 
+  /** Einstieg: drei Schritte über der Karte; „Los geht's“ merkt sich das Wegklicken im Browser. */
+  showIntro(force = false) {
+    const { local } = this.ctx;
+    const el = this.$('intro');
+    if (!el) return;
+    if (!force && local.introSeen()) return;
+    const steps = [
+      ['search', t('Ort suchen'), t('Adresse oder Gemeinde oben eingeben, oder die Karte verschieben und zoomen.')],
+      ['road', t('Strasse zeichnen'), t('Werkzeug „Strasse“ (Taste S): Punkte klicken, Enter beendet. Eigenschaften wie Tempo oder Brücke links einstellen.')],
+      ['share', t('Speichern und teilen'), t('Ctrl+S legt den Entwurf auf dem Server ab; „Teilen“ gibt Links zum Anschauen, Kommentieren und Mitarbeiten.')],
+    ];
+    el.innerHTML = `
+      <div class="intro-head"><h2 id="intro-title">${t('Willkommen im Stadtplaner')}</h2><button type="button" class="icon-btn" id="intro-close" title="${t('Schliessen')}" aria-label="${t('Schliessen')}">${icon('close', { size: 16 })}</button></div>
+      <p class="muted small">${t('Planungsvorschläge auf OpenStreetMap zeichnen, vergleichen und als Link weitergeben. In drei Schritten:')}</p>
+      <ol class="intro-steps">${steps.map(([ic, title, text]) => `<li><span class="intro-ic">${icon(ic, { size: 20 })}</span><div><strong>${esc(title)}</strong><div class="muted small">${esc(text)}</div></div></li>`).join('')}</ol>
+      <div class="btn-row">
+        <button type="button" class="btn primary" id="intro-go">${t('Los geht’s')}</button>
+        <button type="button" class="btn" id="intro-help">${icon('help', { size: 15 })}<span>${t('Hilfe und Tastenkürzel')}</span></button>
+      </div>`;
+    el.hidden = false;
+    const done = () => {
+      el.hidden = true;
+      local.setIntroSeen(true);
+    };
+    this.$('intro-close').onclick = done;
+    this.$('intro-go').onclick = done;
+    this.$('intro-help').onclick = () => { done(); this.openPanel('help'); };
+  }
+
+  hideIntro() {
+    const el = this.$('intro');
+    if (el && !el.hidden) {
+      el.hidden = true;
+      this.ctx.local.setIntroSeen(true);
+    }
+  }
+
   refreshHelp() {
     const extra = this.$('help-extra');
-    if (extra) extra.innerHTML = '';
+    if (extra) {
+      extra.innerHTML = `<button type="button" class="btn small" id="help-intro">${icon('play', { size: 15 })}<span>${t('Einführung zeigen')}</span></button>`;
+      this.$('help-intro').onclick = () => { this.closePanel(); this.showIntro(true); };
+    }
     const legend = this.$('help-legend');
     if (legend) legend.innerHTML = legendHtml();
     const keys = this.$('help-keys');

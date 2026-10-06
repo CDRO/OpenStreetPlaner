@@ -7,6 +7,7 @@ const KEY_SETTINGS = 'stadtplaner.settings';
 const KEY_COMMENT_TOKENS = 'stadtplaner.commentTokens';
 const KEY_CLIENT_ID = 'stadtplaner.clientId';
 const KEY_PUSH = 'stadtplaner.push'; // Entwurfs-ID -> { role, threads }
+const KEY_INTRO = 'stadtplaner.intro'; // Einstieg schon gesehen
 
 export const DEFAULT_SETTINGS = {
   snapEnabled: true,
@@ -76,6 +77,14 @@ export class LocalState {
   tokenFor(id) {
     const d = this.getDraft(id);
     return d && d.token ? d.token : null;
+  }
+
+  introSeen() {
+    return this.readJson(KEY_INTRO, null) === 1;
+  }
+
+  setIntroSeen(seen = true) {
+    this.writeJson(KEY_INTRO, seen ? 1 : 0);
   }
 
   saveWorking(working) {

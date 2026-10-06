@@ -2090,6 +2090,9 @@ async function main() {
   }
   ui.refreshAll();
   connectEvents();
+  // Einstieg beim ersten Besuch: nur für einen leeren, nicht per Link geöffneten Entwurf
+  if (!state.present && !openedFromLink && !store.doc.features.length) ui.showIntro();
+  store.subscribe((d, event) => { if (event.type === 'change') ui.hideIntro(); });
   if (store.doc.route || (store.doc.routePairs || []).length || store.doc.isochrone || (store.doc.busLines || []).length) {
     ensureRouteNetwork();
     recomputeRoutes();

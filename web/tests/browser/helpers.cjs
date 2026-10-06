@@ -1,8 +1,9 @@
 const { chromium } = require('playwright');
 const assert = require('assert');
 
-async function openPage(browser, url, errors, { width = 1400, height = 900 } = {}) {
+async function openPage(browser, url, errors, { width = 1400, height = 900, intro = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height } });
+  if (!intro) await context.addInitScript(() => { try { localStorage.setItem('stadtplaner.intro', '1'); } catch { /* ohne Speicher */ } });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   page.on('console', (m) => {
