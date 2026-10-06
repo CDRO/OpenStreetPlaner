@@ -2089,12 +2089,23 @@ export class UI {
   }
 
   toast(text, kind = 'info', ms = 3500) {
+    const host = this.$('toasts');
+    // Gleiche Meldung kurz hintereinander: die bestehende bleibt, statt sich zu stapeln
+    const same = Array.from(host.children).find((c) => c.dataset.text === text && c.classList.contains('show'));
+    if (same) {
+      clearTimeout(same.timer);
+      same.timer = setTimeout(() => { same.classList.remove('show'); setTimeout(() => same.remove(), 300); }, ms);
+      return;
+    }
+    while (host.children.length >= 3) host.firstElementChild.remove();
     const el = document.createElement('div');
     el.className = `toast ${kind}`;
-    el.textContent = text;
-    this.$('toasts').appendChild(el);
+    el.dataset.text = text;
+    el.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    el.innerHTML = `${kind === 'ok' ? icon('check', { size: 15 }) : kind === 'error' ? icon('warning', { size: 15 }) : ''}${esc(text)}`;
+    host.appendChild(el);
     setTimeout(() => el.classList.add('show'), 10);
-    setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, ms);
+    el.timer = setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, ms);
   }
 
   openModal(html) {
