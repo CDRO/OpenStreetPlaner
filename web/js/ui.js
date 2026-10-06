@@ -582,7 +582,25 @@ export class UI {
     });
     this.$('sidebar-toggle').addEventListener('click', () => {
       document.body.classList.toggle('sidebar-hidden');
+      document.body.classList.remove('sheet-full');
       setTimeout(() => this.ctx.map.invalidateSize(), 250);
+    });
+    this.wireSheet();
+    // Schmale Bildschirme: Suche hinter der Lupe, Nebenaktionen im Menü
+    this.$('btn-search').addEventListener('click', () => {
+      document.body.classList.add('search-open');
+      this.$('search-input').focus();
+    });
+    this.$('search-close').addEventListener('click', () => this.closeSearch());
+    this.$('btn-more').addEventListener('click', (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      this.showContextMenu([
+        { label: t('Rückgängig'), icon: 'undo', disabled: this.$('btn-undo').disabled, action: () => actions.undo() },
+        { label: t('Wiederholen'), icon: 'redo', disabled: this.$('btn-redo').disabled, action: () => actions.redo() },
+        { separator: true },
+        { label: t('Einstellungen'), icon: 'settings', action: () => this.openPanel('settings') },
+        { label: t('Hilfe'), icon: 'help', action: () => this.openPanel('help') },
+      ], { x: r.right - 200, y: r.bottom + 4 });
     });
     // Aktionsleiste über der Karte während des Zeichnens (v. a. für Touch ohne Enter/Esc/Backspace)
     this.$('da-finish').addEventListener('click', () => this.ctx.tools.finish());
@@ -633,6 +651,62 @@ export class UI {
       btn.setAttribute('aria-expanded', String(!text.hidden));
     });
     this.wireSearch();
+  }
+
+  closeSearch() {
+    document.body.classList.remove('search-open');
+    this.$('search-results').hidden = true;
+  }
+
+  // --- Bottom-Sheet auf schmalen Bildschirmen: eingeklappt, halb, voll --------------------
+
+  wireSheet() {
+    const sheet = this.$('sidebar');
+    const handle = this.$('sheet-handle');
+    if (!sheet || !handle) return;
+    const mobile = () => window.matchMedia && window.matchMedia('(max-width: 860px)').matches;
+    const setState = (state) => {
+      document.body.classList.toggle('sidebar-hidden', state === 'collapsed');
+      document.body.classList.toggle('sheet-full', state === 'full');
+      sheet.style.height = '';
+      setTimeout(() => this.ctx.map.invalidateSize(), 250);
+    };
+    this.setSheetState = setState;
+    let drag = null;
+    handle.addEventListener('pointerdown', (e) => {
+      if (!mobile()) return;
+      drag = { y: e.clientY, h: sheet.getBoundingClientRect().height, moved: false };
+      handle.setPointerCapture(e.pointerId);
+      sheet.classList.add('dragging');
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dy = e.clientY - drag.y;
+      if (Math.abs(dy) > 4) drag.moved = true;
+      if (!drag.moved) return;
+      const max = sheet.parentElement.getBoundingClientRect().height - 8;
+      sheet.style.height = `${Math.max(44, Math.min(max, drag.h - dy))}px`;
+      document.body.classList.remove('sidebar-hidden');
+    });
+    const end = () => {
+      if (!drag) return;
+      const moved = drag.moved;
+      drag = null;
+      sheet.classList.remove('dragging');
+      const total = sheet.parentElement.getBoundingClientRect().height;
+      const h = sheet.getBoundingClientRect().height;
+      if (!moved) {
+        // Tipp auf den Griff: eingeklappt -> halb -> voll -> halb
+        if (document.body.classList.contains('sidebar-hidden')) setState('half');
+        else setState(document.body.classList.contains('sheet-full') ? 'half' : 'full');
+        return;
+      }
+      if (h < total * 0.28) setState('collapsed');
+      else if (h > total * 0.7) setState('full');
+      else setState('half');
+    };
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
   }
 
   // --- Einstellungen und Hilfe als Panel über der Karte -------------------------------
@@ -773,6 +847,7 @@ export class UI {
       } else if (e.key === 'Escape') {
         list.hidden = true;
         input.blur();
+        this.closeSearch();
       }
     });
     document.addEventListener('click', (e) => {

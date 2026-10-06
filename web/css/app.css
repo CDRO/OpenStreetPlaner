@@ -80,6 +80,8 @@ kbd { font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; backgroun
 .search-results button { width: 100%; text-align: left; background: none; border: 0; padding: 8px 12px; cursor: pointer; font: inherit; color: inherit; }
 .search-results button:hover { background: var(--hover); }
 .topbar-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+#btn-search, #btn-more, #search-close { display: none; }
+.sheet-handle { display: none; }
 
 /* Eingaben & Buttons */
 input[type="text"], input[type="search"], input[type="number"], select, textarea {
@@ -310,28 +312,45 @@ body.present #btn-basemap, body.present #btn-network { display: none; }
 .toast.ok { background: var(--ok); }
 .toast.error { background: var(--danger); }
 
-/* Schmale Bildschirme */
+/* Schmale Bildschirme (Tablet): Nebenaktionen ins Menü, Seitenleiste als Bottom-Sheet */
 @media (max-width: 860px) {
   .topbar input.draft-name { width: 140px; flex-basis: 140px; }
   .brand { display: none; }
-  /* Seitenleiste als Bottom-Sheet: die Tabs bleiben als Griff sichtbar */
+  #btn-undo, #btn-redo, #btn-help, #btn-settings { display: none; }
+  #btn-more { display: inline-flex; }
+  /* Seitenleiste als Bottom-Sheet mit Griff: eingeklappt (Tabs sichtbar), halb, voll */
   .sidebar {
     position: absolute; left: 0; right: 0; bottom: 0; top: auto; width: auto; height: 48vh; z-index: 20;
-    border-right: 0; border-top: 1px solid var(--border); border-radius: 12px 12px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,.15);
-    transition: transform .2s ease; margin-left: 0 !important;
+    border-right: 0; border-top: 1px solid var(--border); border-radius: 14px 14px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,.15);
+    transition: height .2s ease; margin-left: 0 !important; touch-action: none;
   }
-  body.sidebar-hidden .sidebar { transform: translateY(calc(100% - 42px)); }
+  .sidebar.dragging { transition: none; }
+  body.sidebar-hidden .sidebar { height: 58px; }
+  body.sheet-full .sidebar { height: calc(100% - 8px); }
+  .sheet-handle { display: flex; justify-content: center; padding: 6px 0 2px; cursor: grab; flex: 0 0 auto; }
+  .sheet-handle span { width: 40px; height: 4px; border-radius: 2px; background: var(--border); }
   .tabs { cursor: pointer; }
+  .tab { touch-action: pan-y; }
   .draw-actions { bottom: calc(48vh + 12px); }
-  body.sidebar-hidden .draw-actions { bottom: 56px; }
-  .smap-scale, .smap-attribution { bottom: 44px; }
+  body.sidebar-hidden .draw-actions { bottom: 70px; }
+  body.sheet-full .draw-actions { top: 12px; bottom: auto; }
+  .smap-scale, .smap-attribution { bottom: 62px; }
+  .map-popover { right: 56px; }
 }
+/* Handy: Suche hinter der Lupe, Speichern und Teilen nur als Symbol */
 @media (max-width: 560px) {
   :root { --sidebar-w: 88vw; }
-  .search { max-width: none; }
   .topbar { gap: 4px; padding: 0 6px; }
-  .topbar input.draft-name { width: 100px; flex-basis: 100px; }
-  #btn-save { display: none; }
+  .topbar input.draft-name { width: auto; flex: 1 1 80px; min-width: 60px; }
+  .topbar .search { display: none; }
+  #btn-search { display: inline-flex; }
+  body.search-open .topbar .search { display: flex; position: absolute; left: 0; right: 0; top: 0; height: var(--topbar-h); padding: 8px 6px; background: var(--panel); z-index: 32; gap: 4px; max-width: none; align-items: center; }
+  body.search-open .topbar .search input { flex: 1; }
+  body.search-open #search-close { display: inline-flex; flex: 0 0 auto; }
+  .btn-label { display: none; }
+  #btn-save, #btn-share { padding: 7px 9px; }
+  .popover { top: 8px; right: 8px; left: 8px; width: auto; }
+  .map-popover { left: 8px; right: 56px; width: auto; }
 }
 
 /* Tempolimit */

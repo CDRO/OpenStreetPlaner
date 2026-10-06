@@ -19,20 +19,24 @@
     <span id="readonly-indicator" class="badge muted" title="Du hast kein Bearbeitungsrecht für diesen Entwurf" data-i18n-title data-i18n hidden>nur Ansicht</span>
     <div class="search">
       <input id="search-input" type="search" placeholder="Ort oder Adresse suchen…" autocomplete="off" aria-label="Ort suchen" data-i18n-placeholder>
+      <button type="button" id="search-close" class="icon-btn" title="Suche schliessen" aria-label="Suche schliessen" data-i18n-title><span data-icon="close"></span></button>
       <ul id="search-results" class="search-results" hidden></ul>
     </div>
     <div class="topbar-actions">
+      <button id="btn-search" class="icon-btn" title="Ort oder Adresse suchen…" aria-label="Suchen" data-i18n-title><span data-icon="search"></span></button>
+      <button id="btn-more" class="icon-btn" title="Weitere Aktionen" aria-label="Weitere Aktionen" data-i18n-title><span data-icon="more"></span></button>
       <button id="btn-undo" class="icon-btn" title="Rückgängig (Ctrl+Z)" aria-label="Rückgängig" data-i18n-title><span data-icon="undo"></span></button>
       <button id="btn-redo" class="icon-btn" title="Wiederholen (Ctrl+Y)" aria-label="Wiederholen" data-i18n-title><span data-icon="redo"></span></button>
       <button id="btn-help" class="icon-btn" data-panel-toggle="help" title="Hilfe: Legende und Tastenkürzel (?)" aria-label="Hilfe" data-i18n-title><span data-icon="help"></span></button>
       <button id="btn-settings" class="icon-btn" data-panel-toggle="settings" title="Einstellungen: Karte, Einrasten, Sprache, Darstellung" aria-label="Einstellungen" data-i18n-title><span data-icon="settings"></span></button>
-      <button id="btn-save" class="btn" title="Speichern (Ctrl+S)" data-i18n-title><span data-icon="save"></span><span data-i18n>Speichern</span></button>
-      <button id="btn-share" class="btn primary"><span data-icon="share"></span><span data-i18n>Teilen</span></button>
+      <button id="btn-save" class="btn" title="Speichern (Ctrl+S)" data-i18n-title><span data-icon="save"></span><span class="btn-label" data-i18n>Speichern</span></button>
+      <button id="btn-share" class="btn primary" title="Teilen" data-i18n-title><span data-icon="share"></span><span class="btn-label" data-i18n>Teilen</span></button>
     </div>
   </header>
 
   <div class="workspace">
     <aside id="sidebar" class="sidebar">
+      <div id="sheet-handle" class="sheet-handle" aria-hidden="true"><span></span></div>
       <nav class="tabs" role="tablist">
         <button type="button" data-tab="draw" class="active" title="Zeichnen" data-i18n-title><span class="tab-ic" data-icon="draw"></span><span class="tab-label" data-i18n>Zeichnen</span></button>
         <button type="button" data-tab="layers" title="Ebenen" data-i18n-title><span class="tab-ic" data-icon="layers"></span><span class="tab-label" data-i18n>Ebenen</span></button>

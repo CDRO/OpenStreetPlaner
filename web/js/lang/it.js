@@ -923,4 +923,6 @@ export const it = {
   "Vollbild": "Schermo intero",
   "Vollbild beenden": "Esci dallo schermo intero",
   "Vollbild ist hier nicht möglich.": "Lo schermo intero non è possibile qui.",
+  "Suche schliessen": "Chiudi la ricerca",
+  "Weitere Aktionen": "Altre azioni",
 };

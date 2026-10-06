@@ -923,4 +923,6 @@ export const fr = {
   "Vollbild": "Plein écran",
   "Vollbild beenden": "Quitter le plein écran",
   "Vollbild ist hier nicht möglich.": "Le plein écran n’est pas possible ici.",
+  "Suche schliessen": "Fermer la recherche",
+  "Weitere Aktionen": "Autres actions",
 };
