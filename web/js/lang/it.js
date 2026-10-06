@@ -916,4 +916,11 @@ export const it = {
   "Stadtplaner-JSON": "JSON Stadtplaner",
   "Vom Server: aktueller Stand, alle Versionen und Kommentare": "Dal server: stato attuale, tutte le versioni e i commenti",
   "Erklärung ein-/ausblenden": "Mostra / nascondi la spiegazione",
+  "Grundkarte und Overlays": "Mappa di base e overlay",
+  "Legende ein-/ausblenden": "Mostra / nascondi la legenda",
+  "OSM-Strassen der Ansicht laden (für Einrasten, Übernehmen und Routen)": "Carica le strade OSM della vista (per aggancio, acquisizione e percorsi)",
+  "Overlays": "Overlay",
+  "Vollbild": "Schermo intero",
+  "Vollbild beenden": "Esci dallo schermo intero",
+  "Vollbild ist hier nicht möglich.": "Lo schermo intero non è possibile qui.",
 };

@@ -24,9 +24,8 @@
     <div class="topbar-actions">
       <button id="btn-undo" class="icon-btn" title="Rückgängig (Ctrl+Z)" aria-label="Rückgängig" data-i18n-title><span data-icon="undo"></span></button>
       <button id="btn-redo" class="icon-btn" title="Wiederholen (Ctrl+Y)" aria-label="Wiederholen" data-i18n-title><span data-icon="redo"></span></button>
-      <button id="btn-locate" class="icon-btn" title="Zu meinem Standort" aria-label="Mein Standort" data-i18n-title><span data-icon="locate"></span></button>
-      <button id="btn-help" class="icon-btn" title="Hilfe: Legende und Tastenkürzel (?)" aria-label="Hilfe" data-i18n-title><span data-icon="help"></span></button>
-      <button id="btn-settings" class="icon-btn" title="Einstellungen: Karte, Einrasten, Sprache, Darstellung" aria-label="Einstellungen" data-i18n-title><span data-icon="settings"></span></button>
+      <button id="btn-help" class="icon-btn" data-panel-toggle="help" title="Hilfe: Legende und Tastenkürzel (?)" aria-label="Hilfe" data-i18n-title><span data-icon="help"></span></button>
+      <button id="btn-settings" class="icon-btn" data-panel-toggle="settings" title="Einstellungen: Karte, Einrasten, Sprache, Darstellung" aria-label="Einstellungen" data-i18n-title><span data-icon="settings"></span></button>
       <button id="btn-save" class="btn" title="Speichern (Ctrl+S)" data-i18n-title><span data-icon="save"></span><span data-i18n>Speichern</span></button>
       <button id="btn-share" class="btn primary"><span data-icon="share"></span><span data-i18n>Teilen</span></button>
     </div>
@@ -113,18 +112,7 @@
       <div class="popover-body">
         <div id="help-extra"></div>
         <h3 data-i18n>Legende</h3>
-        <ul class="legend">
-          <li><span class="swatch ground"></span> <span data-i18n>Ebenerdig</span></li>
-          <li><span class="swatch bridge"></span> <span data-i18n>Brücke (dunkle Einfassung)</span></li>
-          <li><span class="swatch tunnel"></span> <span data-i18n>Tunnel (gestrichelt, halbtransparent)</span></li>
-          <li><span class="swatch remove"></span> <span data-i18n>Rückbau (rot gestrichelt)</span></li>
-          <li><span class="swatch osm"></span> <span data-i18n>Geladene OSM-Strassen (Einrast-Ziele)</span></li>
-          <li><span class="swatch route-cur"></span> <span data-i18n>Route heute (durchgezogen)</span></li>
-          <li><span class="swatch route-new"></span> <span data-i18n>Route neu (gestrichelt)</span></li>
-          <li><span class="sign">30</span> <span data-i18n>Tempolimit (ab Zoom 16)</span></li>
-          <li><span class="swatch zone"></span> <span data-i18n>Flächen: Tempo-30 blau, Begegnungszone violett, Fussgängerzone grün, Parkplatz grau</span></li>
-          <li><span class="swatch comment"></span> <span data-i18n>Kommentare (orange, erledigt grau)</span></li>
-        </ul>
+        <div id="help-legend"></div>
         <h3 data-i18n>Tastenkürzel</h3>
         <div id="help-keys"></div>
       </div>
@@ -132,6 +120,21 @@
     <div class="map-wrap">
       <div id="banner" class="banner" hidden></div>
       <div id="map" class="map" role="application" aria-label="Karte"></div>
+      <div id="map-toolbar" class="map-toolbar" role="toolbar" aria-label="Karte">
+        <button type="button" id="btn-basemap" class="mt-btn" data-panel-toggle="basemap" title="Grundkarte und Overlays" aria-label="Grundkarte" data-i18n-title><span data-icon="map"></span></button>
+        <button type="button" id="btn-network" class="mt-btn" title="OSM-Strassen der Ansicht laden (für Einrasten, Übernehmen und Routen)" aria-label="Netz laden" data-i18n-title><span data-icon="network"></span></button>
+        <button type="button" id="btn-locate" class="mt-btn" title="Zu meinem Standort" aria-label="Mein Standort" data-i18n-title><span data-icon="locate"></span></button>
+        <button type="button" id="btn-legend" class="mt-btn" data-panel-toggle="legend" title="Legende ein-/ausblenden" aria-label="Legende" data-i18n-title><span data-icon="legend"></span></button>
+        <button type="button" id="btn-fullscreen" class="mt-btn" title="Vollbild" aria-label="Vollbild" data-i18n-title><span data-icon="fullscreen"></span></button>
+      </div>
+      <section id="panel-basemap" class="popover map-popover" role="dialog" aria-labelledby="panel-basemap-title" hidden>
+        <div class="popover-head"><h2 id="panel-basemap-title" data-i18n>Grundkarte</h2><button type="button" class="icon-btn" data-close-panel title="Schliessen" aria-label="Schliessen" data-i18n-title><span data-icon="close"></span></button></div>
+        <div class="popover-body" id="basemap-body"></div>
+      </section>
+      <section id="panel-legend" class="popover map-popover" role="dialog" aria-labelledby="panel-legend-title" hidden>
+        <div class="popover-head"><h2 id="panel-legend-title" data-i18n>Legende</h2><button type="button" class="icon-btn" data-close-panel title="Schliessen" aria-label="Schliessen" data-i18n-title><span data-icon="close"></span></button></div>
+        <div class="popover-body" id="legend-body"></div>
+      </section>
       <div id="tooltip" class="tooltip" hidden></div>
       <div id="draw-actions" class="draw-actions" hidden>
         <button type="button" id="da-finish" class="btn small primary" data-i18n>Fertig</button>

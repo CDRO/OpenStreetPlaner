@@ -175,8 +175,18 @@ details.box summary { cursor: pointer; font-weight: 600; }
 
 /* Karte (eigene Slippy-Map) */
 .smap-canvas { position: absolute; inset: 0; display: block; }
-.smap-zoom { position: absolute; top: 12px; left: 12px; display: flex; flex-direction: column; border: 1px solid #b5bcc5; border-radius: 6px; overflow: hidden; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.2); z-index: 5; }
-.smap-zoom button { width: 32px; height: 32px; border: 0; background: var(--panel); color: var(--text); font: 700 20px/1 system-ui, sans-serif; cursor: pointer; color: #222; }
+.smap-zoom { position: absolute; top: 12px; left: 12px; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--panel); box-shadow: 0 1px 4px rgba(0,0,0,.18); z-index: 5; }
+.smap-zoom button { width: 36px; height: 36px; border: 0; background: var(--panel); color: var(--text); font: 600 20px/1 system-ui, sans-serif; cursor: pointer; }
+/* Kartenleiste rechts oben: Grundkarte, Netz laden, Standort, Legende, Vollbild */
+.map-toolbar { position: absolute; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 4px; z-index: 6; }
+.mt-btn { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.18); padding: 0; }
+.mt-btn:hover { background: var(--hover); }
+.mt-btn.active { color: var(--accent); background: var(--active); border-color: var(--accent); }
+.map-popover { top: 12px; right: 56px; width: min(300px, calc(100% - 70px)); max-height: calc(100% - 24px); z-index: 7; }
+.choice-list { display: flex; flex-direction: column; gap: 2px; margin: 6px 0; }
+.choice { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.choice:hover { background: var(--hover); }
+body.present #btn-basemap, body.present #btn-network { display: none; }
 .smap-zoom button + button { border-top: 1px solid var(--border); }
 .smap-zoom button:hover { background: var(--hover); }
 .smap-scale { position: absolute; left: 12px; bottom: 26px; height: 16px; border: 2px solid #333; border-top: 0; font: 11px/12px system-ui, sans-serif; padding: 0 4px; background: rgba(255,255,255,.75); color: #222; white-space: nowrap; box-sizing: content-box; z-index: 5; }

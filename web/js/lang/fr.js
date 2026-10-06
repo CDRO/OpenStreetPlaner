@@ -916,4 +916,11 @@ export const fr = {
   "Stadtplaner-JSON": "JSON Stadtplaner",
   "Vom Server: aktueller Stand, alle Versionen und Kommentare": "Depuis le serveur : état actuel, toutes les versions et les commentaires",
   "Erklärung ein-/ausblenden": "Afficher / masquer l’explication",
+  "Grundkarte und Overlays": "Fond de carte et calques",
+  "Legende ein-/ausblenden": "Afficher / masquer la légende",
+  "OSM-Strassen der Ansicht laden (für Einrasten, Übernehmen und Routen)": "Charger les routes OSM de la vue (pour l’accrochage, la reprise et les itinéraires)",
+  "Overlays": "Calques superposés",
+  "Vollbild": "Plein écran",
+  "Vollbild beenden": "Quitter le plein écran",
+  "Vollbild ist hier nicht möglich.": "Le plein écran n’est pas possible ici.",
 };

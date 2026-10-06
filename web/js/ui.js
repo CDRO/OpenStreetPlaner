@@ -21,6 +21,23 @@ import { icon, mountIcons } from './icons.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** Legende: Beschriftung je Darstellung, für Hilfe-Panel und Karten-Legende. */
+const LEGEND_LABELS = {
+  ground: 'Ebenerdig',
+  bridge: 'Brücke (dunkle Einfassung)',
+  tunnel: 'Tunnel (gestrichelt, halbtransparent)',
+  remove: 'Rückbau (rot gestrichelt)',
+  osm: 'Geladene OSM-Strassen (Einrast-Ziele)',
+  'route-cur': 'Route heute (durchgezogen)',
+  'route-new': 'Route neu (gestrichelt)',
+  sign: 'Tempolimit (ab Zoom 16)',
+  zone: 'Flächen: Tempo-30 blau, Begegnungszone violett, Fussgängerzone grün, Parkplatz grau',
+  comment: 'Kommentare (orange, erledigt grau)',
+};
+function legendHtml() {
+  return `<ul class="legend">${Object.entries(LEGEND_LABELS).map(([k, label]) => `<li>${k === 'sign' ? '<span class="sign">30</span>' : `<span class="swatch ${k}"></span>`} <span>${esc(t(label))}</span></li>`).join('')}</ul>`;
+}
+
 /** Abschnittskopf mit Erklärung hinter einem Info-Knopf: Bedienelemente zuerst, Text auf Wunsch. */
 function sectionHead(title, help, tag = 'h3') {
   if (!help) return `<${tag}>${esc(title)}</${tag}>`;
@@ -577,15 +594,26 @@ export class UI {
     this.$('btn-save').addEventListener('click', () => actions.saveDraft());
     this.$('btn-share').addEventListener('click', () => actions.share());
     this.$('btn-locate').addEventListener('click', () => actions.locate());
-    this.$('btn-settings').addEventListener('click', () => this.togglePanel('settings'));
-    this.$('btn-help').addEventListener('click', () => this.togglePanel('help'));
+    document.querySelectorAll('[data-panel-toggle]').forEach((b) => b.addEventListener('click', () => this.togglePanel(b.dataset.panelToggle)));
     document.querySelectorAll('[data-close-panel]').forEach((b) => b.addEventListener('click', () => this.closePanel()));
     // Klick ausserhalb schliesst das Panel (der Klick selbst wirkt weiter, z. B. auf der Karte)
     document.addEventListener('pointerdown', (e) => {
       if (!this.openPanelName) return;
-      if (e.target.closest('.popover') || e.target.closest('#btn-settings') || e.target.closest('#btn-help') || e.target.closest('#context-menu')) return;
+      if (e.target.closest('.popover') || e.target.closest('[data-panel-toggle]') || e.target.closest('#context-menu')) return;
       this.closePanel();
     }, { capture: true });
+    // Kartenleiste
+    this.$('btn-network').addEventListener('click', () => actions.loadRouteNetwork());
+    this.$('btn-fullscreen').addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => this.toast(t('Vollbild ist hier nicht möglich.'), 'error'));
+    });
+    document.addEventListener('fullscreenchange', () => {
+      const on = !!document.fullscreenElement;
+      this.$('btn-fullscreen').classList.toggle('active', on);
+      this.$('btn-fullscreen').title = on ? t('Vollbild beenden') : t('Vollbild');
+      setTimeout(() => this.ctx.map.invalidateSize(), 100);
+    });
     this.$('btn-add-layer').addEventListener('click', () => actions.addLayer());
     this.$('import-file').addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
@@ -624,6 +652,31 @@ export class UI {
     if (btn) btn.classList.add('active');
     this.hideContextMenu();
     if (name === 'help') this.refreshHelp();
+    if (name === 'basemap') this.renderBasemap();
+    if (name === 'legend') this.$('legend-body').innerHTML = legendHtml();
+  }
+
+  /** Grundkarte und Overlays als Liste zum Anklicken (Karten-Leiste). */
+  renderBasemap() {
+    const { actions, settings } = this.ctx;
+    const body = this.$('basemap-body');
+    if (!body) return;
+    const sources = actions.tileSources();
+    const bases = sources.filter((src) => !src.overlay);
+    const overlays = sources.filter((src) => src.overlay);
+    body.innerHTML = `
+      <div class="choice-list">${bases.map((src) => `<label class="choice"><input type="radio" name="bm-base" value="${esc(src.id)}" ${src.id === settings.basemap ? 'checked' : ''}> <span>${esc(src.label)}</span></label>`).join('')}</div>
+      ${overlays.length ? `<h3>${t('Overlays')}</h3><div class="choice-list">${overlays.map((src) => `<label class="choice"><input type="checkbox" class="bm-overlay" value="${esc(src.id)}" ${settings.overlays.includes(src.id) ? 'checked' : ''}> <span>${esc(src.label)}${src.minZoom ? ` <span class="muted small">(${t('ab Zoom')} ${src.minZoom})</span>` : ''}</span></label>`).join('')}</div>` : ''}
+      ${bases.length <= 1 ? `<p class="muted small">${t('Weitere Kartenquellen lassen sich auf dem Server über TILE_SOURCES einrichten.')}</p>` : ''}`;
+    body.querySelectorAll('input[name="bm-base"]').forEach((r) => { r.onchange = () => actions.updateSettings({ basemap: r.value }); });
+    body.querySelectorAll('.bm-overlay').forEach((cb) => {
+      cb.onchange = () => {
+        const on = new Set(settings.overlays);
+        if (cb.checked) on.add(cb.value);
+        else on.delete(cb.value);
+        actions.updateSettings({ overlays: Array.from(on) });
+      };
+    });
   }
 
   /** Schliesst das offene Panel; liefert true, wenn eines offen war (für Esc). */
@@ -641,6 +694,8 @@ export class UI {
   refreshHelp() {
     const extra = this.$('help-extra');
     if (extra) extra.innerHTML = '';
+    const legend = this.$('help-legend');
+    if (legend) legend.innerHTML = legendHtml();
     const keys = this.$('help-keys');
     if (!keys) return;
     const k = (...names) => names.map((n) => `<kbd>${esc(n)}</kbd>`).join(' + ');
@@ -1298,6 +1353,7 @@ export class UI {
     this.$('set-show-osm').onchange = (e) => actions.updateSettings({ showOsm: e.target.checked });
     this.$('set-tol').oninput = (e) => { this.$('set-tol-val').textContent = e.target.value; };
     this.$('set-tol').onchange = (e) => actions.updateSettings({ snapTolerance: Number(e.target.value) });
+    if (this.openPanelName === 'basemap') this.renderBasemap();
   }
 
   // --- Eigenschaften ---------------------------------------------------------------
