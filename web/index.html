@@ -12,7 +12,7 @@
 </head>
 <body>
   <header class="topbar">
-    <button id="sidebar-toggle" class="icon-btn" title="Seitenleiste ein-/ausblenden" aria-label="Seitenleiste" data-i18n-title>☰</button>
+    <button id="sidebar-toggle" class="icon-btn" title="Seitenleiste ein-/ausblenden" aria-label="Seitenleiste" data-i18n-title><span data-icon="menu"></span></button>
     <div class="brand" title="Stadtplaner">Stadtplaner</div>
     <input id="draft-name" class="draft-name" type="text" placeholder="Name des Entwurfs" spellcheck="false" aria-label="Name des Entwurfs" data-i18n-placeholder>
     <span id="dirty-indicator" class="dirty" title="Ungespeicherte Änderungen" data-i18n-title hidden>●</span>
@@ -22,24 +22,24 @@
       <ul id="search-results" class="search-results" hidden></ul>
     </div>
     <div class="topbar-actions">
-      <button id="btn-undo" class="icon-btn" title="Rückgängig (Ctrl+Z)" aria-label="Rückgängig" data-i18n-title>↶</button>
-      <button id="btn-redo" class="icon-btn" title="Wiederholen (Ctrl+Y)" aria-label="Wiederholen" data-i18n-title>↷</button>
-      <button id="btn-locate" class="icon-btn" title="Zu meinem Standort" aria-label="Mein Standort" data-i18n-title>◎</button>
-      <button id="btn-save" class="btn" title="Speichern (Ctrl+S)" data-i18n-title>Speichern</button>
-      <button id="btn-share" class="btn primary" data-i18n>Teilen</button>
+      <button id="btn-undo" class="icon-btn" title="Rückgängig (Ctrl+Z)" aria-label="Rückgängig" data-i18n-title><span data-icon="undo"></span></button>
+      <button id="btn-redo" class="icon-btn" title="Wiederholen (Ctrl+Y)" aria-label="Wiederholen" data-i18n-title><span data-icon="redo"></span></button>
+      <button id="btn-locate" class="icon-btn" title="Zu meinem Standort" aria-label="Mein Standort" data-i18n-title><span data-icon="locate"></span></button>
+      <button id="btn-save" class="btn" title="Speichern (Ctrl+S)" data-i18n-title><span data-icon="save"></span><span data-i18n>Speichern</span></button>
+      <button id="btn-share" class="btn primary"><span data-icon="share"></span><span data-i18n>Teilen</span></button>
     </div>
   </header>
 
   <div class="workspace">
     <aside id="sidebar" class="sidebar">
       <nav class="tabs" role="tablist">
-        <button type="button" data-tab="draw" class="active" data-i18n>Zeichnen</button>
-        <button type="button" data-tab="layers" data-i18n>Ebenen</button>
-        <button type="button" data-tab="drafts" data-i18n>Entwürfe</button>
-        <button type="button" data-tab="history" data-i18n>Verlauf</button>
-        <button type="button" data-tab="route" data-i18n>Route</button>
-        <button type="button" data-tab="comments" data-i18n>Kommentare</button>
-        <button type="button" data-tab="analysis" data-i18n>Analyse</button>
+        <button type="button" data-tab="draw" class="active" title="Zeichnen" data-i18n-title><span class="tab-ic" data-icon="draw"></span><span class="tab-label" data-i18n>Zeichnen</span></button>
+        <button type="button" data-tab="layers" title="Ebenen" data-i18n-title><span class="tab-ic" data-icon="layers"></span><span class="tab-label" data-i18n>Ebenen</span></button>
+        <button type="button" data-tab="drafts" title="Entwürfe" data-i18n-title><span class="tab-ic" data-icon="drafts"></span><span class="tab-label" data-i18n>Entwürfe</span></button>
+        <button type="button" data-tab="history" title="Verlauf" data-i18n-title><span class="tab-ic" data-icon="history"></span><span class="tab-label" data-i18n>Verlauf</span></button>
+        <button type="button" data-tab="route" title="Route" data-i18n-title><span class="tab-ic" data-icon="route"></span><span class="tab-label" data-i18n>Route</span></button>
+        <button type="button" data-tab="comments" title="Kommentare" data-i18n-title><span class="tab-ic" data-icon="comments"></span><span class="tab-label" data-i18n>Kommentare</span></button>
+        <button type="button" data-tab="analysis" title="Analyse" data-i18n-title><span class="tab-ic" data-icon="analysis"></span><span class="tab-label" data-i18n>Analyse</span></button>
       </nav>
 
       <section id="tab-draw" class="tab active">
@@ -134,7 +134,7 @@
         <button type="button" id="da-cancel" class="btn small" data-i18n>Abbrechen</button>
       </div>
       <div id="present-panel" class="present-panel" hidden></div>
-      <div id="pin" class="pin" hidden><div class="pin-marker"></div><div class="pin-label"><span id="pin-label"></span> <button type="button" id="pin-close" class="icon-btn" title="Markierung entfernen" data-i18n-title>✕</button></div></div>
+      <div id="pin" class="pin" hidden><div class="pin-marker"></div><div class="pin-label"><span id="pin-label"></span> <button type="button" id="pin-close" class="icon-btn" title="Markierung entfernen" data-i18n-title><span data-icon="close" data-icon-size="14"></span></button></div></div>
     </div>
   </div>
 

@@ -17,6 +17,7 @@ import { RACE_SPEEDS, formatClock } from './race.js';
 import { mergeKind } from './merge.js';
 import { LANGUAGES, getLanguage, locale, t, tn } from './i18n.js';
 import { confidenceLabel, confidenceText, staticConfidence, transitRouteConfidence } from './confidence.js';
+import { icon, mountIcons } from './icons.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -537,6 +538,7 @@ export class UI {
   constructor(ctx) {
     this.ctx = ctx; // { store, local, settings, tools, actions, map }
     this.$ = (id) => document.getElementById(id);
+    mountIcons();
     this.wireStatic();
   }
 
@@ -1094,7 +1096,7 @@ export class UI {
     menu.innerHTML = items.map((it, i) => {
       if (it.header) return `<div class="menu-header">${esc(it.header)}</div>`;
       if (it.separator) return '<div class="sep"></div>';
-      return `<button type="button" class="${it.checked ? 'checked' : ''}${it.danger ? ' danger' : ''}" data-i="${i}" ${it.disabled ? 'disabled' : ''}>${esc(it.label)}</button>`;
+      return `<button type="button" class="${it.checked ? 'checked' : ''}${it.danger ? ' danger' : ''}" data-i="${i}" ${it.disabled ? 'disabled' : ''}>${it.icon ? `<span class="mi">${icon(it.icon, { size: 15 })}</span>` : ''}${esc(it.label)}</button>`;
     }).join('');
     menu.hidden = false;
     const w = menu.offsetWidth;
@@ -1136,7 +1138,7 @@ export class UI {
     const { store, tools, settings, actions } = this.ctx;
     const grid = this.$('tool-buttons');
     const editable = actions.canEdit();
-    grid.innerHTML = TOOLS.map((tool) => `<button type="button" class="tool${tools.tool === tool.id ? ' active' : ''}" data-tool="${tool.id}" title="${esc(t(tool.hint))} (${t('Taste')} ${tool.key})" ${!editable && tool.id !== 'select' ? 'disabled' : ''}><span class="tool-key">${tool.key}</span>${esc(t(tool.label))}</button>`).join('');
+    grid.innerHTML = TOOLS.map((tool) => `<button type="button" class="tool${tools.tool === tool.id ? ' active' : ''}" data-tool="${tool.id}" title="${esc(t(tool.hint))} (${t('Taste')} ${tool.key})" ${!editable && tool.id !== 'select' ? 'disabled' : ''}>${icon(tool.id, { size: 22 })}<span class="tool-label">${esc(t(tool.label))}</span><span class="tool-key">${tool.key}</span></button>`).join('');
     grid.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => tools.setTool(b.dataset.tool)));
     const opts = this.$('tool-options');
     if (opts) {
@@ -1845,7 +1847,7 @@ export class UI {
       el.hidden = true;
       return;
     }
-    el.innerHTML = `<span>${esc(t(text))}</span>${actionLabel ? `<button type="button" class="btn small primary" id="banner-action">${esc(t(actionLabel))}</button>` : ''}<button type="button" class="icon-btn" id="banner-close" title="${t('Schliessen')}">✕</button>`;
+    el.innerHTML = `<span>${esc(t(text))}</span>${actionLabel ? `<button type="button" class="btn small primary" id="banner-action">${esc(t(actionLabel))}</button>` : ''}<button type="button" class="icon-btn" id="banner-close" title="${t('Schliessen')}">${icon('close', { size: 14 })}</button>`;
     el.hidden = false;
     if (onAction) this.$('banner-action').onclick = onAction;
     this.$('banner-close').onclick = () => { el.hidden = true; };

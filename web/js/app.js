@@ -1990,8 +1990,8 @@ async function main() {
     const editable = canEdit();
     const items = [];
     items.push({ header: multi ? tn(feats.length, '{n} Element ausgewählt', '{n} Elemente ausgewählt') : t(featureLabel(f)) });
-    items.push({ label: t('Hinzoomen'), action: () => actions.zoomToFeatures(ids) });
-    items.push({ label: t('Eigenschaften'), action: () => ui.showTab('draw', { reveal: true }) });
+    items.push({ label: t('Hinzoomen'), icon: 'search', action: () => actions.zoomToFeatures(ids) });
+    items.push({ label: t('Eigenschaften'), icon: 'info', action: () => ui.showTab('draw', { reveal: true }) });
     if (editable) {
       items.push({ separator: true }, { header: t('Ebene') });
       const layerIds = new Set(feats.map((x) => x.layerId));
@@ -2025,7 +2025,7 @@ async function main() {
         items.push({ label: t('Alle Etappen'), checked: phases.size === 1 && phases.has(''), action: () => actions.setFeaturesPhase(ids, null) });
         doc.phases.forEach((ph, i) => items.push({ label: phaseLabel(ph, i), checked: phases.size === 1 && phases.has(ph.id), action: () => actions.setFeaturesPhase(ids, ph.id) }));
       }
-      items.push({ separator: true }, { label: t('Löschen'), danger: true, action: () => tools.deleteSelection() });
+      items.push({ separator: true }, { label: t('Löschen'), icon: 'trash', danger: true, action: () => tools.deleteSelection() });
     }
     ui.showContextMenu(items, { x: rect.left + info.point.x, y: rect.top + info.point.y });
   }
