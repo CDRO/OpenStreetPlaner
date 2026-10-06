@@ -45,7 +45,7 @@ const C = [47.05, 8.3];
   // OSM laden bei Zoom 17
   await page.evaluate(() => window.stadtplaner.map.setView([47.05, 8.3], 17));
   await h.settle(800);
-  await page.waitForFunction(() => !window.stadtplaner.osm.pending);
+  await page.waitForFunction(() => !window.stadtplaner.osm.pending, null, { polling: 100 });
   const initialCalls = roadsCalls;
   assert.ok(initialCalls >= 1 && initialCalls <= 4, `Ansicht deckt 1–4 Zellen ab (${initialCalls})`);
   assert.ok((await page.textContent('#status-osm')).includes('4 OSM-Strassen'));
@@ -286,7 +286,7 @@ const C = [47.05, 8.3];
   // Kachelweises Laden: grosser Bereich -> mehrere Zellen, jede einmal
   const before = roadsCalls;
   await page.evaluate(() => window.stadtplaner.osm.ensureArea({ south: 47.03, west: 8.28, north: 47.08, east: 8.36 }));
-  await page.waitForFunction(() => !window.stadtplaner.osm.pending);
+  await page.waitForFunction(() => !window.stadtplaner.osm.pending, null, { polling: 100 });
   const cellsLoaded = roadsCalls - before;
   assert.ok(cellsLoaded >= 4 && cellsLoaded <= 16, `Zellen geladen: ${cellsLoaded}`);
   await page.evaluate(() => window.stadtplaner.osm.ensureArea({ south: 47.03, west: 8.28, north: 47.08, east: 8.36 }));

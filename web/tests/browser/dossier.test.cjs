@@ -72,9 +72,10 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await page.click('.tabs button[data-tab="analysis"]');
   await page.waitForSelector('#exp-load');
   await page.click('#exp-load');
-  await page.waitForFunction(() => window.stadtplaner.buildings.ways.size === 3);
+  // Intervall-Polling: direkt nach dem Klick lief das rAF-Polling vereinzelt nicht an
+  await page.waitForFunction(() => window.stadtplaner.buildings.ways.size === 3, null, { polling: 100 });
   // Zellen melden nun auch einzeln Fortschritt; erst warten, bis alle geladen sind
-  await page.waitForFunction(() => !window.stadtplaner.buildings.pending);
+  await page.waitForFunction(() => !window.stadtplaner.buildings.pending, null, { polling: 100 });
   await page.waitForSelector('#exp-show');
   const panel = await page.textContent('#analysis-panel');
   assert.ok(panel.includes('3 Gebäude geladen'));
