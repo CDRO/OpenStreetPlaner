@@ -142,6 +142,47 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   await mp.click('#sheet-handle');
   await mp.waitForTimeout(300);
   assert.ok(!(await mp.evaluate(() => document.body.classList.contains('sheet-full'))), 'wieder halb');
+  // Werkzeuge als kompakte Symbolreihe, Eigenschaften eines gewählten Elements direkt darunter
+  assert.ok((await mp.locator('#tool-buttons').boundingBox()).height < 100, 'Werkzeugleiste kompakt');
+  assert.ok(await mp.locator('#tool-buttons .tool.active .tool-label').isVisible(), 'aktives Werkzeug mit Namen');
+  assert.ok(await mp.locator('#tool-buttons .tool[data-tool="road"] .tool-label').isHidden(), 'übrige nur Symbol');
+  await mp.evaluate(() => {
+    const sp = window.stadtplaner;
+    sp.store.commit('Demo', (d) => {
+      const nodes = [[47.05, 8.3], [47.0505, 8.304]];
+      d.features.push({ id: 'r_m', type: 'road', layerId: d.layers[0].id, name: 'Teststrasse', kind: 'main', status: 'new', oneway: false, maxspeed: null, width: null, section: null, osmId: null, nodes, segments: [{ level: 'ground', maxspeed: null }], profile: null, note: '' });
+    });
+    sp.tools.setSelection({ featureId: 'r_m', segIndex: null });
+  });
+  await mp.waitForTimeout(200);
+  const propsBox = await mp.locator('#properties').boundingBox();
+  const defaultsBox = await mp.locator('#tab-draw .defaults').boundingBox();
+  assert.ok(propsBox.y < defaultsBox.y, 'Eigenschaften vor den Vorgaben');
+  // Reiterleiste nach oben ziehen -> ganz oben; Tipp auf einen Reiter wechselt nur den Reiter
+  const dragTabs = async (dy) => {
+    const tb = await mp.locator('#sidebar .tabs').boundingBox();
+    await mp.mouse.move(tb.x + 300, tb.y + 20);
+    await mp.mouse.down();
+    for (let i = 1; i <= 8; i++) { await mp.mouse.move(tb.x + 300, tb.y + 20 + (dy * i) / 8); await mp.waitForTimeout(15); }
+    await mp.mouse.up();
+    await mp.waitForTimeout(350);
+  };
+  await dragTabs(-250);
+  assert.ok(await mp.evaluate(() => document.body.classList.contains('sheet-full')), 'an der Reiterleiste nach oben gezogen');
+  assert.equal(await mp.evaluate(() => document.querySelector('.tabs button.active').dataset.tab), 'draw', 'Zug wechselt den Reiter nicht');
+  await mp.click('.tabs button[data-tab="layers"]');
+  await mp.waitForTimeout(200);
+  assert.equal(await mp.evaluate(() => document.querySelector('.tabs button.active').dataset.tab), 'layers', 'Tipp wechselt den Reiter');
+  assert.ok(await mp.evaluate(() => document.body.classList.contains('sheet-full')), 'Tipp lässt die Höhe');
+  await dragTabs(200);
+  assert.ok(!(await mp.evaluate(() => document.body.classList.contains('sheet-full'))), 'nach unten gezogen: halb');
+  assert.ok(!(await mp.evaluate(() => document.body.classList.contains('sidebar-hidden'))));
+  await dragTabs(300);
+  assert.ok(await mp.evaluate(() => document.body.classList.contains('sidebar-hidden')), 'weiter nach unten: eingeklappt');
+  await mp.click('.tabs button[data-tab="draw"]');
+  await mp.waitForTimeout(300);
+  assert.ok(!(await mp.evaluate(() => document.body.classList.contains('sidebar-hidden'))), 'Tipp auf Reiter klappt auf');
+  assert.equal(await mp.evaluate(() => document.querySelector('.tabs button.active').dataset.tab), 'draw');
   await mobile.context.close();
   console.log('✓ Mobil');
 

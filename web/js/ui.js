@@ -580,7 +580,11 @@ export class UI {
   wireStatic() {
     const { actions } = this.ctx;
     document.querySelectorAll('.tabs button').forEach((btn) => {
-      btn.addEventListener('click', () => this.showTab(btn.dataset.tab, { reveal: true }));
+      btn.addEventListener('click', () => {
+        // Auf schmalen Bildschirmen zieht die Reiterleiste das Sheet; nach einem Zug keinen Reiterwechsel
+        if (this.sheetDragAt && performance.now() - this.sheetDragAt < 500) return;
+        this.showTab(btn.dataset.tab, { reveal: true });
+      });
     });
     this.$('sidebar-toggle').addEventListener('click', () => {
       document.body.classList.toggle('sidebar-hidden');
@@ -665,7 +669,8 @@ export class UI {
   wireSheet() {
     const sheet = this.$('sidebar');
     const handle = this.$('sheet-handle');
-    if (!sheet || !handle) return;
+    const tabs = sheet ? sheet.querySelector('.tabs') : null;
+    if (!sheet || !handle || !tabs) return;
     const mobile = () => window.matchMedia && window.matchMedia('(max-width: 860px)').matches;
     const setState = (state) => {
       document.body.classList.toggle('sidebar-hidden', state === 'collapsed');
@@ -674,41 +679,67 @@ export class UI {
       setTimeout(() => this.ctx.map.invalidateSize(), 250);
     };
     this.setSheetState = setState;
+    // Rasthöhen: eingeklappt (nur Reiter), halb, ganz oben
+    const stops = () => {
+      const total = sheet.parentElement.getBoundingClientRect().height;
+      return { collapsed: 58, half: window.innerHeight * 0.48, full: total - 8 };
+    };
     let drag = null;
-    handle.addEventListener('pointerdown', (e) => {
-      if (!mobile()) return;
-      drag = { y: e.clientY, h: sheet.getBoundingClientRect().height, moved: false };
-      handle.setPointerCapture(e.pointerId);
-      sheet.classList.add('dragging');
-    });
-    handle.addEventListener('pointermove', (e) => {
+    // Griff und Reiterleiste sind Zugflächen: ziehen verschiebt das Sheet stufenlos bis ganz nach oben
+    const start = (surface) => (e) => {
+      if (!mobile() || e.button) return;
+      drag = { y: e.clientY, h: sheet.getBoundingClientRect().height, moved: false, surface, target: e.target };
+      // Zeiger sofort fangen: ein schneller Finger verlässt die schmale Leiste sonst vor dem ersten Move
+      try {
+        surface.setPointerCapture(e.pointerId);
+      } catch {
+        // ältere Browser
+      }
+    };
+    const move = (e) => {
       if (!drag) return;
+      if (!e.buttons) { drag = null; return; }
       const dy = e.clientY - drag.y;
-      if (Math.abs(dy) > 4) drag.moved = true;
-      if (!drag.moved) return;
-      const max = sheet.parentElement.getBoundingClientRect().height - 8;
-      sheet.style.height = `${Math.max(44, Math.min(max, drag.h - dy))}px`;
+      if (!drag.moved) {
+        if (Math.abs(dy) <= 6) return;
+        drag.moved = true;
+        sheet.classList.add('dragging');
+      }
+      const { full } = stops();
+      sheet.style.height = `${Math.max(44, Math.min(full, drag.h - dy))}px`;
       document.body.classList.remove('sidebar-hidden');
-    });
+    };
     const end = () => {
       if (!drag) return;
-      const moved = drag.moved;
+      const { moved, surface, target, h: h0 } = drag;
       drag = null;
       sheet.classList.remove('dragging');
-      const total = sheet.parentElement.getBoundingClientRect().height;
-      const h = sheet.getBoundingClientRect().height;
       if (!moved) {
-        // Tipp auf den Griff: eingeklappt -> halb -> voll -> halb
-        if (document.body.classList.contains('sidebar-hidden')) setState('half');
-        else setState(document.body.classList.contains('sheet-full') ? 'half' : 'full');
+        // Tipp auf den Griff: eingeklappt -> halb -> voll -> halb. Tipp auf einen Reiter wechselt den Reiter
+        // (der Klick landet wegen des gefangenen Zeigers auf der Leiste, nicht auf dem Knopf).
+        if (surface === handle) {
+          if (document.body.classList.contains('sidebar-hidden')) setState('half');
+          else setState(document.body.classList.contains('sheet-full') ? 'half' : 'full');
+          return;
+        }
+        const btn = target && target.closest ? target.closest('.tabs button') : null;
+        if (btn) this.showTab(btn.dataset.tab, { reveal: true });
         return;
       }
-      if (h < total * 0.28) setState('collapsed');
-      else if (h > total * 0.7) setState('full');
-      else setState('half');
+      this.sheetDragAt = performance.now();
+      // Zur nächsten Rasthöhe, mit Schwung in Zugrichtung: gut 100 px Zug wechseln die Stufe
+      const h = sheet.getBoundingClientRect().height;
+      const aim = h + (h - h0) * 0.5;
+      const s = stops();
+      const next = Object.keys(s).sort((a, b) => Math.abs(s[a] - aim) - Math.abs(s[b] - aim))[0];
+      setState(next);
     };
-    handle.addEventListener('pointerup', end);
-    handle.addEventListener('pointercancel', end);
+    for (const surface of [handle, tabs]) {
+      surface.addEventListener('pointerdown', start(surface));
+      surface.addEventListener('pointermove', move);
+      surface.addEventListener('pointerup', end);
+      surface.addEventListener('pointercancel', end);
+    }
   }
 
   // --- Einstellungen und Hilfe als Panel über der Karte -------------------------------
@@ -1480,6 +1511,8 @@ export class UI {
     const box = this.$('properties');
     const sel = tools.selection;
     const f = sel ? getFeature(store.doc, sel.featureId) : null;
+    // Auf schmalen Bildschirmen rücken die Eigenschaften eines gewählten Elements direkt unter die Werkzeuge
+    box.classList.toggle('has-selection', !!f || tools.multi.size > 1);
     if (tools.multi.size > 1 && !tools.isGroupSelection()) return this.refreshMultiProperties(box);
     if (!f) {
       box.innerHTML = `<h3>${t('Eigenschaften')}</h3><p class="muted">${t('Kein Element ausgewählt. Mit dem Werkzeug „Auswählen“ ein Element anklicken.')}</p>`;

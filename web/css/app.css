@@ -343,10 +343,25 @@ body.present #btn-basemap, body.present #btn-network { display: none; }
   .sidebar.dragging { transition: none; }
   body.sidebar-hidden .sidebar { height: 58px; }
   body.sheet-full .sidebar { height: calc(100% - 8px); }
-  .sheet-handle { display: flex; justify-content: center; padding: 6px 0 2px; cursor: grab; flex: 0 0 auto; }
+  .sheet-handle { display: flex; justify-content: center; padding: 8px 0 4px; cursor: grab; flex: 0 0 auto; }
   .sheet-handle span { width: 40px; height: 4px; border-radius: 2px; background: var(--border); }
-  .tabs { cursor: pointer; }
+  /* Griff und Reiterleiste ziehen das Sheet (bis ganz nach oben); ein kurzer Tipp wechselt den Reiter */
+  .tabs { cursor: grab; touch-action: none; }
   .tab { touch-action: pan-y; }
+  /* Werkzeuge als kompakte Symbolreihe (nur das aktive zeigt seinen Namen), damit die Eigenschaften Platz haben */
+  .tool-grid { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+  .tool-grid .tool { flex: 0 0 auto; flex-direction: row; width: 36px; height: 36px; min-height: 0; padding: 0; gap: 6px; }
+  .tool-grid .tool .ic { width: 20px; height: 20px; }
+  .tool-grid .tool .tool-label, .tool-grid .tool .tool-key { display: none; }
+  .tool-grid .tool.active { width: auto; padding: 0 10px 0 8px; }
+  .tool-grid .tool.active .tool-label { display: inline; }
+  /* Eigenschaften des gewählten Elements vor den Vorgaben für neue Elemente */
+  #tab-draw.active { display: flex; flex-direction: column; }
+  #tab-draw > * { flex: 0 0 auto; }
+  #tab-draw .defaults { order: 1; }
+  #tab-draw #properties { order: 2; }
+  #tab-draw #properties.has-selection { order: 0; }
+  #tab-draw #elements-box { order: 3; }
   .draw-actions { bottom: calc(48vh + 12px); }
   body.sidebar-hidden .draw-actions { bottom: 70px; }
   body.sheet-full .draw-actions { top: 12px; bottom: auto; }
