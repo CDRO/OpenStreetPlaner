@@ -37,8 +37,8 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
     });
     sp.map.setView([47.05, 8.305], 15);
   });
-  await page.waitForFunction(() => { const r = window.stadtplaner.routes(); return r && r.current && r.current.path && r.current.times; }, null, { timeout: 15000 });
-  await page.waitForFunction(() => !window.stadtplaner.osm.pending, null, { timeout: 15000 });
+  await page.waitForFunction(() => { const r = window.stadtplaner.routes(); return r && r.current && r.current.path && r.current.times; }, null, { timeout: 15000, polling: 100 });
+  await page.waitForFunction(() => !window.stadtplaner.osm.pending, null, { timeout: 15000, polling: 100 });
   await page.click('.tabs button[data-tab="route"]');
   await page.waitForSelector('#race-box .race-start');
 
@@ -46,7 +46,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   const panelText = async (sel) => (await page.textContent(sel)).replace(/\s+/g, ' ');
   assert.ok((await panelText('#race-box')).includes('Abfahren'));
   await page.click('#race-box .race-start');
-  await page.waitForFunction(() => { const r = window.stadtplaner.actions.race(); return r && r.status === 'running'; }, null, { timeout: 15000 });
+  await page.waitForFunction(() => { const r = window.stadtplaner.actions.race(); return r && r.status === 'running'; }, null, { timeout: 15000, polling: 100 });
   let race = await page.evaluate(() => { const r = window.stadtplaner.actions.race(); return { status: r.status, speed: r.speed, mode: r.mode, duration: r.duration, runners: r.runners.map((x) => x.id) }; });
   assert.equal(race.runners.length, 8, `vier Verkehrsmittel × heute/neu: ${race.runners.join(', ')}`);
   assert.ok(race.runners.includes('foot:proposed') && race.runners.includes('car:current'));
@@ -82,12 +82,12 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   // Zum Ende springen: alle angekommen, Ränge in der Tabelle
   await page.evaluate(() => window.stadtplaner.actions.raceSeek(window.stadtplaner.actions.race().duration));
   await page.click('#race-box .race-toggle');
-  await page.waitForFunction(() => window.stadtplaner.actions.race().status === 'done', null, { timeout: 5000 });
+  await page.waitForFunction(() => window.stadtplaner.actions.race().status === 'done', null, { timeout: 5000, polling: 100 });
   text = await panelText('#race-box');
   assert.ok(text.includes('1. ·') && text.includes('Nochmals'), text);
   // Nur neu: vier Teilnehmer
   await page.selectOption('#race-box .race-mode', 'proposed');
-  await page.waitForFunction(() => window.stadtplaner.actions.race().runners.length === 4, null, { timeout: 5000 });
+  await page.waitForFunction(() => window.stadtplaner.actions.race().runners.length === 4, null, { timeout: 5000, polling: 100 });
   assert.equal(await page.evaluate(() => window.stadtplaner.actions.race().mode), 'proposed');
   // Entwurf ändern: Rennen gilt als veraltet, „Neu berechnen“ rechnet neu
   await page.evaluate(() => window.stadtplaner.store.commit('Ändern', (d) => { d.features[0].name = 'Nord neu'; }));
@@ -95,7 +95,7 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   assert.equal(await page.evaluate(() => window.stadtplaner.actions.race().stale), true);
   assert.ok((await panelText('#race-box')).includes('Neu berechnen'));
   await page.click('#race-box .race-restart');
-  await page.waitForFunction(() => { const r = window.stadtplaner.actions.race(); return r && !r.stale && r.status === 'running'; }, null, { timeout: 15000 });
+  await page.waitForFunction(() => { const r = window.stadtplaner.actions.race(); return r && !r.stale && r.status === 'running'; }, null, { timeout: 15000, polling: 100 });
   await page.click('#race-box .race-stop');
   await h.settle(100);
   assert.equal(await page.evaluate(() => window.stadtplaner.actions.race()), null);
@@ -103,9 +103,9 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   console.log('✓ Rennen Hauptroute');
 
   // --- Buslinie abfahren ---------------------------------------------------------------
-  await page.waitForFunction(() => window.stadtplaner.actions.busResults().length === 1 && window.stadtplaner.actions.busResults()[0].proposed && window.stadtplaner.actions.busResults()[0].proposed.times, null, { timeout: 15000 });
+  await page.waitForFunction(() => window.stadtplaner.actions.busResults().length === 1 && window.stadtplaner.actions.busResults()[0].proposed && window.stadtplaner.actions.busResults()[0].proposed.times, null, { timeout: 15000, polling: 100 });
   await page.click('.bus-race[data-id="b1"]');
-  await page.waitForFunction(() => { const r = window.stadtplaner.actions.race(); return r && r.kind === 'bus' && r.status === 'running'; }, null, { timeout: 5000 });
+  await page.waitForFunction(() => { const r = window.stadtplaner.actions.race(); return r && r.kind === 'bus' && r.status === 'running'; }, null, { timeout: 5000, polling: 100 });
   race = await page.evaluate(() => { const r = window.stadtplaner.actions.race(); return { title: r.title, runners: r.runners.map((x) => x.id) }; });
   assert.deepEqual(race.runners, ['bus:current', 'bus:proposed']);
   assert.ok(race.title.includes('Linie 5'));
@@ -200,11 +200,11 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:8080/';
   let prog = (await page.textContent('#status-progress')).replace(/\s+/g, ' ');
   assert.ok(/Gebäude laden… 0\/\d+/.test(prog), `Fortschritt mit Zellen: ${prog}`);
   assert.ok(!(await page.getAttribute('#status-progress', 'class')).includes('done'));
-  await page.waitForFunction(() => /Gebäude geladen/.test(document.getElementById('status-progress').textContent), null, { timeout: 15000 });
+  await page.waitForFunction(() => /Gebäude geladen/.test(document.getElementById('status-progress').textContent), null, { timeout: 15000, polling: 100 });
   prog = (await page.textContent('#status-progress')).replace(/\s+/g, ' ');
   assert.ok(/1 Gebäude geladen\./.test(prog), prog);
   assert.ok((await page.getAttribute('#status-progress', 'class')).includes('done'));
-  await page.waitForFunction(() => document.getElementById('status-progress').hidden, null, { timeout: 8000 });
+  await page.waitForFunction(() => document.getElementById('status-progress').hidden, null, { timeout: 8000, polling: 100 });
   console.log('✓ Fortschrittsanzeige');
 
   assert.deepEqual(errors, []);
